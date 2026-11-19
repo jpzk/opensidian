@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! M2d / open questions 10 + 12: raw P-256 private-key import works in FIPS
-//! mode on the pinned module, and phrase-derived signing keys (K_destroy,
+//! mode on the OpenSSL FIPS provider 3.5.9, and phrase-derived signing keys (K_destroy,
 //! K_rsig) re-derive identically from the words alone.
 //!
 //! Independent answers: d = 1 -> Q = G and d = n - 1 -> Q = -G (SP 800-186
@@ -20,7 +20,7 @@ const GY: &str = "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51
 const P_MINUS_GY: &str = "b01cbd1c01e58065711814b583f061e9d431cca994cea1313449bf97c840ae0a";
 
 fn fips() -> FipsProvider {
-    aws_lc_rs::try_fips_mode().expect("FIPS mode");
+    sync_crypto::fips::init().expect("FIPS mode");
     FipsProvider::new().expect("FIPS provider")
 }
 

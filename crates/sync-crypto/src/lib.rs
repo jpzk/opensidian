@@ -6,10 +6,11 @@
 //! FIPS backend can be swapped without touching sync-core or sync-server.
 //!
 //! What is here:
-//! - [`fips::FipsProvider`] (M2): the release provider, AWS-LC FIPS module via
-//!   aws-lc-rs (docs/sync/cmvp.md §7) — AES-256-GCM with module nonces,
-//!   HKDF/HMAC/SHA-256, module DRBG, Ed25519 (suite 0x01, v1; ECDSA P-256
-//!   suite 0x02 kept as fallback). KATs:
+//! - [`fips::FipsProvider`] (M2): the release provider, the OpenSSL 3 FIPS
+//!   provider 3.5.9 (CMVP #5586, docs/sync/cmvp.md) via rust-openssl, approved
+//!   mode enforced at first use ([`fips::init`]) — AES-256-GCM with
+//!   provider-generated IVs, HKDF/HMAC/SHA-256, provider DRBG, Ed25519 (suite
+//!   0x01, v1; ECDSA P-256 suite 0x02 kept as fallback). KATs:
 //!   `vectors/*.vec`, `tests/fips_kat.rs`.
 //! - [`CryptoProvider`]: hash, HMAC, HKDF, randomness, AEAD (module-chosen
 //!   nonces), signatures — the whole surface the sync engine may use.
@@ -24,13 +25,16 @@
 //!   `sha2`, used for test vectors. It does NOT implement AEAD, randomness or
 //!   signatures (returns [`CryptoError::Unsupported`]); those come from
 //!   [`fips::FipsProvider`].
-#![forbid(unsafe_code)]
+// `unsafe` is denied everywhere except the small `ossl_ffi` module (EVP calls
+// rust-openssl has no safe wrapper for; it opts in with `allow`).
+#![deny(unsafe_code)]
 
 use std::fmt;
 
 use sha2::{Digest, Sha256};
 
 pub mod fips;
+mod ossl_ffi;
 pub mod keytree;
 pub mod soft;
 pub mod words;
@@ -96,8 +100,8 @@ impl SigAlg {
 }
 
 /// Signature algorithm of the v1 suite (0x01): Ed25519, covered by the
-/// validated module (certificate #5314 lists EDDSA KeyGen/SigGen/SigVer,
-/// docs/sync/cmvp.md). Device keys, K_destroy, K_rsig and the server's
+/// OpenSSL FIPS provider 3.5.9 (certificate #5586 lists EDDSA KeyGen/SigGen/
+/// SigVer, docs/sync/cmvp.md). Device keys, K_destroy, K_rsig and the server's
 /// receipt key all use it.
 pub const V1_SIG_ALG: SigAlg = SigAlg::Ed25519;
 

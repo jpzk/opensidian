@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! M2b known-answer tests against the AWS-LC FIPS module (FipsProvider):
+//! M2b known-answer tests against the OpenSSL FIPS provider 3.5.9 (FipsProvider, CMVP #5586):
 //! crates/sync-crypto/vectors/*.vec (format docs/sync/test-vectors.md) plus
 //! property checks (nonce uniqueness, tamper rejection, P-256 sign/verify,
 //! provider parity with the reference SoftProvider).
@@ -90,15 +90,28 @@ fn kat_aes_256_gcm() {
     assert_eq!(n, 6);
 }
 
+/// Approved mode (SP #5586 §2.6, fipsinstall -pedantic: hmac-key-check /
+/// hkdf-key-check): keys shorter than 112 bits are refused by the module.
+const MIN_APPROVED_KEY: usize = 14;
+
 #[test]
 fn kat_hmac_sha256_both_providers() {
     let (p, s) = (fips(), SoftProvider);
     let (_, cases) = load("hmac-sha256.vec");
+    let (mut approved, mut refused) = (0, 0);
     for (id, c) in &cases {
         let (k, m) = (unhex(f(c, "key")), unhex(f(c, "msg")));
-        assert_eq!(hex(&p.hmac_sha256(&k, &m)), f(c, "mac"), "fips {id}");
         assert_eq!(hex(&s.hmac_sha256(&k, &m)), f(c, "mac"), "soft {id}");
+        if k.len() >= MIN_APPROVED_KEY {
+            assert_eq!(hex(&p.hmac_sha256(&k, &m)), f(c, "mac"), "fips {id}");
+            approved += 1;
+        } else {
+            // RFC 4231 case 2 ("Jefe", 32-bit key) is not an approved-mode vector
+            assert_eq!(p.try_hmac_sha256(&k, &m), Err(CryptoError::Module), "fips {id} short key accepted");
+            refused += 1;
+        }
     }
+    assert_eq!((approved, refused), (4, 1));
 }
 
 #[test]
@@ -120,14 +133,31 @@ fn kat_hkdf_sha256_both_providers() {
 #[test]
 fn hkdf_limits() {
     let p = fips();
+    let ikm = [0x4bu8; 32];
     let mut max = vec![0u8; HKDF_MAX];
-    p.hkdf_sha256(b"k", b"s", b"i", &mut max).unwrap();
+    p.hkdf_sha256(&ikm, b"s", b"i", &mut max).unwrap();
     let mut over = vec![0u8; HKDF_MAX + 1];
-    assert_eq!(p.hkdf_sha256(b"k", b"s", b"i", &mut over), Err(CryptoError::Invalid));
+    assert_eq!(p.hkdf_sha256(&ikm, b"s", b"i", &mut over), Err(CryptoError::Invalid));
     // long output agrees with the reference implementation
     let mut soft = vec![0u8; HKDF_MAX];
-    SoftProvider.hkdf_sha256(b"k", b"s", b"i", &mut soft).unwrap();
+    SoftProvider.hkdf_sha256(&ikm, b"s", b"i", &mut soft).unwrap();
     assert_eq!(max, soft);
+    // approved mode: an IKM below 112 bits is refused by the module
+    let mut out = [0u8; 32];
+    assert!(p.hkdf_sha256(b"k", b"s", b"i", &mut out).is_err(), "1-byte IKM accepted");
+    assert!(p.hkdf_sha256(&[1u8; MIN_APPROVED_KEY], b"s", b"i", &mut out).is_ok());
+}
+
+#[test]
+fn aead_empty_inputs_get_module_nonce() {
+    // no AAD and no plaintext: the provider still generates (and reports) the IV
+    let p = fips();
+    let a = p.aead_seal(&[3u8; 32], b"", b"").unwrap();
+    let b = p.aead_seal(&[3u8; 32], b"", b"").unwrap();
+    assert_eq!(a.ct_and_tag.len(), 16);
+    assert_ne!(a.nonce, b.nonce);
+    assert_eq!(p.aead_open(&[3u8; 32], &a.nonce, b"", &a.ct_and_tag).unwrap(), b"");
+    assert_eq!(p.aead_open(&[3u8; 32], &b.nonce, b"", &a.ct_and_tag), Err(CryptoError::Verify));
 }
 
 #[test]

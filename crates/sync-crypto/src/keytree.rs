@@ -5,10 +5,12 @@
 //! backup words, plus the P-256 scalar derivation for phrase-derived signing
 //! keys (K_rsig, K_destroy).
 //!
-//! Open questions 10 + 12 (resolved in M2d, cmvp.md §8): the AWS-LC FIPS
-//! module accepts a raw P-256 private scalar in FIPS mode (RFC 5915 import +
-//! `EC_KEY_check_fips` pairwise-consistency test, `fips::FipsSigningKey::
-//! from_p256_scalar`), so K_destroy / K_rsig stay derived from the phrase:
+//! Open questions 10 + 12 (re-checked for OpenSSL 3, cmvp.md): suite v1
+//! imports the 32-byte K_destroy / K_rsig outputs as raw Ed25519 private
+//! keys into the OpenSSL FIPS provider (`EVP_PKEY_new_raw_private_key_ex`,
+//! `fips=yes`, provider + our sign/verify pairwise check); the P-256 fallback
+//! imports a raw scalar via PKCS#8 (`fips::FipsSigningKey::from_p256_scalar`,
+//! pairwise-checked). So K_destroy / K_rsig stay derived from the phrase:
 //! a fresh device must be able to prove destroy and recovery from the words
 //! alone. The scalar is chosen with the arithmetic of FIPS 186-5 A.2.2
 //! (rejection sampling: accept `c <= n - 2`, `d = c + 1`); the candidate
