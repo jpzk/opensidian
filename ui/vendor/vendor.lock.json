@@ -603,13 +603,18 @@
           "path": "fluent/fluent-bundle.js",
           "tarball_path": "package/index.js",
           "sha256": "08fc26d9b0d7e43c8c96eeb4757a94cc48ce2b4c36b5547ebc415dc7dc94f39c"
+        },
+        {
+          "path": "fluent/LICENSE",
+          "source": "https://raw.githubusercontent.com/projectfluent/fluent.js/88582193c29a689241a4f7b2ca7086c802840264/LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
         }
       ],
       "embedded_version": [],
       "published": "2025-04-02T13:40:39.598Z",
       "added": "2026-11-17",
       "tarball_sha256": "8af8e91a347fa98a9f2469cab95096ac113eff165c82231033a0f98e10d49a2c",
-      "files_taken": "package/index.js (the UMD build) -> fluent-bundle.js, unmodified. The tarball ships no LICENSE: fluent/LICENSE is upstream Apache-2.0 text from https://github.com/projectfluent/fluent.js at tag @fluent/bundle@0.19.1 (gitHead 88582193c29a689241a4f7b2ca7086c802840264), sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30, listed in allowed_unlocked (documentation, not library bytes)",
+      "files_taken": "package/index.js (the UMD build) -> fluent-bundle.js, unmodified. The tarball ships no LICENSE: fluent/LICENSE is upstream Apache-2.0 text from https://github.com/projectfluent/fluent.js at tag @fluent/bundle@0.19.1 (gitHead 88582193c29a689241a4f7b2ca7086c802840264), sha256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30, locked in files[] by source (that commit's raw URL) + sha256, verified by vendor-verify.sh",
       "loaded_by": "ui/index.html classic script before ui/i18n.js -> window.FluentBundle (#220); no network, no eval / new Function; CSP script-src self",
       "modified": false
     }
@@ -814,9 +819,9 @@
     "codemirror/build/entry.js",
     "codemirror/build/banner.txt",
     "codemirror/build/build.sh",
-    "fluent/SHA256SUMS",
-    "fluent/LICENSE"
+    "fluent/SHA256SUMS"
   ],
   "$comment_allowed": "allowed_unlocked: exact paths (no globs) that are documentation, checksums or build inputs, not shipped library bytes",
+  "$comment_files": "libraries[].files[] entry forms: {path, tarball_path, sha256} (a file of the npm tarball; optional local_header_lines + vendored_sha256), {path, concat, concat_separator, sha256} (concatenation of tarball files), or {path, source, sha256} for a file the tarball does not ship: source = https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (commit-pinned, never a branch/tag), fetched by vendor-verify.sh (https only, no redirects) and its sha256 checked against the lock and the vendored bytes",
   "six_week_rule": "published (npm registry time[version]) must be >= 42 days before added (the date the bytes landed in git)"
 }

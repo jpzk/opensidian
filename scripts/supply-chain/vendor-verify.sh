@@ -13,7 +13,11 @@
 #      (local_header_lines=N: the vendored file is N lines of our own header + the upstream bytes;
 #      the whole file must also equal vendored_sha256; concat=[tarball paths] + concat_separator: the
 #      vendored file is exactly those tarball files in that order, each followed by the separator,
-#      rebuilt from the tarball here — prism-components.js, #186);
+#      rebuilt from the tarball here — prism-components.js, #186;
+#      source=<URL>: a file the npm tarball does not ship, e.g. fluent/LICENSE — the URL must be
+#      https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (immutable: no branch or
+#      tag ref), it is fetched once with https only and no redirects followed, and its sha256 must
+#      equal the lock sha256 AND the vendored file; a source entry has no tarball_path/concat);
 #   c) every embedded_version rule (ERE in the file's bytes) must match and yield exactly the lock
 #      version (pdfjsVersion, moment header + .version, MathJax VERSION; prism has none);
 #   d) every file under ui/vendor must be a lock file, a bundle, or listed in allowed_unlocked
@@ -77,6 +81,13 @@ meta() {
 # whole days from the date of ISO timestamp $1 to the date of $2
 days() { echo $((($(date -ud "${2:0:10}" +%s) - $(date -ud "${1:0:10}" +%s)) / 86400)); }
 MINDAYS=42 # six-week rule
+# a files[] "source" URL must be an immutable, commit-addressed raw file: https, one fixed host,
+# /<owner>/<repo>/<40-hex commit sha>/<path> (no branch or tag refs, no query, no '..', no userinfo)
+SRC_HOST=raw.githubusercontent.com
+source_ok() {
+  case $1 in *..* | *'?'* | *'#'* | *'@'* | *%*) return 1 ;; esac
+  printf '%s' "$1" | grep -Eqx "https://${SRC_HOST//./\\.}/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[0-9a-f]{40}/[A-Za-z0-9._/-]+"
+}
 
 jq -e '.lockfileVersion == 1 and (.libraries|type=="array") and (.bundles|type=="array")
        and (.allowed_unlocked|type=="array")' "$lock" >/dev/null \
@@ -119,6 +130,22 @@ for ((i = 0; i < nlib; i++)); do
     p=$(jq -r .path <<<"$F"); tp=$(jq -r .tarball_path <<<"$F"); s=$(jq -r .sha256 <<<"$F")
     hl=$(jq -r '.local_header_lines // 0' <<<"$F")
     printf '%s\n' "$p" >>"$covered"
+    if jq -e 'has("source")' <<<"$F" >/dev/null; then
+      # a file the npm tarball does not ship (e.g. fluent/LICENSE): pinned to an upstream commit URL.
+      # Fetched once, https only, no redirects followed; its sha256 must equal the lock AND the vendored bytes.
+      src=$(jq -r .source <<<"$F")
+      jq -e 'has("tarball_path") or has("concat") | not' <<<"$F" >/dev/null \
+        || { err "$id: $p: a source entry must not also have tarball_path/concat"; continue; }
+      printf '%s' "$s" | grep -Eqx '[0-9a-f]{64}' || { err "$id: $p: lock sha256 '$s' is not 64 hex"; continue; }
+      source_ok "$src" || { err "$id: $p: source '$src' is not https://$SRC_HOST/<owner>/<repo>/<40-hex commit>/<path>"; continue; }
+      [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; continue; }
+      sf=$work/src$i.$j
+      if ! curl -4 -fsS --proto =https --max-redirs 0 --retry 3 -m 120 "$src" -o "$sf"; then err "$id: $p: download $src failed"; continue; fi
+      up=$(sha256sum "$sf" | cut -d' ' -f1)
+      [ "$up" = "$s" ] || err "$id: lock sha256 of $p ($s) != source $src ($up)"
+      [ "$(sha256 "$vd/$p")" = "$up" ] || err "$id: $p differs from source $src"
+      continue
+    fi
     if jq -e 'has("concat")' <<<"$F" >/dev/null; then
       # a derived file: the exact concatenation of tarball files (in lock order), each followed by
       # concat_separator; rebuilt here from the tarball, it must equal the lock sha256 and the vendored bytes
