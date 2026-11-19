@@ -171,6 +171,14 @@ fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Re
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
     let path = data.join(RECEIPT_KEY_FILE);
+    // the key's directory entry is made durable before ANY path hands the
+    // key out: an adopted key may come from a start that crashed (or lost
+    // the race) before its own directory sync
+    let sync_data_dir = || -> Result<(), String> {
+        std::fs::File::open(data)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| format!("{}: {e}", data.display()))
+    };
     let load = || -> Result<Option<FipsSigningKey>, String> {
         match std::fs::read(&path) {
             Ok(der) => {
@@ -195,6 +203,7 @@ fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Re
         }
     };
     if let Some(k) = load()? {
+        sync_data_dir()?;
         return Ok(k);
     }
     let (key, _) = prov
@@ -216,13 +225,13 @@ fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Re
     let _ = std::fs::remove_file(&tmp);
     match staged {
         Ok(()) => {
-            std::fs::File::open(data)
-                .and_then(|d| d.sync_all())
-                .map_err(|e| format!("{}: {e}", data.display()))?;
+            sync_data_dir()?;
             Ok(key)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            load()?.ok_or_else(|| format!("{}: vanished during start", path.display()))
+            let k = load()?.ok_or_else(|| format!("{}: vanished during start", path.display()))?;
+            sync_data_dir()?;
+            Ok(k)
         }
         Err(e) => Err(format!("{}: {e}", path.display())),
     }

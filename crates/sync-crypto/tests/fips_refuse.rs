@@ -105,5 +105,9 @@ fn child_expects_refusal() {
     };
     let err = fips::init().expect_err("sync must refuse without an active FIPS provider");
     assert!(FipsProvider::new().is_err());
+    if case == "security-checks-0" {
+        // refused for the disabled check itself, not for some load failure
+        assert!(err.to_string().contains("security-checks = Some(0)"), "{err}");
+    }
     println!("REFUSED: {case}: {err}");
 }

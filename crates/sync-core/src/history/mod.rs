@@ -335,6 +335,10 @@ pub fn copy_store(from_app_data: &Path, from_id: &str, to_app_data: &Path, to_id
     }
     let parent = dst.parent().ok_or_else(|| HistoryError::InvalidPath(dst.display().to_string()))?;
     fsx::mkdir_private(parent)?;
+    // a freshly created history parent needs its own entry made durable
+    if let Some(pp) = parent.parent() {
+        fsx::sync_dir(pp)?;
+    }
     let tmp = parent.join(format!(".{to_id}.copying"));
     match fs::remove_dir_all(&tmp) {
         Ok(()) => {}
@@ -380,6 +384,9 @@ pub fn copy_store(from_app_data: &Path, from_id: &str, to_app_data: &Path, to_id
         f.write_all(&body)?;
         f.sync_all()?;
     }
+    // store.json's entry in the staged dir is durable before the rename
+    // publishes the store
+    fsx::sync_dir(&tmp)?;
     fs::rename(&tmp, &dst)?;
     fsx::sync_dir(parent)?;
     let n = match fs::read(dst.join("index.log")) {
@@ -711,12 +718,16 @@ impl Store {
     /// history). Idempotent per (path, bytes); the head is untouched.
     pub fn record_sync_loser(&mut self, path: &str, bytes: &[u8], now_ms: u64) -> Result<Outcome, HistoryError> {
         validate_path(path)?;
-        if bytes.len() as u64 > self.cfg.max_file_bytes {
-            return Ok(Outcome::Skipped(Skip::TooLarge(bytes.len() as u64)));
-        }
+        // No max_file_bytes skip here: the losing side of a merge is ALWAYS
+        // kept (D4) — reporting it as skipped while the merged head advances
+        // would lose it for good. Its size is bounded by what sync itself
+        // transfers (the engine fetched these bytes as a vault file).
         let sha = cas::sha_hex(bytes);
         let known = self.entries.iter().any(|e| e.path == path && e.sha.as_deref() == Some(sha.as_str()));
-        if known && self.cas.contains(&sha) {
+        if known {
+            // verified dedup: repairs a truncated/missing blob from these bytes
+            // without a second journal record
+            self.cas.put(bytes)?;
             return Ok(Outcome::Unchanged);
         }
         let put = self.cas.put(bytes)?;
@@ -920,9 +931,11 @@ impl Store {
             self.journal = next;
             self.heads = replay(&keep);
             self.entries = keep;
-            // not durable -> do not collect blobs the old journal still names
-            fsx::sync_dir(&self.root)?;
         }
+        // not durable -> do not collect blobs the old journal still names;
+        // synced before EVERY sweep, also on a retry whose rewrite was a no-op
+        // (an earlier rename may have landed without its dir sync)
+        fsx::sync_dir(&self.root)?;
         let referenced: std::collections::BTreeSet<&str> = self.entries.iter().filter_map(|e| e.sha.as_deref()).collect();
         let blobs_removed = self.cas.sweep(|sha| referenced.contains(sha))?;
         Ok(Rewrite { dropped, rewritten, blobs_removed })
@@ -1007,7 +1020,9 @@ impl Store {
     fn store_bytes(&mut self, path: &str, b: &[u8], reason: Reason, now_ms: u64) -> Result<Outcome, HistoryError> {
         let sha = cas::sha_hex(b);
         if let Some(Head::Live { sha: h, .. }) = self.heads.get(path) {
-            if *h == sha && self.cas.contains(&sha) {
+            if *h == sha {
+                // verify (and repair from `b`) the blob before calling it unchanged
+                self.cas.put(b)?;
                 return Ok(Outcome::Unchanged);
             }
         }

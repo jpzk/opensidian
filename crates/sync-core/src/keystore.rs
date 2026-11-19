@@ -154,7 +154,24 @@ impl FileKeystore {
                 "the file keystore needs owner-only file modes (unix); not supported on this platform".into(),
             ));
         }
+        // every directory this call creates gets its entry in its parent made
+        // durable (stopping at the first ancestor that already existed); put
+        // syncs the leaf itself
+        let mut fresh = Vec::new();
+        let mut a = dir.as_path();
+        while !a.exists() {
+            fresh.push(a.to_path_buf());
+            match a.parent() {
+                Some(p) if !p.as_os_str().is_empty() => a = p,
+                _ => break,
+            }
+        }
         private_dir(&dir).map_err(io)?;
+        for d in &fresh {
+            if let Some(p) = d.parent().filter(|p| !p.as_os_str().is_empty()) {
+                sync_dir(p).map_err(io)?;
+            }
+        }
         Ok(FileKeystore { dir, presence })
     }
 

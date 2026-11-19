@@ -237,18 +237,41 @@ impl FsTransport {
         if len % RECORD as u64 != 0 {
             log.set_len(len - len % RECORD as u64).map_err(io)?;
         }
-        log.write_all(&rec).and_then(|_| log.sync_data()).map_err(io)
+        log.write_all(&rec).and_then(|_| log.sync_data()).map_err(io)?;
+        // the log's own directory entry (first append creates it) is synced
+        // on every append, so an earlier failed dir sync is retried here
+        sync_dir(&self.ns_dir(ns))
     }
 
     /// The object is already published with these bytes. A crash between
     /// the hard link and the log append leaves it unlisted forever, so the
     /// retry repairs the log before it reports Identical.
     fn identical(&self, ns: &Id16, kind: ObjKind, id: &Id16, size: u64) -> Result<PutOutcome> {
+        // the first attempt may have failed after the link but before its
+        // directory entry was synced: finish that before anything lists it
+        if let Some(parent) = self.obj_path(kind, ns, id).parent() {
+            sync_dir(parent)?;
+        }
         if matches!(kind, ObjKind::Obj | ObjKind::Cfg) && !self.log_has(ns, kind, id)? {
             self.append_log(ns, kind, id, size)?;
+        } else if matches!(kind, ObjKind::Obj | ObjKind::Cfg) {
+            // record present, but the failed attempt may not have synced it
+            let log = File::open(self.ns_dir(ns).join("log")).map_err(io)?;
+            log.sync_data().map_err(io)?;
+            sync_dir(&self.ns_dir(ns))?;
         }
         Ok(PutOutcome::Identical)
     }
+}
+
+/// fsync a directory so the entries created in it survive a crash (unix;
+/// elsewhere the rename/link is the durability point, sync is unix-only).
+fn sync_dir(d: &Path) -> Result<()> {
+    #[cfg(unix)]
+    File::open(d).and_then(|f| f.sync_all()).map_err(io)?;
+    #[cfg(not(unix))]
+    let _ = d;
+    Ok(())
 }
 
 /// Refuse a volume that cannot keep the replica's guarantees: write-once
@@ -364,11 +387,10 @@ impl Transport for FsTransport {
             }
             Err(e) => return Err(io(e)),
         }
-        // The link is made durable before the log names it.
+        // The link is made durable before the log names it (a failed dir
+        // sync fails the put; the retry takes the identical() path).
         if let Some(parent) = dst.parent() {
-            if let Ok(d) = File::open(parent) {
-                let _ = d.sync_all();
-            }
+            sync_dir(parent)?;
         }
         if matches!(kind, ObjKind::Obj | ObjKind::Cfg) {
             self.append_log(ns, kind, id, bytes.len() as u64)?;

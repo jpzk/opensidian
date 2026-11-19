@@ -430,22 +430,18 @@ impl Store {
         let parent = dst
             .parent()
             .ok_or(StoreError::new(ErrorCode::Internal, "object path"))?;
-        // The index must never name a file a crash can still lose: new shard
-        // directories and the rename itself are fsync'd before the commit.
+        // The index must never name a file a crash can still lose: the rename
+        // and every shard directory entry up to objects/ are fsync'd before
+        // the commit — always, not only for dirs this call created (a failed
+        // earlier PUT may have left them in place without their dir sync).
         let objects = self.root.join("objects");
-        let mut fresh = Vec::new();
-        let mut d = parent;
-        while d != objects && !d.exists() {
-            fresh.push(d.to_path_buf());
-            d = d.parent().ok_or(StoreError::new(ErrorCode::Internal, "object path"))?;
-        }
         fs::create_dir_all(parent)?;
         fs::rename(tmp, &dst)?;
         sync_dir(parent)?;
-        for f in &fresh {
-            if let Some(p) = f.parent() {
-                sync_dir(p)?;
-            }
+        let mut d = parent;
+        while d != objects {
+            d = d.parent().ok_or(StoreError::new(ErrorCode::Internal, "object path"))?;
+            sync_dir(d)?;
         }
         tx.commit()?; // on any error above the transaction rolls back
         Ok(PutOutcome::Created)
@@ -667,6 +663,15 @@ impl Store {
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
             Err(e) => return Err(e.into()),
         };
+        if moved {
+            // the move out of objects/ is durable before the tombstone commits
+            // (a crash then leaves the tree in tmp/, which `open` restores
+            // unless the tombstone committed); a failed sync rolls back
+            if let Err(e) = sync_dir(&self.root.join("objects")).and_then(|()| sync_dir(&self.root.join("tmp"))) {
+                let _ = fs::rename(&trash, &dir);
+                return Err(e.into());
+            }
+        }
         if let Err(e) = tx.commit() {
             if moved {
                 let _ = fs::rename(&trash, &dir);
