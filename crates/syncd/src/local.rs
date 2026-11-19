@@ -109,6 +109,111 @@ fn item(e: &history::Entry) -> HistoryItem {
     }
 }
 
+/// Pairing poll: worth another try (reply not posted yet, or the network).
+fn retryable(e: &sync_core::transport::TransportError) -> bool {
+    use sync_core::sync_proto::api::ErrorCode;
+    use sync_core::transport::TransportError as T;
+    match e {
+        T::Api { code, .. } => *code == ErrorCode::NotFound,
+        T::Io(_) => true,
+        _ => false,
+    }
+}
+
+/// Write a secret file readable by the owner only (create_new + fsync).
+fn write_private(path: &Path, bytes: &[u8]) -> ApiResult<()> {
+    use std::io::Write as _;
+    let mut o = fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        o.mode(0o600);
+    }
+    let mut f = o.open(path).map_err(io_err)?;
+    f.write_all(bytes).and_then(|_| f.sync_all()).map_err(io_err)
+}
+
+/// What the vault folder held, per path, when this device last synced it:
+/// the bytes it committed from disk or wrote to disk. A path whose disk
+/// bytes still match is NOT a local edit even if the head moved on — it is
+/// a pending update the materialise step has not applied yet (skipped,
+/// or the pass died part-way). Without it, the next pass would commit the
+/// stale disk bytes back over the remote change.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct DiskIndex {
+    v: u32,
+    files: std::collections::BTreeMap<String, String>,
+}
+
+fn hex32(b: &[u8; 32]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+impl DiskIndex {
+    fn path(state: &Path) -> PathBuf {
+        state.join("disk-index.json")
+    }
+
+    /// `None` = no index yet (older state dir): the head tree stands in.
+    fn load(state: &Path) -> ApiResult<Option<DiskIndex>> {
+        match fs::read(Self::path(state)) {
+            Ok(b) => {
+                let i: DiskIndex = serde_json::from_slice(&b).map_err(|e| ApiError::new("io", format!("disk index: {e}")))?;
+                Ok((i.v == 1).then_some(i))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_err(e)),
+        }
+    }
+
+    fn save(&self, state: &Path) -> ApiResult<()> {
+        let tmp = state.join("disk-index.json.tmp");
+        let bytes = serde_json::to_vec(self).map_err(io_err)?;
+        (|| -> std::io::Result<()> {
+            use std::io::Write as _;
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(&bytes)?;
+            f.sync_all()?;
+            fs::rename(&tmp, Self::path(state))
+        })()
+        .map_err(io_err)
+    }
+
+    fn holds(&self, path: &str, sha: &[u8; 32]) -> bool {
+        self.files.get(path).is_some_and(|h| *h == hex32(sha))
+    }
+}
+
+/// Max changed inline bytes per local commit: a vault with a large edit
+/// set commits in several batches instead of one batch object over the
+/// object limit (which would fail every pass).
+const COMMIT_BATCH_BYTES: usize = 4 << 20;
+
+/// Split `edits` into commit-sized groups (a single edit over the limit
+/// goes alone; the engine chunks large files itself).
+fn batches(edits: Vec<Edit>) -> Vec<Vec<Edit>> {
+    let mut out: Vec<Vec<Edit>> = Vec::new();
+    let mut cur: Vec<Edit> = Vec::new();
+    let mut bytes = 0usize;
+    for ed in edits {
+        let n = match &ed {
+            Edit::Put { content, .. } => content.len(),
+            _ => 0,
+        };
+        if !cur.is_empty() && bytes + n > COMMIT_BATCH_BYTES {
+            out.push(std::mem::take(&mut cur));
+            bytes = 0;
+        }
+        bytes += n;
+        cur.push(ed);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 fn mkdir_private(d: &Path) -> ApiResult<()> {
     fs::create_dir_all(d).map_err(io_err)?;
     #[cfg(unix)]
@@ -207,8 +312,34 @@ impl LocalEngine {
         let t = HttpTransport::new(s.url, roots(&ca_file)?).map_err(|e| ApiError::new("server", e.to_string()))?;
         let (m, words) = match s.join {
             Join::Create { enrollment_token } => {
-                let w = Phrase::generate(&p).map_err(io_err)?;
-                let m = vault::create_vault(&p, &t, s.url, enrollment_token, &w, s.device_name).map_err(vault_err)?;
+                // The words are generated and kept in <state>/setup-words
+                // (0600, private state dir) BEFORE the server consumes the
+                // one-time token. If anything after create_vault fails, the
+                // next setup in the same state dir resumes: the vault on the
+                // server is joined from those words (bootstrap) instead of
+                // being stranded with a spent token and lost words. Removed
+                // once vault.json is written.
+                let pending = state.join("setup-words");
+                let w = match fs::read(&pending) {
+                    Ok(b) => {
+                        let b = Zeroizing::new(b);
+                        let text = std::str::from_utf8(&b).map_err(|_| ApiError::new("io", "setup-words is not text"))?;
+                        Phrase::parse(&p, text).map_err(|e| ApiError::new("io", format!("setup-words: {e}")))?
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let w = Phrase::generate(&p).map_err(io_err)?;
+                        write_private(&pending, w.to_text(&p).as_bytes())?;
+                        w
+                    }
+                    Err(e) => return Err(io_err(e)),
+                };
+                let m = match vault::bootstrap(&p, &t, s.url, &w, s.device_name) {
+                    Ok(m) => m,
+                    Err(VaultError::NoVault) => {
+                        vault::create_vault(&p, &t, s.url, enrollment_token, &w, s.device_name).map_err(vault_err)?
+                    }
+                    Err(e) => return Err(vault_err(e)),
+                };
                 (m, Some(w))
             }
             Join::Words { words } => {
@@ -259,6 +390,8 @@ impl LocalEngine {
         let tmp = state.join("vault.json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(&cfg).map_err(io_err)?).map_err(io_err)?;
         fs::rename(&tmp, config_path(&state)).map_err(io_err)?;
+        // setup finished: the words now live in the keystore Backup entry
+        let _ = fs::remove_file(state.join("setup-words"));
         Ok((LocalEngine { p, state, cfg, ks, net: net_open }, text))
     }
 
@@ -359,8 +492,12 @@ impl LocalEngine {
         loop {
             match vault::pair_complete(&self.p, &t, &mut m, &code) {
                 Ok((id, name)) => return Ok(format!("{} {name}", id.to_hex())),
-                // no reply yet (404) — the new device has not answered
-                Err(VaultError::Transport(e)) => {
+                // Retry only while the reply can still be there: not posted
+                // yet (404) or a transient network error (pair_complete
+                // purges the reply only after the new slot is on the server,
+                // and treats an already-landed slot as done). Anything else
+                // (410, 403, bad bytes, chain errors) ends the pairing.
+                Err(VaultError::Transport(e)) if retryable(&e) => {
                     if Instant::now() >= deadline {
                         return Err(ApiError::new("server", format!("no pairing reply in time ({e})")));
                     }
@@ -368,7 +505,6 @@ impl LocalEngine {
                 }
                 Err(e) => return Err(vault_err(e)),
             }
-        }
     }
 
     /// Revoke another device (needs the words: a new VK epoch is published).
@@ -407,11 +543,23 @@ impl LocalEngine {
         Ok(w.to_text(&self.p))
     }
 
-    /// Local edits: disk vs head tree.
-    fn edits(&self, before: &sync_core::commit::Tree, disk: &std::collections::BTreeMap<String, workdir::DiskFile>) -> ApiResult<Vec<Edit>> {
+    /// Local edits: disk vs head tree. A path is edited only if its disk
+    /// bytes differ from the head AND from what this device last synced
+    /// there (`idx`); a head path missing on disk is deleted only if this
+    /// device had it on disk. Everything else is a pending update the
+    /// materialise step still owes the folder, not a local change.
+    fn edits(
+        &self,
+        before: &sync_core::commit::Tree,
+        disk: &std::collections::BTreeMap<String, workdir::DiskFile>,
+        idx: Option<&DiskIndex>,
+    ) -> ApiResult<Vec<Edit>> {
         let mut edits = Vec::new();
         for (path, f) in disk {
             if before.0.get(path).map(|e| e.sha256) == Some(f.sha256) {
+                continue;
+            }
+            if idx.is_some_and(|i| i.holds(path, &f.sha256)) {
                 continue;
             }
             // the bytes committed are the bytes the scan hashed (anchored read)
@@ -419,7 +567,7 @@ impl LocalEngine {
             edits.push(Edit::Put { path: path.clone(), class: workdir::class_of(path), mtime_ms: f.mtime_ms, content });
         }
         for path in before.0.keys() {
-            if !disk.contains_key(path) {
+            if !disk.contains_key(path) && idx.is_none_or(|i| i.files.contains_key(path)) {
                 edits.push(Edit::Delete { path: path.clone() });
             }
         }
@@ -535,7 +683,8 @@ impl LocalEngine {
         let mut sum = SyncSummary::default();
         let before = e.head_tree().map_err(engine_err)?;
         let (disk, _) = workdir::scan(&self.p, &root).map_err(io_err)?;
-        let edits = self.edits(&before, &disk)?;
+        let idx = DiskIndex::load(&self.state)?;
+        let edits = self.edits(&before, &disk, idx.as_ref())?;
         let now = now_ms();
         for ed in &edits {
             if let Edit::Put { path, .. } = ed {
@@ -544,10 +693,14 @@ impl LocalEngine {
                 hist.with(&mut |s| s.record_external(path, now as u64).map(|_| ()))?;
             }
         }
-        if !edits.is_empty() {
-            let id = e.commit_local(&m.device.signer(), &m.roster(), now, edits).map_err(engine_err)?;
+        for batch in batches(edits) {
+            let id = e.commit_local(&m.device.signer(), &m.roster(), now, batch).map_err(engine_err)?;
             sum.committed = Some(id.to_hex());
         }
+        // Every path on disk now holds synced bytes: committed just now,
+        // equal to the head, or a pending update still at its old bytes.
+        let mut idx = DiskIndex { v: 1, files: disk.iter().map(|(p, f)| (p.clone(), hex32(&f.sha256))).collect() };
+        idx.save(&self.state)?;
         // Losers go to history inside the pass: a failed write aborts it
         // before the merged head is installed, so the next pass merges
         // again and offers the loser again (nothing is dropped silently).
@@ -586,6 +739,7 @@ impl LocalEngine {
                 continue;
             }
             workdir::remove(&root, path).map_err(io_err)?;
+            idx.files.remove(path);
             sum.removed += 1;
         }
         for (path, te) in &after.0 {
@@ -621,7 +775,9 @@ impl LocalEngine {
             }
             hist.with(&mut |s| s.record_own_save(path, now as u64).map(|_| ()))?;
             sum.written += 1;
+            idx.files.insert(path.clone(), hex32(&te.sha256));
         }
+        idx.save(&self.state)?;
         sum.head = e.head().map(|h| h.to_hex());
         Ok(sum)
     }

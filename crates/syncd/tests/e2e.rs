@@ -348,3 +348,46 @@ fn net_gate_refuses_every_server_connection() {
     assert!(a.status().unwrap().server_ok);
     sync(&lap, &a);
 }
+
+/// History sink that fails every write (full disk, broken journal).
+struct BrokenHistory;
+
+impl syncd::local::HistSink for BrokenHistory {
+    fn with(
+        &mut self,
+        _f: &mut dyn FnMut(&mut sync_core::history::Store) -> Result<(), sync_core::history::HistoryError>,
+    ) -> syncd::api::ApiResult<()> {
+        Err(syncd::api::ApiError::new("history", "journal unwritable"))
+    }
+}
+
+#[test]
+fn an_unapplied_remote_update_is_not_committed_back() {
+    let srv = server();
+    let (lap, desk) = (client("lap-pend"), client("desk-pend"));
+    let tok = srv.app.create_enrollment(None, 600).unwrap();
+    let (a, words) = setup(&lap, &srv.url, Join::Create { enrollment_token: &tok });
+    put(&lap, "n.md", b"v1\n");
+    sync(&lap, &a);
+    let (b, _) = setup(&desk, &srv.url, Join::Words { words: words.as_deref().unwrap() });
+    sync(&desk, &b);
+    assert_eq!(read(&desk, "n.md"), "v1\n");
+    put(&lap, "n.md", b"v2 from the laptop\n");
+    sync(&lap, &a);
+    // the desktop pulls v2, then the pass dies before n.md is rewritten:
+    // its folder still holds v1 while its head is v2
+    let err = b.sync_with(&mut BrokenHistory).expect_err("history snapshot fails");
+    assert_eq!(err.code, "history", "{err}");
+    assert_eq!(read(&desk, "n.md"), "v1\n");
+    // the next pass applies v2 instead of committing the stale v1 back
+    let s = sync(&desk, &b);
+    assert!(s.committed.is_none(), "stale disk bytes were committed as a local edit");
+    assert_eq!(read(&desk, "n.md"), "v2 from the laptop\n");
+    sync(&lap, &a);
+    assert_eq!(read(&lap, "n.md"), "v2 from the laptop\n");
+    // a real local edit after that is still picked up
+    put(&desk, "n.md", b"v3 from the desktop\n");
+    assert!(sync(&desk, &b).committed.is_some());
+    sync(&lap, &a);
+    assert_eq!(read(&lap, "n.md"), "v3 from the desktop\n");
+}

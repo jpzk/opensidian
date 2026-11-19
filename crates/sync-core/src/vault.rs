@@ -825,14 +825,19 @@ fn seal_pair(p: &FipsProvider, k_p: &[u8; 32], id: Id16, m: &PairMsg) -> Result<
 }
 
 fn take_pair(p: &FipsProvider, t: &dyn Transport, code: &PairCode, id: Id16) -> Result<PairMsg> {
+    let m = read_pair(p, t, code, id)?;
+    // single use: the reader purges it (server: DELETE on pair = purge)
+    t.delete(ObjKind::Pair, &code.ns, &id)?;
+    Ok(m)
+}
+
+fn read_pair(p: &FipsProvider, t: &dyn Transport, code: &PairCode, id: Id16) -> Result<PairMsg> {
     let f = t.get(ObjKind::Pair, &code.ns, &id, None)?;
     let o = open(p, &code.k_p, &env_ctx(id), &f.bytes)?;
     let body = Zeroizing::new(o.body);
     if o.kind != Kind::Pairing {
         return Err(VaultError::Format("pairing slot holds another kind".into()));
     }
-    // single use: the reader purges it (server: DELETE on pair = purge)
-    t.delete(ObjKind::Pair, &code.ns, &id)?;
     PairMsg::decode(&body).map_err(fmt_err)
 }
 
@@ -892,13 +897,16 @@ pub fn pair_accept(p: &FipsProvider, t: &HttpTransport, code: &PairCode, device_
     Ok(Joining { env: pv.envelope, device, words, server })
 }
 
-/// Inviter, step 3: read + purge the reply and give the new device a slot
+/// Inviter, step 3: read the reply, give the new device a slot, then purge it
 /// (cfg gen+1 signed by this device). The reply is single use, so a stale
 /// local chain (someone else appended meanwhile → 409) is re-fetched and
 /// the append retried. Returns the new device id and name.
 pub fn pair_complete(p: &FipsProvider, t: &dyn Transport, m: &mut Member, code: &PairCode) -> Result<(Id16, String)> {
     m.own_slot()?;
-    let PairMsg::Reply { device_id, key_alg, pubkey, name } = take_pair(p, t, code, code.reply_id(p))? else {
+    // The reply is purged only after the slot is on the server: a failed
+    // append leaves it in place, so the inviter can retry (spec §4.7).
+    let reply = code.reply_id(p);
+    let PairMsg::Reply { device_id, key_alg, pubkey, name } = read_pair(p, t, code, reply)? else {
         return Err(VaultError::Format("expected a pairing reply".into()));
     };
     if key_alg != KEY_ALG {
@@ -908,6 +916,11 @@ pub fn pair_complete(p: &FipsProvider, t: &dyn Transport, m: &mut Member, code: 
     for _ in 0..8 {
         let own = m.own_slot()?;
         let mut next = m.chain.successor();
+        if next.slots.iter().any(|s| s.device_id == device_id && s.state == SlotState::Active && s.pubkey == pubkey) {
+            // an earlier attempt's append landed (its reply was lost): done
+            let _ = t.delete(ObjKind::Pair, &code.ns, &reply);
+            return Ok((device_id, name));
+        }
         if next.slots.iter().any(|s| s.device_id == device_id && s.state != SlotState::Empty) {
             return Err(chain_err("device id already enrolled"));
         }
@@ -915,7 +928,14 @@ pub fn pair_complete(p: &FipsProvider, t: &dyn Transport, m: &mut Member, code: 
         next.slots[free] = Slot { state: SlotState::Active, device_id, key_alg, pubkey: pubkey.clone() };
         match append(p, t, &m.env, &ns, &mut m.chain, next, CfgSigner::Slot(own), &m.device.key) {
             Err(VaultError::Fork) => m.chain = fetch_chain(p, t, &m.env, &ns, None)?,
-            r => return r.map(|()| (device_id, name)),
+            Ok(()) => {
+                // best effort: a leftover reply holds only a public key and
+                // the server GC drops pair rows; a second complete is refused
+                // as "already enrolled"
+                let _ = t.delete(ObjKind::Pair, &code.ns, &reply);
+                return Ok((device_id, name));
+            }
+            Err(e) => return Err(e),
         }
     }
     Err(VaultError::Fork)
