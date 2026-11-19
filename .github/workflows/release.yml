@@ -43,7 +43,7 @@ on:
     tags: ['v*']
     # release branch v<ver>-release: builds and stages the DRAFT for tag v<ver>.
     # The tag itself is created by GitHub only when the operator publishes.
-    branches: ['v0.9.4-release']
+    branches: ['v0.9.6-release']
 
 permissions:
   contents: read
