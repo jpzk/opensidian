@@ -371,13 +371,24 @@ pub fn apply_patches(ours: &[char], hunks: &[Hunk]) -> Result<Vec<char>, DmpErro
 /// theirs' hunks already applied, which `Hunk::loc` carries), and it is
 /// applied only if ours holds exactly `old` there. Ours editing the span
 /// (change or context) = conflict, never a match on another occurrence.
+/// The alignment is computed twice, forward and on the reversed texts
+/// (opposite tie-breaking): if they place a hunk differently (ours holds
+/// equal-cost duplicates of it) the alignment cannot identify the
+/// original and the merge fails.
 pub fn merge3(base: &str, ours: &str, theirs: &str) -> Result<String, DmpError> {
     let b: Vec<char> = base.chars().collect();
     let o: Vec<char> = ours.chars().collect();
     let t: Vec<char> = theirs.chars().collect();
     let runs = diff(&b, &t)?;
     let hunks = make_patches(&b, &runs);
-    let ours_edits = regions(&diff(&b, &o)?);
+    let fwd = regions(&diff(&b, &o)?);
+    let rb: Vec<char> = b.iter().rev().copied().collect();
+    let ro: Vec<char> = o.iter().rev().copied().collect();
+    let rev: Vec<(usize, usize, Vec<char>)> = regions(&diff(&rb, &ro)?)
+        .into_iter()
+        .rev()
+        .map(|(s, e, ins)| (b.len() - e, b.len() - s, ins.into_iter().rev().collect()))
+        .collect();
     let mut r = o;
     let mut delta: isize = 0;
     for (n, ((cs, ce, ins), h)) in regions(&runs).iter().zip(&hunks).enumerate() {
@@ -388,22 +399,28 @@ pub fn merge3(base: &str, ours: &str, theirs: &str) -> Result<String, DmpError> 
         let pre = s.saturating_sub(h.loc);
         let post = h.old.len().saturating_sub(pre + (ce - cs));
         let (a, z) = (cs.saturating_sub(pre), ce + post);
-        let mut shift: isize = 0;
-        for (os, oe, oi) in &ours_edits {
-            let touched = if os == oe {
-                a < *os && *os < z // pure insertion strictly inside the span
-            } else {
-                *os < z && *oe > a
-            };
-            if touched {
-                return Err(DmpError::PatchFailed(n));
+        let shift_of = |edits: &[(usize, usize, Vec<char>)]| -> Option<isize> {
+            let mut shift: isize = 0;
+            for (os, oe, oi) in edits {
+                let touched = if os == oe {
+                    a < *os && *os < z // pure insertion strictly inside the span
+                } else {
+                    *os < z && *oe > a
+                };
+                if touched {
+                    return None;
+                }
+                if *oe <= a {
+                    shift += oi.len() as isize - (oe - os) as isize;
+                }
             }
-            if *oe <= a {
-                shift += oi.len() as isize - (oe - os) as isize;
-            }
-        }
-        let pos = h.loc as isize + shift;
-        let pos = usize::try_from(pos).map_err(|_| DmpError::PatchFailed(n))?;
+            Some(shift)
+        };
+        let shift = match (shift_of(&fwd), shift_of(&rev)) {
+            (Some(x), Some(y)) if x == y => x,
+            _ => return Err(DmpError::PatchFailed(n)),
+        };
+        let pos = usize::try_from(h.loc as isize + shift).map_err(|_| DmpError::PatchFailed(n))?;
         if r.get(pos..pos + h.old.len()) != Some(&h.old[..]) {
             return Err(DmpError::PatchFailed(n));
         }
