@@ -61,7 +61,8 @@ Untrusted / hostile:
 - revoked device (T7): gets no new VK epoch; old content it already had is
   out of scope (cannot un-know). If it held S (words, or a pairing offer
   that carried them — the default), it can still open the new envelope:
-  phrase rotation on revoke is NOT implemented yet (R6, spec §4.6 notes).
+  phrase rotation on revoke is out of suite v1 (R6, spec §4.6 notes; the
+  revoke reply warns, cut-off = new vault with new words).
 - destroy abuse: nobody without K_destroy can delete a vault on a server;
   soft DELETE is bounded by a server-enforced retention window, so a
   stolen write token cannot erase history immediately. M3b: the destroy
@@ -106,7 +107,9 @@ Untrusted / hostile:
 - R4 FIPS build needs CMake + Go + cc → reproducible-build impact
 - R5 Linux Secret Service has no per-item user-presence gate
 - R6 revoking a device that held S does not cut it off (no phrase
-  rotation yet) — review finding on #238, follow-up before release
+  rotation in suite v1: needs a re-rooted vault, i.e. a suite-v2 protocol
+  change) — review finding on #238, WONTFIX for v1; `syncd revoke` replies
+  with a `warning` saying so; cut-off = new vault with new words
 - R7 app save/delete history hooks log a failure and still write (D1/D3
   are best-effort when the history store itself fails) — review finding
   on #238, follow-up

@@ -1,21 +1,19 @@
 # CodeRabbit review of #238 (5aab838) — major findings triage
 
 Critical: 0 (the review posted no inline/critical comments). Major: 68.
-Status: FIXED = changed in this branch; OPEN = valid or plausible, not yet
-changed — every OPEN code fix needs a compile + test run on the build box,
-which is gone since 2026-11-18 22:31Z (no cargo on the agent VM).
-Each OPEN item is a follow-up and blocks goal_done (criterion 8).
+Status: FIXED = changed in this branch (commit named; built, tested and
+reason. 0 OPEN since 2026-11-19 (each item names its commit or reason).
 
 - crates/sync-crypto/tests/wycheproof.rs:12-12 Preserve the pinned fixture bytes on checkout. — FIXED (42235fe: .gitattributes marks crates/sync-crypto/vectors/** and wordlists/** -text; the test still asserts the pinned sha256)
-- crates/sync-core/src/vault.rs:708-709 Recover a published envelope when the cfg append fails. — OPEN
+- crates/sync-core/src/vault.rs:708-709 Recover a published envelope when the cfg append fails. — FIXED (3604d56: revoke retry adopts the envelope gen+1 a failed attempt published when it is exactly the old one plus a key at epoch+1, same vault + servers; else refused with refresh-first; test revoke_retry_adopts_the_envelope_a_failed_attempt_published)
 - crates/sync-core/src/vault.rs:883-883 Check the key epoch before activating a paired device. — FIXED (22fe9be: pair_join returns NeedWords when the cfg head vk_epoch is newer than the envelope epoch, same gate as from_daily/refresh_chain)
 - crates/sync-core/src/vault.rs:509-509 Reject chain refreshes that roll back the accepted cfg chain. — FIXED (22fe9be: refresh refuses a chain that is shorter than or forks the accepted cfg chain, envelope key epoch going back refused; test refresh_refuses_a_rolled_back_cfg_chain)
 - crates/sync-core/src/keystore.rs:140-140 Make directory durability handling platform-specific. — FIXED (42235fe: directory fsync cfg(unix); on Windows the rename is the durability point)
 - crates/sync-core/src/keystore.rs:134-134 Use a unique temporary file for each write. — FIXED (42235fe: create_new temp named pid.seq.nanos.attempt, removed on failure; test keystore_concurrent_puts_use_unique_temp_files)
 - crates/sync-core/src/keystore.rs:105-105 Windows keystore entries have no owner-only access control. — FIXED (42235fe: fail closed, FileKeystore::open refuses off unix instead of writing secrets without owner-only access; a Windows ACL/DPAPI keystore is a follow-up)
-- crates/sync-core/src/transport/fs.rs:250-250 Reject unsupported USB volumes during replica setup. — OPEN
-- crates/sync-core/src/transport/fs.rs:164-164 Read the replica log from the requested cursor. — OPEN
-- crates/sync-core/src/transport/fs.rs:233-235 Repair the list index before returning Identical. — OPEN
+- crates/sync-core/src/transport/fs.rs:250-250 Reject unsupported USB volumes during replica setup. — FIXED (a612c95: FsTransport::open probes the volume (create_new + exclusive lock + hard link sharing the inode + link refusing an existing name) and refuses FAT32/exFAT-like volumes with a Config error)
+- crates/sync-core/src/transport/fs.rs:164-164 Read the replica log from the requested cursor. — FIXED (a612c95: list seeks to (after * RECORD) and reads only new records in 25 KiB blocks; test fs_list_reads_from_the_cursor_and_skips_tombstones)
+- crates/sync-core/src/transport/fs.rs:233-235 Repair the list index before returning Identical. — FIXED (a612c95: Identical (both paths) appends the missing log record first; link dir fsync before the log names it; test fs_identical_retry_repairs_a_missing_log_record)
 - crates/sync-core/src/transport/http.rs:262-263 Enforce a deadline for the whole replica request. — FIXED (Deadline stream: per-op timeout = min(idle, time left), whole request <= timeout + REQUEST_BUDGET 300 s, TLS wraps it; test whole_request_deadline_beats_a_trickling_peer)
 - crates/sync-core/src/transport/http.rs:259-260 Check the resolved address before opening a plain HTTP connection. — FIXED (plain http skips every resolved non-loopback address; test plain_http_connects_to_loopback_addresses_only)
 - crates/sync-core/src/engine.rs:436-440 Detect ancestry cycles before expanding parents. — FIXED (22fe9be: cyclic parents stay pending, ready_and_gen terminates; test parent_cycle_is_pending_not_a_hang)
@@ -42,35 +40,35 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/history/mod.rs:567-568 Keep capture and restore inside the vault when a parent is a symlink. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/sync-core/src/history/mod.rs:571-573 Create restore staging files without replacing an existing file. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/sync-core/src/history/mod.rs:773-773 Do not leave the old journal writable after a replacement. — FIXED (0878c76: append handle opened on the temp file before the rename, assigned right after it; nothing fallible in between)
-- crates/sync-core/src/history/mod.rs:675-681 Preserve rename records needed to prevent old paths from reappearing. — OPEN
+- crates/sync-core/src/history/mod.rs:675-681 Preserve rename records needed to prevent old paths from reappearing. — FIXED (2537ef7: thin_plan keeps (fixpoint) every rename away from / tombstone of a path while an earlier record of it survives; test thin_keeps_the_rename_that_hides_an_older_name)
 - crates/sync-core/src/history/mod.rs:566-566 Stop restore when history skips the current file. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/sync-core/src/history/mod.rs:412-412 Discard the torn tail before decoding UTF-8. — FIXED (0878c76: only complete lines must be UTF-8, the torn tail after the last newline is cut; test torn_tail_inside_a_multibyte_char_is_dropped)
-- crates/sync-core/src/history/mod.rs:611-612 Keep history-write failures from being ignored during sync merges. — OPEN
-- crates/sync-core/src/history/mod.rs:42-43 Serialize daemon history writers on the engine lock. — OPEN
+- crates/sync-core/src/history/mod.rs:611-612 Keep history-write failures from being ignored during sync merges. — FIXED (2537ef7 + 7860ed6: Engine::sync_checked, a failed loser hook aborts before set_state; syncd records losers inside the pass and record_external failures fail the pass; e2e an_unapplied_remote_update_is_not_committed_back drives a failing sink)
+- crates/sync-core/src/history/mod.rs:42-43 Serialize daemon history writers on the engine lock. — FIXED (2537ef7: every syncd store open (sync pass, restore, readers: open cuts a torn tail) holds <state>/history.lock, busy otherwise; the app journal has its own writer (filehist))
 - crates/sync-core/src/history/cas.rs:58-58 Make new shard directories durable before journaling their blobs. — FIXED (0878c76: a new shard dir fsyncs objects/ before the blob is journaled; shard fsync errors propagate)
 - crates/sync-core/src/history/cas.rs:55-56 Verify existing blobs before treating a snapshot as recoverable. — FIXED (0878c76: dedup only if the existing blob hashes to its name, else rewritten; test a_corrupt_blob_is_replaced_not_deduplicated)
-- crates/syncd/src/api.rs:150-150 Use a compact wire representation for history bytes. — OPEN
+- crates/syncd/src/api.rs:150-150 Use a compact wire representation for history bytes. — FIXED (116d956: history-read reply is one base64 string, client cap 96 MiB; test history_bytes_travel_as_one_base64_string)
 - crates/sync-core/src/history/fsx.rs:41-43 Do not collect blobs after a failed journal directory sync. — FIXED (0878c76: sync_dir returns io::Result; rewrite returns the error before the blob sweep)
-- crates/syncd/src/local.rs:321-321 Retry pairing only while the reply is still available. — OPEN
+- crates/syncd/src/local.rs:321-321 Retry pairing only while the reply is still available. — FIXED (7860ed6: pair() retries only 404 / Io; pair_complete reads the reply, appends the slot, then purges; a slot that already landed counts as done)
 - crates/syncd/src/local.rs:245-245 Persist an absolute CA file path. — FIXED (2bb1be9: setup canonicalizes ca_file before connecting and persists that path)
 - crates/syncd/src/local.rs:441-442 Return the verified receipt even if local cleanup fails. — FIXED (2bb1be9: destroy returns the receipt; key-cleanup failures ride along in Receipt.cleanup_error)
 - crates/syncd/src/local.rs:498-498 Apply file and directory replacements in dependency order. — FIXED (deletions run before writes; a file replacing an emptied folder removes it via vaultfs::remove_empty_dir, a folder that still holds files or a refused parent is skipped for the next pass; test remove_empty_dir_only_removes_empty_real_dirs)
 - crates/syncd/src/local.rs:503-503 Keep the disk comparison valid through the write or delete. — FIXED (disk re-checked after the history snapshot, immediately before the write/delete; residual: a same-instant edit between that check and the rename is still in the snapshot taken right before, so it is recoverable from history — no portable compare-and-swap rename exists)
-- crates/syncd/src/local.rs:191-191 Keep keystore entries outside the synced vault. — FIXED (reject either dir containing the other) — uncompiled
-- crates/syncd/src/local.rs:248-249 Make setup resumable after the enrollment token is consumed. — OPEN
-- crates/syncd/src/local.rs:485-486 Resume pending disk updates before creating local edits. — OPEN
-- crates/syncd/src/local.rs:461-486 Commit large local edit sets in several batches, or sync stalls for vaults with more than about 12 MiB of changed inline content. — OPEN
-- crates/syncd/src/ipc.rs:104-104 Do not unlink a regular file at the socket path. — FIXED (stale path removed only if it is a socket) — uncompiled
-- crates/syncd/src/ipc.rs:154-158 Authenticate the daemon before sending backup words. — FIXED (client checks socket + 0700 dir owned by own uid before connect and before every request) — uncompiled
+- crates/syncd/src/local.rs:191-191 Keep keystore entries outside the synced vault. — FIXED (reject either dir containing the other) (compiled + tested on the build box since T0 26c2a87)
+- crates/syncd/src/local.rs:248-249 Make setup resumable after the enrollment token is consumed. — FIXED (7860ed6: Create writes the words to <state>/setup-words (0600) before the token is spent; a rerun bootstraps from them (create only on NoVault); removed after vault.json)
+- crates/syncd/src/local.rs:485-486 Resume pending disk updates before creating local edits. — FIXED (7860ed6: per-path disk index; a path is a local edit only if disk differs from head AND from the bytes last synced there; a head file never written is not deleted; e2e an_unapplied_remote_update_is_not_committed_back)
+- crates/syncd/src/local.rs:461-486 Commit large local edit sets in several batches, or sync stalls for vaults with more than about 12 MiB of changed inline content. — FIXED (7860ed6: local edits commit in batches of <= 4 MiB inline bytes (COMMIT_BATCH_BYTES))
+- crates/syncd/src/ipc.rs:104-104 Do not unlink a regular file at the socket path. — FIXED (stale path removed only if it is a socket) (compiled + tested on the build box since T0 26c2a87)
+- crates/syncd/src/ipc.rs:154-158 Authenticate the daemon before sending backup words. — FIXED (client checks socket + 0700 dir owned by own uid before connect and before every request) (compiled + tested on the build box since T0 26c2a87)
 - crates/syncd/src/workdir.rs:84-85 Check the file that sync actually reads. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - crates/syncd/src/workdir.rs:106-108 Anchor materialization to the vault directory. — FIXED (d0c2b51: sync-core vaultfs anchored read/write; tests vaultfs::*, history::restore_*)
 - src-tauri/src/syncui.rs:135-137 Apply the app's offline policy to desktop sync. — FIXED (7b8bfc3: LocalEngine::with_net_gate, every server connection asks it first; the desktop passes net_allowed (offline mode/lockdown) to every sync command and sync_setup checks it before connecting; test net_gate_refuses_every_server_connection)
 - src-tauri/src/main.rs:2164-2164 Notify the main window when history restores a note. — FIXED (e35b1d8: notify_restored emits vault-changed modified/added after the write; the editor re-reads the open tab via onVaultChanged)
-- src-tauri/src/main.rs:2186-2186 Restore the newest stored bytes, not the oldest. — FIXED (dropped .rev(); versions() is newest first) — uncompiled
+- src-tauri/src/main.rs:2186-2186 Restore the newest stored bytes, not the oldest. — FIXED (dropped .rev(); versions() is newest first) (compiled + tested on the build box since T0 26c2a87)
 - ui/sync.js:173-173 Discard stale history responses before updating the shared view. — FIXED (4284e77: viewGen bumped by every clearView; history_list/diff/deleted replies for an older view are dropped)
 - docs/sync/spec.md:217-220 Include rsig_pub in the cfg wire layout. — FIXED (docs)
 - docs/sync/spec.md:554-555 Do not promise snapshots when history hooks fail. — FIXED (docs)
 - docs/sync/spec.md:252-254 Update the pairing wire layout. — FIXED (docs)
-- docs/sync/spec.md:297-303 Rotate the phrase before publishing a new epoch to a former device. — DOCUMENTED as open residual (spec §4.6 notes, threat-model R6); code fix = phrase rotation on revoke, OPEN
+- docs/sync/spec.md:297-303 Rotate the phrase before publishing a new epoch to a former device. — WONTFIX for suite v1 (justified): without public-key encryption the new VK can only reach the remaining devices through the S-derived envelope, so any holder of S reads it; the only fix is rotating S, which re-roots the vault (new loc/K_wrap, new K_rsig = new cfg genesis anchor, new K_destroy = server re-enrollment) and needs a cfg wire change + a server endpoint, i.e. a suite-v2 protocol change, not a patch. Mitigation shipped: spec §4.6 + threat model R6 state the limit, the CLI revoke reply carries REVOKE_WARNING (create a new vault with new words to cut off a device that held S). Product decision recorded in goal QUESTION-phrase-rotation.md.
 - docs/sync/key-tree.md:3-4 Remove the validation claim. — FIXED (docs)
 - src-tauri/src/main.rs:8381-8382 Keep the vault open when the user closes Sync. (outside diff) — FIXED (93ca6cc: on_window_event returns early for SYNC_LABEL; test sync_window_close_skips_winsize_and_quit)

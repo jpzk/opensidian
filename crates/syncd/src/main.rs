@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use sync_core::keystore::FixedPresence;
 use syncd::api::{ApiError, SyncApi};
-use syncd::local::{config_path, Join, LocalEngine, Setup};
+use syncd::local::{config_path, Join, LocalEngine, Setup, REVOKE_WARNING};
 #[cfg(unix)]
 use syncd::ipc;
 
@@ -233,7 +233,12 @@ fn run(argv: Vec<String>) -> Result<(), ApiError> {
             a.done()?;
             let w = stdin_words()?;
             let epoch = local(&state)?.revoke(&id, &w)?;
-            out(&serde_json::json!({ "revoked": id, "vk_epoch": epoch }))
+            // spec §4.6 / threat model R6: no phrase rotation in suite v1
+            out(&serde_json::json!({
+                "revoked": id,
+                "vk_epoch": epoch,
+                "warning": REVOKE_WARNING,
+            }))
         }
         #[cfg(unix)]
         "daemon" => {

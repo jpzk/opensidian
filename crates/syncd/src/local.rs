@@ -109,6 +109,12 @@ fn item(e: &history::Entry) -> HistoryItem {
     }
 }
 
+/// Shown with every revoke (spec §4.6, threat model R6): suite v1 has no
+/// phrase rotation, so the new key epoch is only as private as the words.
+pub const REVOKE_WARNING: &str = "the revoked device gets no new key from this device, but a device that ever \
+held the 12 backup words (pairing shares them by default) can still open the new envelope and read new notes; \
+to cut such a device off, create a new vault with new words and move the notes";
+
 /// Pairing poll: worth another try (reply not posted yet, or the network).
 fn retryable(e: &sync_core::transport::TransportError) -> bool {
     use sync_core::sync_proto::api::ErrorCode;
