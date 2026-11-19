@@ -163,33 +163,58 @@ impl App {
 pub const RECEIPT_KEY_FILE: &str = "receipt_key.p8";
 
 /// Load the receipt key, or generate it with the module (first start).
-/// `create_new` so two racing starts cannot each write a different key.
+/// The key is written in full (fsync'd) to a unique temp file and published
+/// with `hard_link`, which fails if the name exists: a crash can never leave
+/// a half-written key under the final name, and of two racing starts the
+/// loser adopts the winner's key instead of writing its own.
 fn load_or_create_receipt_key(prov: &FipsProvider, data: &std::path::Path) -> Result<FipsSigningKey, String> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
     let path = data.join(RECEIPT_KEY_FILE);
-    match std::fs::read(&path) {
-        Ok(der) => {
-            let der = zeroize::Zeroizing::new(der);
-            return FipsSigningKey::from_pkcs8(&der).map_err(|_| format!("{}: not a P-256 PKCS#8 key", path.display()));
+    let load = || -> Result<Option<FipsSigningKey>, String> {
+        match std::fs::read(&path) {
+            Ok(der) => {
+                let der = zeroize::Zeroizing::new(der);
+                FipsSigningKey::from_pkcs8(&der)
+                    .map(Some)
+                    .map_err(|_| format!("{}: not a P-256 PKCS#8 key", path.display()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if let Some(k) = load()? {
+        return Ok(k);
     }
     let (key, _) = prov
         .generate_signing_key(SigAlg::EcdsaP256Sha256)
         .map_err(|e| format!("receipt key: {e:?}"))?;
     let der = key.to_pkcs8().map_err(|e| format!("receipt key: {e:?}"))?;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    f.write_all(&der)
-        .and_then(|_| f.sync_all())
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(key)
+    let tmp = data.join(format!(".{RECEIPT_KEY_FILE}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp); // stale leftover of a crashed start with our pid
+    let staged = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(&der)?;
+        f.sync_all()?;
+        std::fs::hard_link(&tmp, &path)
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    match staged {
+        Ok(()) => {
+            std::fs::File::open(data)
+                .and_then(|d| d.sync_all())
+                .map_err(|e| format!("{}: {e}", data.display()))?;
+            Ok(key)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            load()?.ok_or_else(|| format!("{}: vanished during start", path.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 

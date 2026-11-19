@@ -452,6 +452,10 @@ async fn get(app: &Arc<App>, kind: ObjKind, ns: Id16, id: Id16, req: Request<Inc
     if meta.deleted.is_some() && (!want_deleted || kind == ObjKind::Pair) {
         return Err(err(ErrorCode::Gone, "object deleted"));
     }
+    if meta.deleted.is_some() && meta.expires.is_none() {
+        // tombstone: gc reclaimed the bytes, only the id is remembered
+        return Err(err(ErrorCode::NotFound, "object purged"));
+    }
     if kind == ObjKind::Pair && meta.expires.is_some_and(|e| e <= now_unix()) {
         return Err(err(ErrorCode::Gone, "pairing object expired"));
     }
@@ -537,6 +541,17 @@ async fn destroy_confirm(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Inco
     let tok = decode_token(&r.confirm_token).ok_or_else(|| err(ErrorCode::Unauthorized, "malformed confirm token"))?;
     let hash = app.token_hash(&tok);
     let now = now_unix();
+    // A replayed confirm of a destroy that already committed (the client lost
+    // the response) gets the stored receipt again; it is bound to this token.
+    if let Some(receipt) = blocking(app, move |a| a.store.destroy_receipt(&ns, &hash)).await? {
+        return Ok(json(
+            StatusCode::OK,
+            &DestroyReceipt {
+                receipt: URL_SAFE_NO_PAD.encode(receipt),
+                server_key: app.receipt_pub.clone(),
+            },
+        ));
+    }
     let (nonce, pubk) = blocking(app, move |a| a.store.take_destroy_challenge(&ns, &hash, now)).await?;
     if (r.ts - now).abs() > DESTROY_TS_SKEW {
         return Err(err(ErrorCode::BadRequest, "ts outside the accepted window"));
@@ -548,19 +563,25 @@ async fn destroy_confirm(app: &Arc<App>, ip: IpAddr, ns: Id16, req: Request<Inco
         .verify(SigAlg::EcdsaP256Sha256, &pubk, &destroy_payload(&ns, &nonce, r.ts), &sig)
         .map_err(|_| err(ErrorCode::Forbidden, "destroy proof invalid"))?;
     let at = now_unix();
-    let purged = blocking(app, move |a| a.store.destroy_vault(&ns, at)).await?;
+    let ts = r.ts;
+    // The receipt is signed inside the destroy transaction and stored with
+    // the tombstone: a signing failure purges nothing, and a lost response
+    // is recovered by replaying the confirm (see above).
+    let (_, receipt) = blocking(app, move |a| {
+        a.store.destroy_vault(&ns, at, &hash, |purged| {
+            let rb = ReceiptBody {
+                ns,
+                server_nonce: nonce,
+                ts,
+                destroyed_at: at,
+                objects: purged.objects,
+                bytes: purged.bytes,
+            };
+            a.sign_receipt(&rb.encode()).ok()
+        })
+    })
+    .await?;
     app.changed.notify_waiters();
-    let rb = ReceiptBody {
-        ns,
-        server_nonce: nonce,
-        ts: r.ts,
-        destroyed_at: at,
-        objects: purged.objects,
-        bytes: purged.bytes,
-    };
-    let receipt = app
-        .sign_receipt(&rb.encode())
-        .map_err(|_| err(ErrorCode::Internal, "receipt signing failed"))?;
     Ok(json(
         StatusCode::OK,
         &DestroyReceipt {

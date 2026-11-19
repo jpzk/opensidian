@@ -379,6 +379,15 @@ fn soft_delete_retention_and_gc() {
     let r = call(s.addr, "GET", &format!("{p}?deleted=1"), &[("Authorization", &rd)], b"");
     assert_eq!(r.status, 404, "purged");
     assert_eq!(s.app.store.vault(&e.ns).unwrap().unwrap().used, 0, "quota released");
+    // the tombstone outlives the bytes: the id stays burned, quota is not
+    // debited twice by a second pass
+    assert_eq!(call(s.addr, "PUT", &p, &[("Authorization", &w)], &c).status, 410, "tombstone kept");
+    assert_eq!(s.app.store.gc(now_unix() + 202).unwrap(), 0, "already reclaimed");
+    assert_eq!(s.app.store.vault(&e.ns).unwrap().unwrap().used, 0);
+    let c2 = container(id(2), 44, 5);
+    let p2 = obj_path(&e.ns, &id(2));
+    assert_eq!(call(s.addr, "PUT", &p2, &[("Authorization", &w)], &c2).status, 201);
+    assert_eq!(s.app.store.vault(&e.ns).unwrap().unwrap().used, 100, "live object still counted");
 }
 
 #[test]
@@ -737,4 +746,43 @@ fn body_budget_is_shared_across_connections() {
     assert_eq!(r.status, 201, "second upload proceeds once the budget frees");
     assert!(t.elapsed() >= Duration::from_millis(1500), "second upload waited: {:?}", t.elapsed());
     assert_eq!(status_of(a), 400, "first upload hit its deadline");
+}
+
+#[test]
+fn reopen_restores_an_uncommitted_destroy_and_finishes_a_committed_one() {
+    use sync_proto::api::ObjKind;
+    let s = start(|_| {});
+    let e = enroll(&s, None);
+    let w = bearer(&e.write_token);
+    let c = container(id(1), 44, 5);
+    assert_eq!(call(s.addr, "PUT", &obj_path(&e.ns, &id(1)), &[("Authorization", &w)], &c).status, 201);
+    let live = s.dir.join("objects").join(e.ns.to_hex());
+    let staged = s.dir.join("tmp").join(format!("destroy-{}", e.ns.to_hex()));
+    // crash after the rename, before the commit: the vault is still live
+    std::fs::rename(&live, &staged).unwrap();
+    let st = sync_server::Store::open(&s.dir).expect("reopen");
+    assert!(live.is_dir() && !staged.exists(), "staged tree put back");
+    assert_eq!(st.read(&e.ns, ObjKind::Obj, &id(1), 0, c.len() as u64).unwrap(), c);
+    // a committed destroy whose cleanup did not run: reopen removes the tree
+    let (_, receipt) = st.destroy_vault(&e.ns, now_unix(), &[9u8; 32], |_| Some(b"r".to_vec())).unwrap();
+    assert_eq!(receipt, b"r");
+    std::fs::create_dir_all(staged.join("obj")).unwrap();
+    drop(st);
+    let st = sync_server::Store::open(&s.dir).expect("reopen 2");
+    assert!(!staged.exists() && !live.exists(), "purge finished");
+    assert_eq!(st.destroy_receipt(&e.ns, &[9u8; 32]).unwrap().as_deref(), Some(&b"r"[..]));
+    assert_eq!(st.destroy_receipt(&e.ns, &[8u8; 32]).unwrap(), None, "bound to the confirm token");
+}
+
+#[test]
+fn failed_receipt_signing_purges_nothing() {
+    use sync_proto::api::ObjKind;
+    let s = start(|_| {});
+    let e = enroll(&s, None);
+    let w = bearer(&e.write_token);
+    let c = container(id(1), 44, 5);
+    assert_eq!(call(s.addr, "PUT", &obj_path(&e.ns, &id(1)), &[("Authorization", &w)], &c).status, 201);
+    assert!(s.app.store.destroy_vault(&e.ns, now_unix(), &[1u8; 32], |_| None).is_err());
+    assert!(!s.app.store.destroyed(&e.ns).unwrap());
+    assert_eq!(s.app.store.read(&e.ns, ObjKind::Obj, &id(1), 0, c.len() as u64).unwrap(), c);
 }

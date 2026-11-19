@@ -137,7 +137,7 @@ CREATE INDEX IF NOT EXISTS object_seq ON object(ns, seq);
 CREATE TABLE IF NOT EXISTS destroy_chal(
   hash BLOB PRIMARY KEY, ns BLOB NOT NULL, nonce BLOB NOT NULL, expires INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS destroy_chal_ns ON destroy_chal(ns);
-CREATE TABLE IF NOT EXISTS destroyed(ns BLOB PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS destroyed(ns BLOB PRIMARY KEY, at INTEGER NOT NULL, receipt BLOB, chal BLOB);
 ";
 
 /// Outstanding destroy challenges per vault (spam bound on a tokenless path).
@@ -164,11 +164,36 @@ impl Store {
         }
         let conn = Connection::open(root.join("index.sqlite"))?;
         conn.execute_batch(SCHEMA)?;
-        // finish purges a crash interrupted after the destroy commit
+        // Older indexes predate the stored receipt; the columns are additive.
+        for col in ["receipt", "chal"] {
+            let has: bool = conn
+                .prepare("SELECT 1 FROM pragma_table_info('destroyed') WHERE name = ?1")?
+                .exists([col])?;
+            if !has {
+                conn.execute_batch(&format!("ALTER TABLE destroyed ADD COLUMN {col} BLOB"))?;
+            }
+        }
+        // A crash between the rename and the commit of a destroy leaves a
+        // staged `destroy-<ns>` tree: finish the purge only if the tombstone
+        // committed, otherwise the vault still exists and gets its files back.
         for e in fs::read_dir(root.join("tmp"))? {
             let e = e?;
-            if e.file_name().to_string_lossy().starts_with("destroy-") {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(hex) = name.strip_prefix("destroy-") else { continue };
+            let committed = match Id16::from_hex(hex) {
+                Ok(ns) => is_destroyed(&conn, &ns)?,
+                Err(_) => true, // not ours to restore: no vault has this name
+            };
+            if committed {
                 fs::remove_dir_all(e.path())?;
+            } else {
+                let dir = root.join("objects").join(hex);
+                if dir.exists() {
+                    // never overwrite: leave the staged tree for the operator
+                    continue;
+                }
+                fs::rename(e.path(), &dir)?;
+                sync_dir(&root.join("objects"))?;
             }
         }
         Ok(Store {
@@ -394,10 +419,26 @@ impl Store {
             params![&ns.0[..], kind_code(kind), &id.0[..], seq, size as i64, &sha256[..], expires],
         )?;
         let dst = self.obj_path(ns, kind, id);
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)?;
+        let parent = dst
+            .parent()
+            .ok_or(StoreError::new(ErrorCode::Internal, "object path"))?;
+        // The index must never name a file a crash can still lose: new shard
+        // directories and the rename itself are fsync'd before the commit.
+        let objects = self.root.join("objects");
+        let mut fresh = Vec::new();
+        let mut d = parent;
+        while d != objects && !d.exists() {
+            fresh.push(d.to_path_buf());
+            d = d.parent().ok_or(StoreError::new(ErrorCode::Internal, "object path"))?;
         }
+        fs::create_dir_all(parent)?;
         fs::rename(tmp, &dst)?;
+        sync_dir(parent)?;
+        for f in &fresh {
+            if let Some(p) = f.parent() {
+                sync_dir(p)?;
+            }
+        }
         tx.commit()?; // on any error above the transaction rolls back
         Ok(PutOutcome::Created)
     }
@@ -573,8 +614,21 @@ impl Store {
     /// challenge of `ns` and leave a tombstone. Under the connection lock, so
     /// no PUT can publish into the namespace concurrently; the object tree is
     /// renamed away inside the transaction and deleted after the commit
-    /// (`open` finishes the deletion if the process dies in between).
-    pub fn destroy_vault(&self, ns: &Id16, now: i64) -> Result<Purged> {
+    /// (`open` finishes the deletion if the process dies in between, or puts
+    /// the tree back if the commit never happened).
+    ///
+    /// `sign` turns the purge counts into the signed wire receipt; it runs
+    /// before the commit, so a signing failure purges nothing, and the
+    /// receipt is stored with the tombstone under `chal` (the hash of the
+    /// confirm token): a client that lost the response replays its confirm
+    /// and gets the same receipt back ([`Store::destroy_receipt`]).
+    pub fn destroy_vault(
+        &self,
+        ns: &Id16,
+        now: i64,
+        chal: &[u8; 32],
+        sign: impl FnOnce(Purged) -> Option<Vec<u8>>,
+    ) -> Result<(Purged, Vec<u8>)> {
         let mut c = self.conn();
         let tx = c.transaction()?;
         let (objects, bytes): (i64, i64) = tx.query_row(
@@ -582,13 +636,21 @@ impl Store {
             params![&ns.0[..]],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        let purged = Purged {
+            objects: objects as u64,
+            bytes: bytes as u64,
+        };
         tx.execute("DELETE FROM object WHERE ns = ?1", params![&ns.0[..]])?;
         tx.execute("DELETE FROM destroy_chal WHERE ns = ?1", params![&ns.0[..]])?;
         let n = tx.execute("DELETE FROM vault WHERE ns = ?1", params![&ns.0[..]])?;
         if n != 1 {
             return Err(StoreError::new(ErrorCode::Gone, "vault destroyed"));
         }
-        tx.execute("INSERT INTO destroyed(ns, at) VALUES (?1, ?2)", params![&ns.0[..], now])?;
+        let receipt = sign(purged).ok_or(StoreError::new(ErrorCode::Internal, "receipt signing failed"))?;
+        tx.execute(
+            "INSERT INTO destroyed(ns, at, receipt, chal) VALUES (?1, ?2, ?3, ?4)",
+            params![&ns.0[..], now, &receipt, &chal[..]],
+        )?;
         let dir = self.root.join("objects").join(ns.to_hex());
         let trash = self.root.join("tmp").join(format!("destroy-{}", ns.to_hex()));
         let moved = match fs::rename(&dir, &trash) {
@@ -603,11 +665,27 @@ impl Store {
             return Err(e.into());
         }
         if moved {
-            fs::remove_dir_all(&trash)?;
+            // The tombstone is committed: a failed cleanup must not turn a
+            // completed destroy into an error (`open` retries the removal).
+            let _ = fs::remove_dir_all(&trash);
         }
-        Ok(Purged {
-            objects: objects as u64,
-            bytes: bytes as u64,
+        Ok((purged, receipt))
+    }
+
+    /// The receipt stored by a committed destroy of `ns`, if `chal` is the
+    /// hash of the confirm token that destroyed it.
+    pub fn destroy_receipt(&self, ns: &Id16, chal: &[u8; 32]) -> Result<Option<Vec<u8>>> {
+        let row: Option<(Option<Vec<u8>>, Option<Vec<u8>>)> = self
+            .conn()
+            .query_row(
+                "SELECT receipt, chal FROM destroyed WHERE ns = ?1",
+                params![&ns.0[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((Some(receipt), Some(h))) if sync_crypto::ct_eq(&h, chal) => Some(receipt),
+            _ => None,
         })
     }
 
@@ -616,38 +694,57 @@ impl Store {
         is_destroyed(&self.conn(), ns)
     }
 
-    /// Remove every row whose `expires` has passed (soft-deleted objects past
-    /// retention, expired pairing objects). Returns the number purged.
+    /// Reclaim every object whose `expires` has passed (soft-deleted objects
+    /// past retention, expired pairing objects). Returns the number reclaimed.
+    ///
+    /// The row stays as a tombstone (`deleted` set, `size` 0, no `expires`):
+    /// a reclaimed id stays known to `missing` and can never be published
+    /// again with different bytes. Each object is reclaimed in its own
+    /// transaction that re-checks the row, so the quota is debited exactly
+    /// once and only for an object this pass actually reclaimed; the file is
+    /// unlinked after the commit (a crash in between leaves an unreferenced
+    /// file, never a row without its bytes).
     pub fn gc(&self, now: i64) -> Result<usize> {
-        let victims: Vec<(Vec<u8>, i64, Vec<u8>, i64)> = {
+        let victims: Vec<(Vec<u8>, i64, Vec<u8>)> = {
             let c = self.conn();
             c.execute("DELETE FROM destroy_chal WHERE expires < ?1", params![now])?;
             let mut st = c.prepare(
-                "SELECT ns, kind, id, size FROM object WHERE expires IS NOT NULL AND expires <= ?1",
+                "SELECT ns, kind, id FROM object WHERE expires IS NOT NULL AND expires <= ?1",
             )?;
-            let rows = st.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            let rows = st.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let mut n = 0;
-        for (ns, kind, id, size) in victims {
+        for (ns, kind, id) in victims {
             let (ns, id) = (id_from_blob(ns)?, id_from_blob(id)?);
             let kind = kind_from_code(kind).ok_or(StoreError::new(ErrorCode::Internal, "corrupt kind"))?;
-            match fs::remove_file(self.obj_path(&ns, kind, &id)) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
             let mut c = self.conn();
             let tx = c.transaction()?;
+            let size: Option<i64> = tx
+                .query_row(
+                    "SELECT size FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3
+                     AND expires IS NOT NULL AND expires <= ?4",
+                    params![&ns.0[..], kind_code(kind), &id.0[..], now],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(size) = size else { continue }; // reclaimed by a concurrent pass
             tx.execute(
-                "DELETE FROM object WHERE ns = ?1 AND kind = ?2 AND id = ?3",
-                params![&ns.0[..], kind_code(kind), &id.0[..]],
+                "UPDATE object SET deleted = COALESCE(deleted, ?4), expires = NULL, size = 0
+                 WHERE ns = ?1 AND kind = ?2 AND id = ?3",
+                params![&ns.0[..], kind_code(kind), &id.0[..], now],
             )?;
             tx.execute(
                 "UPDATE vault SET used = MAX(used - ?2, 0) WHERE ns = ?1",
                 params![&ns.0[..], size],
             )?;
             tx.commit()?;
+            drop(c);
+            match fs::remove_file(self.obj_path(&ns, kind, &id)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
             n += 1;
         }
         Ok(n)
@@ -659,4 +756,9 @@ fn is_destroyed(c: &Connection, ns: &Id16) -> Result<bool> {
         .query_row("SELECT 1 FROM destroyed WHERE ns = ?1", params![&ns.0[..]], |r| r.get(0))
         .optional()?;
     Ok(r.is_some())
+}
+
+/// fsync a directory so a rename or create inside it survives a crash.
+fn sync_dir(d: &Path) -> io::Result<()> {
+    fs::File::open(d)?.sync_all()
 }

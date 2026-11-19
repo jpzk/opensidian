@@ -199,6 +199,9 @@ pub fn missing_all(t: &dyn Transport, ns: &Id16, ids: &[Id16]) -> Result<Vec<Id1
     Ok(out)
 }
 
+/// Extra confirm attempts after a network failure in [`destroy_vault`].
+pub const DESTROY_CONFIRM_RETRIES: u32 = 2;
+
 /// Full 2-step destroy (spec §5): request a challenge, sign
 /// [`destroy_payload`] with K_destroy at `ts`, confirm, then verify the
 /// receipt against the server key pinned at enrollment. Returns the
@@ -216,14 +219,21 @@ pub fn destroy_vault<P: CryptoProvider>(
     let sig = prov
         .sign(k_destroy, &destroy_payload(ns, &nonce, ts))
         .map_err(|_| TransportError::Config("K_destroy signing failed".into()))?;
-    let receipt = t.destroy_confirm(
-        ns,
-        &DestroyConfirm {
-            confirm_token: ch.confirm_token,
-            ts,
-            sig: URL_SAFE_NO_PAD.encode(sig),
-        },
-    )?;
+    let confirm = DestroyConfirm {
+        confirm_token: ch.confirm_token,
+        ts,
+        sig: URL_SAFE_NO_PAD.encode(sig),
+    };
+    // The server stores the receipt with the tombstone and hands it out again
+    // for a replay of the same confirm, so a response lost after the purge
+    // committed is recovered by sending the confirm again.
+    let mut attempt = 0;
+    let receipt = loop {
+        match t.destroy_confirm(ns, &confirm) {
+            Err(TransportError::Io(_)) if attempt < DESTROY_CONFIRM_RETRIES => attempt += 1,
+            r => break r?,
+        }
+    };
     verify_receipt(prov, pinned_server_key, ns, &nonce, ts, &receipt)
 }
 

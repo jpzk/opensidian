@@ -314,18 +314,21 @@ fn http_destroy_without_proof_is_refused_with_proof_succeeds() {
     }
     let ts = now_unix();
     let sig = p.sign(&v.k_destroy, &destroy_payload(&v.ns, &nonce, ts)).unwrap();
-    let rc = t
-        .destroy_confirm(
-            &v.ns,
-            &DestroyConfirm {
-                confirm_token: ch.confirm_token,
-                ts,
-                sig: URL_SAFE_NO_PAD.encode(sig),
-            },
-        )
-        .expect("destroy with proof");
+    let confirm = DestroyConfirm {
+        confirm_token: ch.confirm_token.clone(),
+        ts,
+        sig: URL_SAFE_NO_PAD.encode(sig),
+    };
+    let rc = t.destroy_confirm(&v.ns, &confirm).expect("destroy with proof");
     let body = verify_receipt(&p, &v.server_key, &v.ns, &nonce, ts, &rc).expect("receipt");
     assert_eq!((body.ns, body.objects), (v.ns, 1));
+    // a lost response is recoverable: replaying the same confirm returns the
+    // stored receipt; another (unknown) confirm token gets nothing
+    let again = t.destroy_confirm(&v.ns, &confirm).expect("replayed confirm");
+    assert_eq!(again, rc, "same stored receipt");
+    let mut other = confirm.clone();
+    other.confirm_token = URL_SAFE_NO_PAD.encode([7u8; 32]);
+    assert_eq!(code(t.destroy_confirm(&v.ns, &other)), ErrorCode::Gone);
     let mut wire = URL_SAFE_NO_PAD.decode(&rc.receipt).unwrap();
     wire[40] ^= 1;
     let mut bad = rc.clone();
