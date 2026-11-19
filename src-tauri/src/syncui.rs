@@ -70,6 +70,7 @@ pub const GUARDED: &[&str] = &[
     "sync_set_mode",
     "sync_reveal",
     "sync_quiz",
+    "sync_census",
 ];
 
 /// Ok only for the trusted sync webview; EPERM for every other (the main
@@ -236,6 +237,27 @@ pub async fn sync_reveal<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: Sta
     Ok(words)
 }
 
+/// census-gate (#30): the TEST probe of the sync window. ui/sync.js publishes
+/// its page state (pane, configured, mode, word COUNT, quiz positions, history
+/// list/diff counts, control rects — never a word or a secret) as `[k:v]`
+/// tokens, and this puts them in the window's native title, where the GUI
+/// harness reads every window (xdotool). Answers only the sync webview, and
+/// only when the process runs with the census on (OPENSIDIAN_CENSUS=1 / devui).
+#[tauri::command]
+pub fn sync_census<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, tokens: String) -> Result<(), String> {
+    gate(win.label(), "sync_census")?;
+    if !crate::census::on() {
+        return Err("census is off".into());
+    }
+    win.set_title(&census_title(&tokens)).map_err(|e| e.to_string())
+}
+
+/// the sync window title with the census tokens: control chars dropped, capped
+pub fn census_title(tokens: &str) -> String {
+    let t: String = tokens.chars().filter(|c| !c.is_control()).take(4096).collect();
+    format!("opensidian — Sync {t}")
+}
+
 /// verify quiz: `picks` = (1-based position, word) — true when every one matches
 #[tauri::command]
 pub async fn sync_quiz<R: tauri::Runtime>(win: tauri::WebviewWindow<R>, v: State<'_, Vault>, picks: Vec<(usize, String)>) -> Result<bool, String> {
@@ -330,11 +352,13 @@ pub fn sync_open(app: tauri::AppHandle, pane: Option<String>, note: Option<Strin
         w.navigate(url).map_err(|e| e.to_string())?;
         return w.set_focus().map_err(|e| e.to_string());
     }
-    tauri::WebviewWindowBuilder::new(&app, SYNC_LABEL, tauri::WebviewUrl::CustomProtocol(url))
+    let b = tauri::WebviewWindowBuilder::new(&app, SYNC_LABEL, tauri::WebviewUrl::CustomProtocol(url))
         .title("opensidian — Sync")
         .inner_size(760.0, 640.0)
-        .min_inner_size(420.0, 360.0)
-        .build()
+        .min_inner_size(420.0, 360.0);
+    // census-gate (#30): the page publishes its state only when the census is on (sync_census)
+    let b = if crate::census::on() { b.initialization_script(crate::census::INIT_JS) } else { b };
+    b.build()
         .map(|_| ())
         .map_err(|e| format!("the sync window could not open: {e}"))
 }
@@ -422,6 +446,21 @@ mod tests {
         assert_eq!(page_url(None, Some("")).unwrap().as_str(), "tauri://localhost/sync.html?pane=sync");
     }
 
+    /// the census title keeps the fixed prefix, drops control chars, is capped;
+    /// the page's census block publishes the word COUNT, never the words
+    #[test]
+    fn census_title_and_page_probe() {
+        assert_eq!(census_title("[spane:sync]\n[x:1]\u{7}"), "opensidian — Sync [spane:sync][x:1]");
+        assert_eq!(census_title(&"a".repeat(9000)).chars().count(), "opensidian — Sync ".chars().count() + 4096);
+        let js = include_str!("../../ui/sync.js");
+        let probe = &js[js.find("census-gate (#30)").expect("census block")..js.find("/* ---- boot ---- */").expect("boot")];
+        assert!(probe.contains("if (window.__OS_CENSUS === true)"), "census block not behind the switch");
+        assert!(probe.contains("ws.children.length"), "word count");
+        for leak in ["ws.textContent", "ws.innerText", "li.textContent", "sync_reveal", "s-secret\").value"] {
+            assert!(!probe.contains(leak), "census block reads {leak}");
+        }
+    }
+
     #[test]
     fn quiz_and_diff() {
         let w = ["alpha", "bravo", "charlie"];
@@ -466,6 +505,7 @@ mod tests {
                 sync_set_mode,
                 sync_reveal,
                 sync_quiz,
+                sync_census,
             ])
             .build(mock_context(noop_assets()))
             .expect("mock app");
@@ -485,6 +525,7 @@ mod tests {
             ("sync_set_mode", json!({"mode": "auto-merge"})),
             ("sync_reveal", json!({})),
             ("sync_quiz", json!({"picks": [[1, "w"]]})),
+            ("sync_census", json!({"tokens": "[spane:sync]"})),
         ];
         assert_eq!(args.len(), GUARDED.len());
         let call = |w: &tauri::WebviewWindow<tauri::test::MockRuntime>, cmd: &str, a: &serde_json::Value| {
@@ -508,7 +549,9 @@ mod tests {
             assert!(s.starts_with(&format!("EPERM: {cmd}: ")), "{cmd} from main: {e}");
             let e = call(&sync, cmd, a).expect_err(cmd);
             let s = e.as_str().unwrap_or_default().to_string();
-            assert!(!s.contains("EPERM") && s.contains("no vault open"), "{cmd} from sync: {e}");
+            // sync_census needs no vault: from "sync" it reaches its body and stops at the census switch (off in tests)
+            let past_gate = if *cmd == "sync_census" { s.contains("census is off") } else { s.contains("no vault open") };
+            assert!(!s.contains("EPERM") && past_gate, "{cmd} from sync: {e}");
         }
     }
 }

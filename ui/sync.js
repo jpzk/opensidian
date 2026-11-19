@@ -217,6 +217,57 @@
   $("h-note").onkeydown = e => { if (e.key === "Enter") listVersions(); };
   $("h-deleted").onclick = listDeleted;
 
+  /* ---- census-gate (#30): the TEST probe of this window ----
+     Only when the app was started with the census on (window.__OS_CENSUS,
+     injected by sync_open): the page state goes into the native title as
+     [token:value] pairs, the way the main window publishes it, so the GUI
+     harness can read this window with xdotool. Counts, modes, rects and
+     status text only — never a backup word, a token or a secret. */
+  if (window.__OS_CENSUS === true) {
+    const vis = n => !!n && !n.hidden && n.getClientRects().length > 0;
+    const clean = s => String(s == null ? "" : s).replace(/[\[\]|\n\r]+/g, " ").trim().slice(0, 160);
+    const rc = n => { const r = n.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+    function tokens() {
+      const t = [], put = (k, v) => t.push("[" + k + ":" + v + "]");
+      put("spane", $("pane-history").hidden ? "sync" : "history");
+      put("sync", vis($("sync-on")) ? "on" : vis($("sync-off")) ? "off" : "?");
+      if (vis($("sync-on"))) {
+        put("smode", $("s-mode").value);
+        const dd = [...$("s-status").querySelectorAll("dd")].map(d => clean(d.textContent));
+        put("sstat", dd.join(";"));
+      }
+      const ws = $("words"), nw = vis(ws) ? ws.children.length : 0;
+      put("swords", nw + (nw ? ":" + clean($("words-left").textContent) + "s" : ""));
+      if (nw) put("swsel", getComputedStyle(ws).userSelect || getComputedStyle(ws).webkitUserSelect || "?");
+      const qf = [...$("quiz-fields").querySelectorAll("input")];
+      if (vis($("words-box"))) put("squiz", qf.map(i => i.dataset.pos).join(",") + "|" + clean($("quiz-result").textContent));
+      put("sres", clean($("s-result").textContent));
+      put("serr", clean($("s-err").textContent));
+      const items = [...$("h-list").children];
+      put("hlist", items.filter(li => li.classList.contains("item")).length + "|" + clean(items.length && !items[0].classList.contains("item") ? items[0].textContent : ""));
+      const d = $("h-diff"), cnt = op => d.querySelectorAll("span." + op).length;
+      put("hdiff", "eq=" + cnt("eq") + ",ins=" + cnt("ins") + ",del=" + cnt("del") + "|" + clean([...d.querySelectorAll("span.ins")].map(s => s.textContent).join(" ")).slice(0, 80));
+      put("hhead", clean($("h-head").textContent));
+      put("hrest", $("h-restore").disabled ? "off" : $("h-restore").dataset.armed ? "armed" : "on");
+      put("herr", clean($("h-err").textContent));
+      const R = [];
+      for (const id of ["tab-sync", "tab-history", "s-url", "s-device", "s-secret", "s-ca", "s-setup", "s-now", "s-mode", "s-reveal", "words-hide", "quiz-check", "h-note", "h-show", "h-deleted", "h-restore"])
+        if (vis($(id))) R.push(id + "=" + rc($(id)));
+      for (const r of document.querySelectorAll("input[name=s-join]")) if (vis(r)) R.push("join-" + r.value + "=" + rc(r));
+      for (const i of qf) if (vis(i)) R.push("q" + i.dataset.pos + "=" + rc(i));
+      if (nw) R.push("words=" + rc(ws));
+      items.forEach((li, k) => { if (vis(li)) R.push("h" + k + "=" + rc(li)); });
+      put("srect", R.join(";"));
+      return t.join(" ");
+    }
+    let last = "", due = null;
+    const publish = () => { due = null; const s = tokens(); if (s !== last) { last = s; inv("sync_census", { tokens: s }).catch(() => {}); } };
+    const soon = () => { if (!due) due = setTimeout(publish, 40); };
+    new MutationObserver(soon).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    for (const ev of ["input", "change", "resize", "scroll"]) window.addEventListener(ev, soon, true);
+    soon();
+  }
+
   /* ---- boot ---- */
   if (q.get("note")) $("h-note").value = q.get("note");
   const start = q.get("pane") === "history" ? "history" : "sync";
