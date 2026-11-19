@@ -49,6 +49,13 @@ expect_fail "RED: AGPL on a deb (not an exception)" "not allowed: AGPL-3.0-or-la
   "$gate" "$(mut '(.components[] | select(.name == "webkit2gtk") | .licenses) += [{license: {id: "AGPL-3.0-or-later"}}]')"
 expect_fail "RED: unmapped deb license.name" 'not allowed: "BSD-like" (license.name)' \
   "$gate" "$(mut '(.components[] | select(.name == "libfoo") | .licenses) = [{license: {name: "BSD-like"}}]')"
+# per-source-package deb exceptions (DEP-5 terms reviewed per package): they cover only the named package
+expect_pass "per-package deb exception covers its package (webkit2gtk BSD-3-clause-apple, MPL-1.1)" \
+  "$gate" "$(mut '(.components[] | select(.name == "webkit2gtk") | .licenses) += [{license: {name: "BSD-3-clause-apple"}}, {license: {id: "MPL-1.1"}}]')"
+expect_fail "RED: a per-package deb exception does not cover another deb" 'DENY pkg:deb/ubuntu/libfoo@1.0?arch=source&distro=resolute: not allowed: "BSD-3-clause-apple" (license.name)' \
+  "$gate" "$(mut '(.components[] | select(.name == "libfoo") | .licenses) += [{license: {name: "BSD-3-clause-apple"}}]')"
+expect_fail "RED: GPL-2.0-only is excepted per package only (util-linux programs), not for every deb" "not allowed: GPL-2.0-only" \
+  "$gate" "$(mut '(.components[] | select(.name == "libfoo") | .licenses) += [{license: {id: "GPL-2.0-only"}}]')"
 expect_fail "RED: LicenseRef-flathub-runtime outside the flatpak runtime" "DENY pkg:github/google/brotli@v1.2.1: not allowed: \"LicenseRef-flathub-runtime\" (license.name)" \
   "$gate" "$(mut '(.components[] | select(.name == "brotli") | .licenses) = [{license: {name: "LicenseRef-flathub-runtime"}}]')"
 expect_fail "RED: root with a non-GPL license" "DENY <root opensidian>: not allowed: \"Proprietary\" (license.name)" \
