@@ -312,8 +312,18 @@ jobs:
           # .results; anything else (127/128, no network, bad SBOM) fails this step
           scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-macos-$ARCH.json" \
             "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
-            -L "$RUNNER_TEMP/out/$F"
-          echo "scanned packages: $(jq '[.results[].packages[]?] | length' "$RUNNER_TEMP/osv-macos-$ARCH.json")"
+            -L "$RUNNER_TEMP/out/$F" 2> "$RUNNER_TEMP/osv.err" \
+            || { cat "$RUNNER_TEMP/osv.err" >&2; exit 1; }
+          cat "$RUNNER_TEMP/osv.err" >&2
+          # the JSON lists only packages WITH (unfiltered) vulnerabilities, so prove coverage from
+          # osv-scanner's own "found N packages" line: it must equal the SBOM's cargo + npm purls
+          # (the WKWebView OS component has no purl and is not OSV-scannable, see its description)
+          n=$(sed -n 's/^Scanned .* file and found \([0-9][0-9]*\) packages$/\1/p' "$RUNNER_TEMP/osv.err")
+          want=$(jq '[.components[] | select(.purl // "" | test("^pkg:(cargo|npm)/"))] | length' "$RUNNER_TEMP/out/$F")
+          echo "osv-scanner read ${n:-?} packages from the SBOM; SBOM cargo + npm purls: $want"
+          [ -n "$n" ] && [ "$want" -gt 0 ] && [ "$n" -eq "$want" ] \
+            || { echo "::error::osv-scanner did not read every SBOM package (${n:-none} != $want)"; exit 1; }
+          echo "packages listed with vulnerabilities after the VEX filter: $(jq '[.results[].packages[]?] | length' "$RUNNER_TEMP/osv-macos-$ARCH.json")"
           jq -r '.results[].packages[]? | select((.vulnerabilities // []) | length > 0)
                  | "\(.package.ecosystem) \(.package.name)@\(.package.version): \([.vulnerabilities[].id] | join(", "))"' \
             "$RUNNER_TEMP/osv-macos-$ARCH.json" | tee "$RUNNER_TEMP/findings.txt"
