@@ -7444,7 +7444,7 @@ function pvTitleRename(view, e) {
   if (!t || !f || !el || !el.isConnected || el.querySelector(".exren")) return false;
   const p = String(f.path || "");
   if (!/\.md$/i.test(p)) return false;     // only a note-backed view renames through the note tail
-  let caret;
+  let caret = p.slice(0, -3).split("/").pop().length;   // no hit on the text (a click beside it): the caret at the end
   try {
     const cr = e && document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
     if (cr && cr.startContainer && el.contains(cr.startContainer)) caret = cr.startOffset;
