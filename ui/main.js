@@ -129,6 +129,15 @@ let PTABGONE = null;
    function that reads it at top-level evaluation time (renderTabs re-hosts an open tab editor). */
 let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, row, orig, label, tab, moving}
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
+/* #242: stock 1.13.7 never shows a main area without a leaf. Closing the last tab (Ctrl+W, the tab's
+   close glyph, Close all, the empty state's Close) leaves ONE empty "New tab" leaf whose empty state
+   offers Create new note / Go to file / Close. Here a tab is a note name, so that leaf is the lone
+   group's empty tab list: once the vault has booted (leafBoot) a group with zero tabs paints the
+   "New tab" header + the empty state, counts as one tab in the census ([tabs:1] [tord:empty*]) and is
+   written to workspace.json as Obsidian's `empty` leaf (restored as such on the next start). Opening
+   a note there fills it, as stock replaces its empty leaf. Before boot the window has no leaf yet. */
+let leafBoot = false;
+const emptyLeaf = g => leafBoot && !!g && !g.tabs.length;
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
 // Rust renderer feeds — lp/source render in JS, see ui/editor.js)
@@ -3098,6 +3107,10 @@ function wsNode(node) {
              children: kids.filter(Boolean),
              direction: node.dir === "row" ? "vertical" : "horizontal" };
   }
+  // #242: the empty leaf is written as Obsidian writes it (one leaf of type `empty`), never a 0-leaf layout
+  if (emptyLeaf(node))
+    return { id: wsIdOf(node, "wid"), type: "tabs",
+             children: [{ id: wsIdOf(node, "eid"), type: "leaf", state: { type: "empty", state: {} } }] };
   const tabs = node.tabs.filter(wsPersistable);
   const act = node.active >= 0 ? tabs.indexOf(node.tabs[node.active]) : -1;
   const o = { id: wsIdOf(node, "wid"), type: "tabs", children: tabs.map(t => {
@@ -3170,7 +3183,7 @@ function wsDoc() {
   // W4: unknown top-level keys, where Obsidian puts its own extra key (left-ribbon)
   if (wsExtra) for (const k of Object.keys(wsExtra)) d[k] = wsClone(wsExtra[k]);
   return Object.assign(d, {
-    active: wsPersistable(ft) ? wsIdOf(ft, "lid") : "",   // R28.12: focus lands on the NAMED leaf
+    active: wsPersistable(ft) ? wsIdOf(ft, "lid") : emptyLeaf(fg()) ? wsIdOf(fg(), "eid") : "",   // R28.12: focus lands on the NAMED leaf (#242: or the empty one)
     // R28.15: `lastOpenFiles` is the note-use order, newest first. It is the
     // SAME list the quick switcher already keeps (mruList) rather than a second
     // one that could disagree with it — nothing reads the key back yet beyond
@@ -3352,6 +3365,19 @@ function wsLinksIn(gs) {
     if (key) wsGrp[key] = hex;
   }
 }
+/* #242: the ids of the main area's leaves when EVERY leaf in it is an `empty` one, else null
+   (a leaf of any other type, or a malformed node, means the layout was not just the empty leaf). */
+function wsEmptyLeaves(node, out = []) {
+  if (!node || typeof node !== "object" || !Array.isArray(node.children)) return null;
+  for (const c of node.children) {
+    if (!c || typeof c !== "object") return null;
+    if (c.type === "leaf") {
+      if (!c.state || c.state.type !== "empty") return null;
+      out.push(typeof c.id === "string" ? c.id : "");
+    } else if (!wsEmptyLeaves(c, out)) return null;
+  }
+  return out;
+}
 function wsNodeIn(node, have) {
   if (!node || typeof node !== "object") return null;
   if (node.type === "split" && Array.isArray(node.children)) {
@@ -3402,7 +3428,7 @@ function wsNodeIn(node, have) {
 async function wsRead() {
   try { return await inv("read_workspace"); } catch (e) { return null; }
 }
-async function wsApply(doc, names) {
+async function wsApply(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
   if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
   // W4: captured BEFORE anything can bail — even a file whose main area is
   // unusable must not lose its unknown keys or its sidebars on the next write
@@ -3421,6 +3447,14 @@ async function wsApply(doc, names) {
     try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
     wsSide0 = { left: sidePane, right: rTab };
     wsSideIdsIn(doc);
+    // #242: a main area that holds ONLY Obsidian `empty` leaves (what closing the last tab writes, here and in
+    // stock) comes back as that empty leaf, not as the first-launch note. A layout whose notes were all
+    // dropped (gone from disk, unknown) still takes the first-launch path (R28.13).
+    const el = wsEmptyLeaves(doc.main);
+    if (boot && el && el.length) {
+      const g = fg();
+      if (g && !g.tabs.length) { if (typeof el[0] === "string" && el[0]) g.eid = el[0]; return "empty"; }
+    }
     return false;
   }
   if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
@@ -3586,6 +3620,7 @@ async function wsmLoad(name) {
     state.focused = null;
     renderLayout();
     focusGroup(g);
+    if (emptyLeaf(g)) showEmptyLeaf(g);     // #242: stock's empty leaf, with its empty state
     renderTabs(g);
   }
   wsmLoadsN++;
@@ -4161,6 +4196,7 @@ function utBuild() {             // pane/focus census in the window title (headl
     const tg = fg();
     if (tg && tg.tabs.length) lg += " [tord:" + tg.tabs.map((t, i) =>
       String(t.kind ? t.kind : t.name).split("/").pop().replace(/[[\]|*]/g, "") + (i === tg.active ? "*" : "")).join("|") + "]";
+    else if (emptyLeaf(tg)) lg += " [tord:empty*]";   // #242: the empty "New tab" leaf, named by its kind like gg / lg
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -4635,7 +4671,7 @@ function utBuild() {             // pane/focus census in the window title (headl
     : "";
   let t = "Opensidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
+            " [tabs:" + groups().map(g => g.tabs.length || (emptyLeaf(g) ? 1 : 0)).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -5032,10 +5068,8 @@ async function closeAllTabs(g) {           // Close all: a split pane goes with 
      pane stays: R38.6 was measured on a lone group, and there the group is not
      removed. That case cannot go through closeTab (it would collapse nothing but
      must still tear the tab down), so it keeps the hand teardown below.
-     DEVIATION, stated: Obsidian leaves an empty leaf whose tab reads `New tab`; we
-     have no empty-tab entity (a tab is a note name), so the group survives with
-     ZERO tabs — observably [tabs:0] with the pane still there, one tab row
-     fewer than Obsidian. docs/recon-tabmenu/README.md records it. */
+     #242: like stock, the group is then the empty "New tab" leaf (emptyLeaf): zero tabs in the
+     model, painted and counted as the one empty leaf ([tabs:1] [tord:empty*]), never [tabs:0]. */
   if (groups().length > 1) return closeTab(g, 0, undefined, "closeAll");
   const t = g.tabs[0];
   await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
@@ -5652,6 +5686,21 @@ function renderTabs(g) {
       d.classList.add("renaming"); ren.row = d; ren.tn = ttl;
     }
   });
+  if (emptyLeaf(g)) {                            // #242: the empty leaf's own tab header, stock "New tab" + close glyph
+    const d = document.createElement("div");
+    d.className = "tab workspace-tab-header active is-active etab";
+    const ttl = document.createElement("span");
+    ttl.className = "t workspace-tab-header-inner-title";
+    ttl.textContent = I18N.m("New tab");
+    const x = document.createElement("span");
+    x.className = "x workspace-tab-header-inner-close-button";
+    x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
+      'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
+    x.onclick = e => { e.stopPropagation(); closeEmptyLeaf(g, "close-glyph"); };
+    d.append(ttl, x);
+    d.onclick = () => focusGroup(g);
+    g.tabsEl.appendChild(d);
+  }
   if (ren) {
     if (exRen === ren && ren.inp.isConnected) {
       const a = ren.inp.selectionStart, b = ren.inp.selectionEnd;
@@ -6484,6 +6533,7 @@ async function loadActive(g) {
      and the markdown toggle from the DOM: [hdra:1:gg:mode-edit@..]. */
   updateModeBtn(g);
   if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
+  if (g.emptyEl) g.emptyEl.hidden = true;   // #242: shown again below only while this group is the empty leaf
   if (PVHOST) PVHOST.hide(g, t);   // plugin-views: another tab shows -> this pane's plugin views hide
   if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
     showEditor(g);                  // stops a graph sim this pane may have been running
@@ -6571,10 +6621,49 @@ async function loadActive(g) {
       if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
   } else if (isLp(m) && v.snap && Ed.cm(g)) Ed.land(Ed.cm(g), v.snap);   // #125/#137: the retained edit position, as a CM6 effect
+  if (!t && emptyLeaf(g)) showEmptyLeaf(g);   // #242: no tab = stock's empty "New tab" leaf, not a blank editor
   renderTabs(g);
   treeHighlight();
   updateStatus(g);                   // word/char count sync, backlinks async (not awaited: outside the action span)
   await lgFollow(g);                 // R7.3: linked localgraphs track this group
+}
+
+/* #242: the empty leaf's view — stock 1.13.7's empty state, three actions, centred (measured shot
+   notabs/stock-1137-2: Create new note (Ctrl + N), Go to file (Ctrl + O), Close). The note views are
+   hidden; the next loadActive of a real tab (applyMode) shows them again and hides this one. */
+function showEmptyLeaf(g) {
+  g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
+  if (!g.emptyEl) {
+    g.emptyEl = document.createElement("div");
+    g.emptyEl.className = "empty-state";
+    const acts = [
+      [I18N.m("Create new note (Ctrl + N)"), "new", () => cmdNewNote()],
+      [I18N.m("Go to file (Ctrl + O)"), "goto", () => cmdQuickSwitch()],
+      [I18N.m("Close"), "close", () => closeEmptyLeaf(g, "empty-state")],
+    ];
+    const box = document.createElement("div");
+    box.className = "empty-state-container";
+    for (const [label, id, fn] of acts) {
+      const a = document.createElement("div");
+      a.className = "empty-state-action";
+      a.dataset.act = id;
+      a.textContent = label;
+      a.onclick = e => { e.stopPropagation(); focusGroup(g); fn(); };
+      box.append(a);
+    }
+    g.emptyEl.append(box);
+    g.content.append(g.emptyEl);
+  }
+  g.emptyEl.hidden = false;
+}
+/* #242: closing the empty leaf (its close glyph, Ctrl+W, the empty state's Close). Stock leaves the
+   main area with an empty leaf again, so the lone pane stays exactly as it is; a pane of a split
+   (never empty here — R6.5 removes it with its last tab) would leave the tree like any closed pane. */
+async function closeEmptyLeaf(g, via) {
+  if (!emptyLeaf(g)) return;
+  if (groups().length > 1) return collapseGroup(g, via || "closeEmptyLeaf");
+  focusGroup(g);
+  await loadActive(g);
 }
 
 // R7.3: any localgraph tab linked to `src` re-centers on src's active note
@@ -8142,6 +8231,7 @@ async function cmdSave() {                   // force save, no debounce
 }
 async function cmdCloseTab() {
   if (state && fg().active >= 0) await closeTab(fg(), fg().active, "user-close", "cmdCloseTab");
+  else if (state && emptyLeaf(fg())) await closeEmptyLeaf(fg(), "cmdCloseTab");   // #242: Ctrl+W on the empty leaf
 }
 async function cmdNewTab() {       // R5.3 ctrl+t — v1: new tab on the current note
   if (!state) return;              // (no empty-tab state yet; graph tabs no-op)
@@ -11024,10 +11114,6 @@ const CMDS = [
   ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
   ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
-  // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
-  // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
-  ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
-    () => !!(CANVAS && CANVAS.isRegistered()) && groups().every(g => !g.tabs.length)],
   // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on
   // (when = the palette; coreOff below = Hotkeys and app.commands), as stock registers / unregisters them
   ["daily-notes",              "Daily notes: Open today's daily note", [],                      () => dnOpenToday("cmd"), dnOn],
@@ -13307,10 +13393,14 @@ async function enterVault() {
   // R28.7 / R28.13: the restore, or — if there is no file, it is corrupt, or
   // nothing in it survived the degrade rule — the ordinary first-launch path.
   // Both land on a usable window; that is the whole point of R28.13.
-  if (!await wsApply(wdoc, names)) {
+  if (!await wsApply(wdoc, names, true)) {
     if (names.length) await openInTab(names[0], "boot");
     else renderTabs(g);
   }
+  // #242: the layout is in — from here a group without tabs is stock's empty "New tab" leaf (an empty
+  // vault, or a restored empty leaf), painted with its empty state
+  leafBoot = true;
+  for (const h of groups()) if (!h.tabs.length) await loadActive(h);
   wsmRefresh();                      // #94: the saved layouts of THIS vault, for the census and the manager (unawaited)
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
