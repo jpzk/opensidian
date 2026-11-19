@@ -425,7 +425,23 @@ notes) and the remedy for lost words or a lost/stolen device is:
    errors). Receipt checked against the server key pinned at enrollment
    and kept as `<state>/burned-<old id>.receipt.json`; the old state dir
    is renamed `<state>.burned-<old id>`, old keystore entries deleted.
-   Every step is resumable (a rerun reuses the staging dir).
+   Resumability: until the destroy, a rerun reuses the staging dir
+   `<state>.move` (same folder and destination, no new token). The
+   verified receipt is written into the staging dir (fsync file + dir)
+   BEFORE either rename — it is the durable phase record "old vault
+   destroyed". A rerun that finds it skips the old-vault membership
+   check, the seed pass and the destroy (the old vault is gone; nothing
+   talks to it) and only does the renames. A crash between the two
+   renames leaves no `<state>` config: the next open of `<state>`
+   (CLI, daemon, app) sees the staging config + receipt +
+   `<state>.burned-<old id>` and finishes the second rename. A crash
+   after the server committed the destroy but before the receipt was
+   saved cannot be told apart from a destroyed vault without a receipt:
+   the rerun gets 410 (`no-vault`) at the membership check and stops;
+   the staged new vault is intact in `<state>.move` (recover by hand:
+   rename it to `<state>`; the old vault is destroyed). An incomplete
+   destroy response within one run replays the same confirm (§5), it
+   never starts a second destroy.
 3. **Other devices** join the new vault from the NEW words (§4.4–4.6
    join). On the old vault they get 410 → `no-vault` ("vault destroyed —
    join the new vault"); the daemon stops polling. An old-vault device

@@ -285,6 +285,26 @@ fn move_burns_the_old_vault() {
     assert!(h.as_array().unwrap().len() >= 2, "file history moved with the vault: {h}");
     // the old vault is gone for B
     assert_eq!(ok(&cli(&b, &["--local", "status"], None))["server_ok"], false);
+
+    // resumable after the destroy (spec §4.9): put the dirs back to "destroy
+    // done + receipt saved in staging, no rename yet". The rerun must not
+    // touch the destroyed vault (its membership check would get 410) nor
+    // need a new token (tok2 is spent): it only finishes the renames.
+    let staging = PathBuf::from(format!("{}.move", a.state.display()));
+    let burned = PathBuf::from(format!("{}.burned-{old}", a.state.display()));
+    std::fs::rename(&a.state, &staging).unwrap();
+    std::fs::rename(&burned, &a.state).unwrap();
+    let o = cli(&a, &["--local", "move", "--enroll", &tok2], Some(words.as_str()));
+    let r = ok(&o);
+    assert_eq!(r["moved"]["new_vault_id"], new.as_str(), "{r}");
+    assert!(r["moved"]["destroyed"]["objects"].as_u64().unwrap() > 0, "the saved receipt is reported");
+    assert!(!staging.exists() && burned.exists());
+    assert_eq!(ok(&cli(&a, &["--local", "status"], None))["vault_id"], new.as_str());
+    // a crash between the two renames (no <state>): the next open finishes it
+    std::fs::rename(&a.state, &staging).unwrap();
+    let st = ok(&cli(&a, &["--local", "status"], None));
+    assert_eq!(st["vault_id"], new.as_str());
+    assert!(!staging.exists() && a.state.join(format!("burned-{old}.receipt.json")).exists());
 }
 /// `$XDG_RUNTIME_DIR` stand-in: TMPDIR can be too long for sun_path
 /// (108 bytes) once `opensidian-syncd/<32 hex>.sock` is appended.

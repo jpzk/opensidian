@@ -299,6 +299,52 @@ fn net_open(_: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// fsync a directory so a rename / create inside it is durable.
+fn sync_dir(d: &Path) -> ApiResult<()> {
+    fs::File::open(d).and_then(|f| f.sync_all()).map_err(io_err)
+}
+
+/// `burned-<old vault id>.receipt.json`: the verified destroy receipt of a
+/// move. It is written into the staging dir BEFORE either rename, so it is
+/// the durable record that the old vault is gone (spec §4.9 phase 6).
+fn receipt_name(old_vid: &str) -> String {
+    format!("burned-{old_vid}.receipt.json")
+}
+
+/// The old vault of an interrupted move whose destroy completed: the
+/// staging dir holds a config and `burned-<id>.receipt.json`. Returns the
+/// old vault id (hex).
+fn staged_burn(staging: &Path) -> ApiResult<Option<String>> {
+    if !config_path(staging).exists() {
+        return Ok(None);
+    }
+    let rd = match fs::read_dir(staging) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io_err(e)),
+    };
+    for ent in rd {
+        let n = ent.map_err(io_err)?.file_name();
+        if let Some(id) = n.to_str().and_then(|n| n.strip_prefix("burned-")).and_then(|n| n.strip_suffix(".receipt.json")) {
+            if Id16::from_hex(id).is_ok() {
+                return Ok(Some(id.to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Final step of a move: `<state>` -> `<state>.burned-<old>` (if still
+/// there), staging -> `<state>`, the parent dir synced. Idempotent, so a
+/// crash between the two renames finishes on the next open.
+fn finish_move(state: &Path, staging: &Path, burned: &Path) -> ApiResult<()> {
+    if config_path(state).exists() {
+        fs::rename(state, burned).map_err(io_err)?;
+    }
+    fs::rename(staging, state).map_err(io_err)?;
+    let parent = state.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    sync_dir(parent)
+}
 pub struct LocalEngine {
     p: FipsProvider,
     state: PathBuf,
@@ -317,7 +363,20 @@ impl LocalEngine {
     /// Open a configured state dir. `presence` gates reading the backup words.
     pub fn open(state: &Path, presence: Box<dyn Presence>) -> ApiResult<LocalEngine> {
         let p = fips_gate()?;
-        let b = match fs::read(config_path(state)) {
+        let mut b = fs::read(config_path(state));
+        if matches!(&b, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            // a move that stopped between its two renames (the old vault is
+            // destroyed, its receipt is in the staging dir): finish it
+            let staging = sibling(state, ".move")?;
+            if let Some(old) = staged_burn(&staging)? {
+                let burned = sibling(state, &format!(".burned-{old}"))?;
+                if fs::symlink_metadata(&burned).is_ok() {
+                    finish_move(state, &staging, &burned)?;
+                    b = fs::read(config_path(state));
+                }
+            }
+        }
+        let b = match b {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(ApiError::new("not-configured", format!("no vault configured in {}", state.display())))
@@ -811,15 +870,37 @@ impl LocalEngine {
     ///     are not carried over;
     ///  5. 2-step destroy of the old vault with the old words' K_destroy
     ///     proof (receipt checked against the pinned server key), old
-    ///     keystore entries deleted;
-    ///  6. `<state>` -> `<state>.burned-<old vault id>`, staging -> `<state>`.
+    ///     keystore entries deleted; the verified receipt is saved in the
+    ///     staging dir (synced) = the phase record a rerun resumes from
+    ///     without touching the destroyed vault;
+    ///  6. `<state>` -> `<state>.burned-<old vault id>`, staging -> `<state>`
+    ///     (`finish_move`; a crash between the renames is finished by the
+    ///     next [`LocalEngine::open`]).
     ///
     /// Returns the new vault's engine, the report and the NEW words (show
     /// them once; they are also in the new backup entry).
     pub fn move_vault(self, mv: Move<'_>, hist: Option<&mut dyn HistSink>) -> ApiResult<(LocalEngine, Moved, Zeroizing<String>)> {
         let old_vid = self.cfg.vault_id;
         let old_root = vault::root_of(&self.p, &self.words(mv.old_words)?).map_err(vault_err)?;
-        {
+        let staging = sibling(&self.state, ".move")?;
+        let burned = sibling(&self.state, &format!(".burned-{}", old_vid.to_hex()))?;
+        let receipt_path = staging.join(receipt_name(&old_vid.to_hex()));
+        // phase record: the old vault was destroyed by an interrupted move
+        // (receipt verified and saved before any rename). Resume from there
+        // without touching the destroyed vault (no membership check, no
+        // second destroy).
+        let resumed: Option<Receipt> = match fs::read(&receipt_path) {
+            Ok(b) => Some(serde_json::from_slice(&b).map_err(io_err)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(io_err(e)),
+        };
+        if resumed.is_some() && !config_path(&staging).exists() {
+            return Err(ApiError::new(
+                "io",
+                format!("{} holds a destroy receipt but no vault config", staging.display()),
+            ));
+        }
+        if resumed.is_none() {
             let (t, _m) = self.member()?;
             match vault::fetch_envelope(&self.p, &t, &old_root).map_err(vault_err)? {
                 Some(env) if env.vault_id == old_vid => {}
@@ -831,8 +912,6 @@ impl LocalEngine {
                 }
             }
         }
-        let staging = sibling(&self.state, ".move")?;
-        let burned = sibling(&self.state, &format!(".burned-{}", old_vid.to_hex()))?;
         if fs::symlink_metadata(&burned).is_ok() {
             return Err(ApiError::new("bad-request", format!("{} already exists", burned.display())));
         }
@@ -884,34 +963,47 @@ impl LocalEngine {
         } else {
             history::copy_store(&self.state.join("app"), &old_vid.to_hex(), &new_app, &new_hex).map_err(hist_err)?
         };
-        let seeded = match hist {
-            Some(h) => new.sync_with(h)?,
-            None => {
-                let (_lock, mut s) = new.store_mut()?;
-                new.sync_with(&mut s)?
+        if resumed.is_none() {
+            let seeded = match hist {
+                Some(h) => new.sync_with(h)?,
+                None => {
+                    let (_lock, mut s) = new.store_mut()?;
+                    new.sync_with(&mut s)?
+                }
+            };
+            if !seeded.replica_errors.is_empty() || seeded.rejected > 0 {
+                return Err(ApiError::new(
+                    "server",
+                    format!(
+                        "seeding the new vault did not complete ({}); the old vault is untouched, run move again",
+                        seeded.replica_errors.join("; ")
+                    ),
+                ));
             }
-        };
-        if !seeded.replica_errors.is_empty() || seeded.rejected > 0 {
-            return Err(ApiError::new(
-                "server",
-                format!(
-                    "seeding the new vault did not complete ({}); the old vault is untouched, run move again",
-                    seeded.replica_errors.join("; ")
-                ),
-            ));
         }
         let files = new.status()?.files;
-        let destroyed = self.destroy(mv.old_words).map_err(|e| {
-            ApiError::new(
-                &e.code,
-                format!("{e} — the new vault is ready in {}; run move again to finish", staging.display()),
-            )
-        })?;
+        let destroyed = match resumed {
+            Some(r) => r,
+            None => {
+                let r = self.destroy(mv.old_words).map_err(|e| {
+                    ApiError::new(
+                        &e.code,
+                        format!("{e} — the new vault is ready in {}; run move again to finish", staging.display()),
+                    )
+                })?;
+                // the proof stays with the new vault's state (the receipt
+                // cannot be fetched again) and is the durable phase record:
+                // written + synced before either rename, so a retry resumes
+                // here (and an open finishes a half-done rename)
+                write_private(&receipt_path, &serde_json::to_vec_pretty(&r).map_err(io_err)?)?;
+                sync_dir(&staging)?;
+                r
+            }
+        };
         let (state, net) = (self.state.clone(), self.net);
         drop(new);
         drop(self);
-        fs::rename(&state, &burned).map_err(io_err)?;
-        fs::rename(&staging, &state).map_err(io_err)?;
+        finish_move(&state, &staging, &burned)?;
         let e = LocalEngine::open(&state, Box::new(FixedPresence(false)))?.with_net_gate(net);
         let moved = Moved {
             old_vault_id: old_vid.to_hex(),
@@ -921,11 +1013,6 @@ impl LocalEngine {
             destroyed,
             burned_state: burned.display().to_string(),
         };
-        // the proof stays with the new vault's state (the receipt cannot be fetched again)
-        write_private(
-            &state.join(format!("burned-{}.receipt.json", moved.old_vault_id)),
-            &serde_json::to_vec_pretty(&moved.destroyed).map_err(io_err)?,
-        )?;
         Ok((e, moved, words))
     }
 }
