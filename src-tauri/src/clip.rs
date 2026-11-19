@@ -96,6 +96,11 @@ pub fn clip_set_text(text: String) -> Result<(), String> {
     {
         board().set_text(&text);
     }
+    // macOS: the general NSPasteboard (menu Copy / Cut; CodeAnt #248: Cut deleted without copying)
+    #[cfg(target_os = "macos")]
+    if !crate::macos::clipboard_set_text(&text) {
+        return Err("clip_set_text: the pasteboard refused the text".into());
+    }
     Ok(())
 }
 

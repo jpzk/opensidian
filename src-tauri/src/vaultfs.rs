@@ -426,11 +426,18 @@ impl Vault {
         };
         let (fd_to, lt) = self.parent(to, true)?;
         // macOS port: on a case-insensitive filesystem (APFS's default) `Note.md` -> `note.md` names
-        // the SAME inode, so the O_EXCL claim below says "exists". A case-only rename of that very
-        // file has nothing to claim or clobber: renameat just stores the new case. Same parent, same
-        // inode, names equal ignoring case — a hard link under another name is never taken this way.
+        // the SAME directory entry, so the O_EXCL claim below says "exists". A case-only rename of
+        // that very file has nothing to claim or clobber: renameat just stores the new case. Taken
+        // ONLY when the volume itself says it is case-insensitive (_PC_CASE_SENSITIVE == 0): there
+        // both spellings are one entry, so a concurrent writer replacing `to` replaced `from` — the
+        // rename can never overwrite a different file, and it is never a silent no-op between two
+        // hard links (on a case-SENSITIVE volume those are two entries; the claim below refuses).
+        // SAFETY: valid fd
         #[cfg(target_os = "macos")]
-        if let Ok(t) = stat_at(fd_to.fd.as_raw_fd(), &lt) {
+        let case_insensitive = unsafe { libc::fpathconf(fd_to.fd.as_raw_fd(), libc::_PC_CASE_SENSITIVE) } == 0;
+        #[cfg(target_os = "macos")]
+        if case_insensitive {
+          if let Ok(t) = stat_at(fd_to.fd.as_raw_fd(), &lt) {
             let same_name = lf.to_string_lossy().to_lowercase() == lt.to_string_lossy().to_lowercase();
             let same_dir = stat_at(fd_from.fd.as_raw_fd(), &CString::new(".").expect("no NUL"))
                 .and_then(|a| stat_at(fd_to.fd.as_raw_fd(), &CString::new(".").expect("no NUL")).map(|b| (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)))
@@ -439,6 +446,7 @@ impl Vault {
                 // SAFETY: valid fds + NUL-terminated names
                 return cvt(unsafe { libc::renameat(fd_from.fd.as_raw_fd(), lf.as_ptr(), fd_to.fd.as_raw_fd(), lt.as_ptr()) }).map(|_| ());
             }
+          }
         }
         drop(self.create_new_at(&fd_to, &lt)?);
         hook("move_file:claimed");
@@ -939,24 +947,20 @@ impl Vault {
         cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
     }
 
-    /// Non-Linux p_chmod: no O_PATH and no /proc. The leaf is opened O_RDONLY with
-    /// O_SYMLINK (a symlink opens as itself and is refused, the target never reached), O_NONBLOCK (a FIFO
+    /// Non-Linux p_chmod: no O_PATH and no /proc. The leaf is checked with fstatat(NOFOLLOW) and
+    /// changed with fchmodat(AT_SYMLINK_NOFOLLOW) relative to its held parent: a symlink is refused
+    /// by the check, and if one is swapped in afterwards the chmod lands on the LINK, never its
+    /// target. Needs no read access, so a file a plugin set to 000 can be set back. O_NONBLOCK (a FIFO
     /// cannot hang the open) and O_NOCTTY; fstat refuses anything but a regular file
     /// or directory, and fchmod acts on the held fd, so a swap after the open cannot
     /// redirect it. A file without read permission cannot be opened and is refused.
     #[cfg(not(target_os = "linux"))]
     pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
         let (d, leaf) = self.parent(rel, false)?;
-        // O_SYMLINK opens a symlink ITSELF (fstat S_IFLNK -> pstat_of refuses it, the same EPERM as
-        // Linux's O_PATH|O_NOFOLLOW fd), never its target; a regular file or directory opens as itself
-        let flags = libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC;
-        // SAFETY: valid fd + NUL-terminated name; the fd is owned below
-        let raw = cvt(unsafe { libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), flags) })?;
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        pstat_of(rel, &fstat(fd.as_raw_fd())?)?; // FIFO, device, socket -> refused
+        pstat_of(rel, &stat_at(d.fd.as_raw_fd(), &leaf)?)?; // symlink, FIFO, device, socket -> refused
         hook("p_chmod:opened");
-        // SAFETY: valid fd we own
-        cvt(unsafe { libc::fchmod(fd.as_raw_fd(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+        // SAFETY: valid fd + NUL-terminated name
+        cvt(unsafe { libc::fchmodat(d.fd.as_raw_fd(), leaf.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t, libc::AT_SYMLINK_NOFOLLOW) }).map(|_| ())
     }
 }
 
@@ -1484,6 +1488,17 @@ mod tests {
         }
         assert_eq!(mode_of(&out.join("secret")), 0o600, "outside target mode unchanged");
         assert!(fs::symlink_metadata(root.join("a/leak")).unwrap().file_type().is_symlink());
+    }
+
+    /// CodeAnt #248: a plugin that set a file to 000 can set it back (no read access is needed)
+    #[test]
+    fn pchmod_mode_000_can_be_restored() {
+        let (root, _out) = fresh("pchmod-000");
+        fs::write(root.join("x.sh"), b"#!/bin/sh\n").unwrap();
+        plugin_chmod(&root, true, "x.sh", 0o000).expect("to 000");
+        plugin_chmod(&root, true, "x.sh", 0o755).expect("back from 000");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(root.join("x.sh")).unwrap().permissions().mode() & 0o777, 0o755);
     }
 
     #[test]

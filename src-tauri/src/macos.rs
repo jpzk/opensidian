@@ -147,6 +147,7 @@ pub mod keychain {
 
     type OSStatus = i32;
     const NOT_FOUND: OSStatus = -25300;
+    const DUPLICATE: OSStatus = -25299;
 
     #[link(name = "Security", kind = "framework")]
     extern "C" {
@@ -310,6 +311,14 @@ pub mod keychain {
         put(&q, unsafe { kSecValueData }, &data(value.as_bytes()));
         // SAFETY: valid dictionary, no result wanted
         let st = unsafe { SecItemAdd(Retained::as_ptr(&q).cast(), std::ptr::null_mut()) };
+        if st == DUPLICATE {
+            // a concurrent set added the item between our update and add: update it now
+            let q = base(vault);
+            put(&q, unsafe { kSecAttrAccount }, &ns_string(id));
+            // SAFETY: valid dictionaries
+            let st = unsafe { SecItemUpdate(Retained::as_ptr(&q).cast(), Retained::as_ptr(&upd).cast()) };
+            return if st == 0 { Ok(()) } else { Err(err("update", st)) };
+        }
         if st != 0 {
             return Err(err("add", st));
         }
@@ -341,6 +350,19 @@ pub fn clipboard_text() -> Option<String> {
         }
         let s: *mut AnyObject = msg_send![pb, stringForType: &*ns_string("public.utf8-plain-text")];
         rust_string(s.as_ref())
+    }
+}
+
+/// put `text` on the general pasteboard as plain text (clip.rs's GTK CLIPBOARD set); true = written
+pub fn clipboard_set_text(text: &str) -> bool {
+    // SAFETY: NSPasteboard; clearContents + setString:forType: as AppKit documents for a write
+    unsafe {
+        let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+        if pb.is_null() {
+            return false;
+        }
+        let _: isize = msg_send![pb, clearContents];
+        msg_send![pb, setString: &*ns_string(text), forType: &*ns_string("public.utf8-plain-text")]
     }
 }
 
