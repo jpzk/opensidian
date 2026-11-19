@@ -85,6 +85,20 @@
       "name": "chrono",
       "version": "0.4.45",
       "purl": "pkg:cargo/chrono@0.4.45"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/dompurify@3.4.12",
+      "name": "dompurify",
+      "version": "3.4.12",
+      "purl": "pkg:npm/dompurify@3.4.12"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/js-yaml@4.3.0",
+      "name": "js-yaml",
+      "version": "4.3.0",
+      "purl": "pkg:npm/js-yaml@4.3.0"
     }
   ],
   "vulnerabilities": [
@@ -383,6 +397,249 @@
         {
           "name": "opensidian:expires",
           "value": "2027-05-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-55q2-fjhq-7xh7",
+      "id": "GHSA-55q2-fjhq-7xh7",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-55q2-fjhq-7xh7"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-75838",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-75838"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/dompurify@3.4.12"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). DOMPurify is mermaid-internal (not exported, the app has no own DOMPurify call). All 7 .sanitize( call sites in the bundle pass a STRING and one of: no config, {FORBID_TAGS:[\"style\"]}, {ADD_TAGS,ADD_ATTR,HTML_INTEGRATION_POINTS:{foreignobject}}, or config.dompurifyConfig; the result is used as a string (.toString()/d3 .html()). The app pins dompurifyConfig:{} (ui/plugins/api-functions.js:938) and lists dompurifyConfig + securityLevel in mermaid `secure` (:904), so %%{init}%% / frontmatter config from a note cannot set any DOMPurify option. Advisory needs IN_PLACE:true (sanitizing a live DOM node with a removing hook); IN_PLACE is never set (the token appears once in the bundle: DOMPurify's own option parser) and every input is a string. Fix: mermaid 12.3.0 (2026-11-03, dompurify ^3.4.17, katex ^0.18.0) passes the 6-week rule on 2026-12-15 -> vendor bump before expiry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-6688-9rhm-gjv2",
+      "id": "GHSA-6688-9rhm-gjv2",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-6688-9rhm-gjv2"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-109345",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-109345"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/dompurify@3.4.12"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). DOMPurify is mermaid-internal (not exported, the app has no own DOMPurify call). All 7 .sanitize( call sites in the bundle pass a STRING and one of: no config, {FORBID_TAGS:[\"style\"]}, {ADD_TAGS,ADD_ATTR,HTML_INTEGRATION_POINTS:{foreignobject}}, or config.dompurifyConfig; the result is used as a string (.toString()/d3 .html()). The app pins dompurifyConfig:{} (ui/plugins/api-functions.js:938) and lists dompurifyConfig + securityLevel in mermaid `secure` (:904), so %%{init}%% / frontmatter config from a note cannot set any DOMPurify option. Advisory needs IN_PLACE:true (returned force-removed rawtext root); IN_PLACE is never set, inputs are strings. Fix: mermaid 12.3.0 (2026-11-03, dompurify ^3.4.17, katex ^0.18.0) passes the 6-week rule on 2026-12-15 -> vendor bump before expiry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-c6gr-qvv4-5v3f",
+      "id": "GHSA-c6gr-qvv4-5v3f",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-c6gr-qvv4-5v3f"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-116802",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-116802"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/dompurify@3.4.12"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). DOMPurify is mermaid-internal (not exported, the app has no own DOMPurify call). All 7 .sanitize( call sites in the bundle pass a STRING and one of: no config, {FORBID_TAGS:[\"style\"]}, {ADD_TAGS,ADD_ATTR,HTML_INTEGRATION_POINTS:{foreignobject}}, or config.dompurifyConfig; the result is used as a string (.toString()/d3 .html()). The app pins dompurifyConfig:{} (ui/plugins/api-functions.js:938) and lists dompurifyConfig + securityLevel in mermaid `secure` (:904), so %%{init}%% / frontmatter config from a note cannot set any DOMPurify option. Advisory needs PARSER_MEDIA_TYPE application/xhtml+xml; never set, the default text/html parser is used. Defence in depth: ui/mermaid.js toSvg/scrub (:34,:51) drops animate/set/animate* and every non-fragment href before import. Fix: mermaid 12.3.0 (2026-11-03, dompurify ^3.4.17, katex ^0.18.0) passes the 6-week rule on 2026-12-15 -> vendor bump before expiry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-cg2g-xh64-v4q7",
+      "id": "GHSA-cg2g-xh64-v4q7",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-cg2g-xh64-v4q7"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-116804",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-116804"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/dompurify@3.4.12"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). DOMPurify is mermaid-internal (not exported, the app has no own DOMPurify call). All 7 .sanitize( call sites in the bundle pass a STRING and one of: no config, {FORBID_TAGS:[\"style\"]}, {ADD_TAGS,ADD_ATTR,HTML_INTEGRATION_POINTS:{foreignobject}}, or config.dompurifyConfig; the result is used as a string (.toString()/d3 .html()). The app pins dompurifyConfig:{} (ui/plugins/api-functions.js:938) and lists dompurifyConfig + securityLevel in mermaid `secure` (:904), so %%{init}%% / frontmatter config from a note cannot set any DOMPurify option. Advisory needs SAFE_FOR_TEMPLATES plus a DOM output mode (RETURN_DOM / RETURN_DOM_FRAGMENT, shadow root content); none is set, output is always a string. Fix: mermaid 12.3.0 (2026-11-03, dompurify ^3.4.17, katex ^0.18.0) passes the 6-week rule on 2026-12-15 -> vendor bump before expiry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-mrv2-3pqr-j5jr",
+      "id": "GHSA-mrv2-3pqr-j5jr",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-mrv2-3pqr-j5jr"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-116803",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-116803"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/dompurify@3.4.12"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). DOMPurify is mermaid-internal (not exported, the app has no own DOMPurify call). All 7 .sanitize( call sites in the bundle pass a STRING and one of: no config, {FORBID_TAGS:[\"style\"]}, {ADD_TAGS,ADD_ATTR,HTML_INTEGRATION_POINTS:{foreignobject}}, or config.dompurifyConfig; the result is used as a string (.toString()/d3 .html()). The app pins dompurifyConfig:{} (ui/plugins/api-functions.js:938) and lists dompurifyConfig + securityLevel in mermaid `secure` (:904), so %%{init}%% / frontmatter config from a note cannot set any DOMPurify option. Advisory needs IN_PLACE:true with a hook removing a parent/sibling; IN_PLACE is never set. Mermaid's only hooks (before/afterSanitizeAttributes, target=_blank handling) remove no nodes. Fix: mermaid 12.3.0 (2026-11-03, dompurify ^3.4.17, katex ^0.18.0) passes the 6-week rule on 2026-12-15 -> vendor bump before expiry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-2883-xcg3-v3hh",
+      "id": "GHSA-2883-xcg3-v3hh",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-2883-xcg3-v3hh"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-84375",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-84375"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/js-yaml@4.3.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). Advisory needs YAML merge keys (<<, type tag:yaml.org,2002:merge), which js-yaml defines ONLY in DEFAULT_SCHEMA. All 4 js-yaml load() call sites in the bundle (frontmatter + node/edge metadata) pass {schema: JSON_SCHEMA} (failsafe + null/bool/int/float); DEFAULT_SCHEMA is imported but never used. Under JSON_SCHEMA `<<` resolves to a plain string key and an explicit !!merge is an unknown tag (error), so mergeMappings is never entered. Input is also capped by maxTextSize 50000 (api-functions.js:907). Fix: mermaid >= the 12.3.0 bump (see dompurify entries) or a release bundling js-yaml >= 4.3.2.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:GHSA-5p4m-2wfm-xmqj",
+      "id": "GHSA-5p4m-2wfm-xmqj",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-5p4m-2wfm-xmqj"
+      },
+      "affects": [
+        {
+          "ref": "pkg:npm/js-yaml@4.3.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "Bundled in ui/vendor/mermaid/mermaid.min.js (mermaid 11.17.2). Advisory needs the !!omap type (tag:yaml.org,2002:omap), defined ONLY in js-yaml DEFAULT_SCHEMA. All 4 load() call sites pass {schema: JSON_SCHEMA}; there `!!omap` is an unknown tag and throws before any omap resolution. DEFAULT_SCHEMA unused. Fix: vendor bump to a mermaid bundling js-yaml >= 4.3.1/4.3.2.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-01-15"
         }
       ]
     }
