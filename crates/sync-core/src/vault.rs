@@ -718,15 +718,41 @@ pub fn revoke(p: &FipsProvider, t: &dyn Transport, m: &mut Member, root: &RootKe
     next.slots[i].state = SlotState::Revoked;
     let epoch = m.env.current().epoch.checked_add(1).ok_or_else(|| chain_err("epoch overflow"))?;
     next.vk_epoch = epoch;
-    let mut vk = [0u8; 32];
-    p.random(&mut vk).map_err(fmt_err)?;
-    let mut env = m.env.clone();
-    env.env_gen += 1;
-    env.keyring.push(VkEntry { epoch, vk });
-    vk.fill(0);
+    // A previous revoke may have published the envelope and then failed
+    // the cfg append (network, conflict). Its envelope slot gen+1 is taken
+    // for good (write-once), so the retry adopts that envelope, as long as
+    // it is exactly our envelope plus one key at `epoch`, instead of
+    // sealing a new VK that could never be published.
+    let pending = match fetch_envelope(p, t, root)? {
+        Some(e) if e.env_gen > m.env.env_gen => {
+            let extends = e.env_gen == m.env.env_gen + 1
+                && e.vault_id == m.env.vault_id
+                && e.servers == m.env.servers
+                && e.keyring.len() == m.env.keyring.len() + 1
+                && e.keyring[..m.env.keyring.len()] == m.env.keyring[..]
+                && e.keyring.last().is_some_and(|k| k.epoch == epoch);
+            if !extends {
+                return Err(chain_err("the envelope moved on since this device loaded it; refresh, then revoke again"));
+            }
+            Some(e)
+        }
+        _ => None,
+    };
     let ns = m.ns();
-    // envelope first: a cfg announcing an epoch nobody can fetch would strand everyone
-    put_envelope(p, t, root, &env)?;
+    let env = match pending {
+        Some(e) => e,
+        None => {
+            let mut vk = [0u8; 32];
+            p.random(&mut vk).map_err(fmt_err)?;
+            let mut env = m.env.clone();
+            env.env_gen += 1;
+            env.keyring.push(VkEntry { epoch, vk });
+            vk.fill(0);
+            // envelope first: a cfg announcing an epoch nobody can fetch would strand everyone
+            put_envelope(p, t, root, &env)?;
+            env
+        }
+    };
     append(p, t, &m.env, &ns, &mut m.chain, next, CfgSigner::Slot(own), &m.device.key)?;
     m.env = env;
     Ok(epoch)

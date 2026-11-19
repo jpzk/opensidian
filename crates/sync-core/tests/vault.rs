@@ -319,6 +319,8 @@ struct StaleCfg<'a> {
     inner: &'a HttpTransport,
     cfg_gens: usize,
     seen: std::sync::Mutex<usize>,
+    /// cfg PUTs still to fail (a network error after the envelope went up)
+    fail_cfg_puts: std::sync::Mutex<usize>,
 }
 
 impl Transport for StaleCfg<'_> {
@@ -329,6 +331,13 @@ impl Transport for StaleCfg<'_> {
         self.inner.enroll(t, k)
     }
     fn put(&self, kind: ObjKind, ns: &Id16, id: &Id16, b: &[u8]) -> sync_core::transport::Result<sync_core::transport::PutOutcome> {
+        if kind == ObjKind::Cfg {
+            let mut n = self.fail_cfg_puts.lock().unwrap();
+            if *n > 0 {
+                *n -= 1;
+                return Err(TransportError::Io("connection reset".into()));
+            }
+        }
         self.inner.put(kind, ns, id, b)
     }
     fn get(&self, kind: ObjKind, ns: &Id16, id: &Id16, r: Option<sync_core::transport::Range>) -> sync_core::transport::Result<sync_core::transport::Fetched> {
@@ -377,11 +386,11 @@ fn refresh_refuses_a_rolled_back_cfg_chain() {
     let accepted = a.chain.clone();
 
     // the server replays gen 0 only: valid signatures, but older than what A accepted
-    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0) };
+    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0), fail_cfg_puts: std::sync::Mutex::new(0) };
     assert_eq!(a.refresh_chain(&p, &stale).unwrap_err(), VaultError::Chain("cfg chain rolled back or forked".into()));
     assert_eq!(a.chain, accepted, "the accepted chain is kept");
     let root = root_of(&p, &words).unwrap();
-    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0) };
+    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0), fail_cfg_puts: std::sync::Mutex::new(0) };
     assert_eq!(
         a.refresh_with_words(&p, &stale, &root).unwrap_err(),
         VaultError::Chain("cfg chain rolled back or forked".into())
@@ -390,4 +399,28 @@ fn refresh_refuses_a_rolled_back_cfg_chain() {
     // control: the full chain still refreshes
     a.refresh_chain(&p, &ta).expect("refresh after the replay");
     a.refresh_with_words(&p, &ta, &root).expect("words refresh");
+}
+
+#[test]
+fn revoke_retry_adopts_the_envelope_a_failed_attempt_published() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let s = server();
+    let words = Phrase::generate(&p).unwrap();
+    let ta = client(&s);
+    let tok = s.app.create_enrollment(None, 600).unwrap();
+    let mut a = create_vault(&p, &ta, &s.url, &tok, &words, "laptop").expect("create");
+    let b = bootstrap(&p, &client(&s), &s.url, &words, "desktop").expect("bootstrap");
+    a.refresh_chain(&p, &ta).unwrap();
+    let root = root_of(&p, &words).unwrap();
+    let flaky = StaleCfg { inner: &ta, cfg_gens: usize::MAX, seen: std::sync::Mutex::new(0), fail_cfg_puts: std::sync::Mutex::new(1) };
+    // envelope gen 1 goes up, the cfg append fails
+    assert!(revoke(&p, &flaky, &mut a, &root, &b.device.id).is_err());
+    assert_eq!(a.env.env_gen, 0, "member state unchanged");
+    let published = fetch_envelope(&p, &ta, &root).unwrap().unwrap();
+    assert_eq!(published.env_gen, 1);
+    // the retry reuses that envelope (its slot is write-once) and finishes
+    assert_eq!(revoke(&p, &flaky, &mut a, &root, &b.device.id).expect("retry"), 1);
+    assert_eq!(a.env, published);
+    assert!(a.roster().revoked(&b.device.id));
+    assert_eq!(a.chain.head().vk_epoch, 1);
 }
