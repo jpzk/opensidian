@@ -501,3 +501,24 @@ fn losers_are_kept_in_file_history_without_moving_the_head() {
     s.thin(400 * 86_400_000, &Retention::default()).unwrap();
     assert_eq!(s.head("n.md").cloned(), head);
 }
+
+#[test]
+fn file_and_folder_at_the_same_path_never_both_land_in_the_tree() {
+    let mut w = World::new();
+    let root = w.commit(false, T0, &[], vec![put("keep.md", Class::Markdown, b"k\n")]);
+    // laptop creates a note "Ideas.md"; the phone creates a folder of that name
+    let a1 = w.commit(false, T0 + 60_000, &[root.id], vec![put("Ideas.md", Class::Markdown, b"file\n")]);
+    let b1 = w.commit(true, T0 + 120_000, &[root.id], vec![put("Ideas.md/one.md", Class::Markdown, b"in folder\n")]);
+    for mode in [ConflictMode::AutoMerge, ConflictMode::ConflictFile] {
+        let m = w.merge((a1.id, false), (b1.id, true), mode);
+        let keys: Vec<&String> = m.tree.keys().collect();
+        assert!(!m.tree.contains_key("Ideas.md"), "file moved out of the folder's way: {keys:?}");
+        assert!(m.tree.contains_key("Ideas.md/one.md"));
+        let log: BTreeMap<_, _> = m.log.iter().cloned().collect();
+        let Resolution::ConflictCopy { copy } = &log["Ideas.md"] else { panic!("{log:?}") };
+        assert_eq!(w.merged_bytes(&m, copy), b"file\n", "the file's bytes are kept");
+        for k in m.tree.keys() {
+            assert!(!m.tree.keys().any(|o| o.starts_with(&format!("{k}/"))), "{k} is both file and folder");
+        }
+    }
+}

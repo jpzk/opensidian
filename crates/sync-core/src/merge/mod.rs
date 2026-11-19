@@ -414,6 +414,31 @@ pub fn merge_trees<P: CryptoProvider + ?Sized>(
         losers.push(Loser { path: path.clone(), origin: lose_o, entry: e });
         log.push((path, Resolution::ConflictCopy { copy }));
     }
+    // One side added a file where the other side added a folder (`a` vs
+    // `a/b.md`): a tree with both cannot be written to disk. The folder
+    // stays, the file moves to a conflict-copy name (its bytes are kept, so
+    // nothing is lost and the result is materialisable).
+    let is_dir_prefix = |t: &BTreeMap<String, Merged>, k: &str| {
+        let pre = format!("{k}/");
+        t.range(pre.clone()..).next().is_some_and(|(n, _)| n.starts_with(&pre))
+    };
+    let clashing: Vec<String> = tree.keys().filter(|k| is_dir_prefix(&tree, k)).cloned().collect();
+    for path in clashing {
+        let Some(m) = tree.remove(&path) else { continue };
+        let mut n = 1;
+        let copy = loop {
+            let c = conflict_name(&path, &lose.device_name, lose.ts_ms, n);
+            if !tree.contains_key(&c) && valid_path(&c) && !is_dir_prefix(&tree, &c) {
+                break c;
+            }
+            n += 1;
+            if n > 1000 {
+                return Err(MergeError::Commit(CommitError::Tree("no free conflict file name")));
+            }
+        };
+        tree.insert(copy.clone(), m);
+        log.push((path, Resolution::ConflictCopy { copy }));
+    }
     let tree_hash = hash_merged(p, &tree)?;
     let action = if tree_hash == local.tree.hash(p)? {
         Action::UpToDate
