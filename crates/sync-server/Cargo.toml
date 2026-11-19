@@ -42,12 +42,14 @@ libsqlite3-sys = { version = "=0.38.2", default-features = false, features = ["b
 # so every TLS primitive (AES-GCM, HKDF/HMAC, ECDHE P-256/P-384, signature verify, DRBG) runs in the
 # OpenSSL 3.5.9 FIPS provider (CMVP #5586) through EVP with default properties fips=yes
 # (sync_crypto::fips::init). rustls with NO crypto feature (no aws_lc_rs / ring / fips), webpki
-# "std" only (it verifies with the provider's algorithms). rustls 0.23.43 / webpki 0.103.13 /
-# tokio-rustls 0.26.6 kept (bump nothing else); rustls-openssl 0.4.2 (2026-10-02, needs rustls
+# "std" only (it verifies with the provider's algorithms). rustls 0.23.45 (2026-09-14) + webpki 0.103.15
+# (2026-08-21; rustls 0.23.45 needs ^0.103.14) = newest >= 6 weeks, bumped for RUSTSEC-2026-0285
+# (patched 0.23.45; 0346/0347/0348/0349 need 0.23.46 = 2026-10-14, < 6 weeks -> VEX until 2026-11-25);
+# tokio-rustls 0.26.6 kept; rustls-openssl 0.4.2 (2026-10-02, needs rustls
 # ^0.23.20) default features off (no tls12, no post-quantum hybrid preference). deps.md §TLS-OpenSSL.
-rustls = { version = "=0.23.43", default-features = false, features = ["std"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["std"] }
 tokio-rustls = { version = "=0.26.6", default-features = false }
-rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
+rustls-webpki = { version = "=0.103.15", default-features = false, features = ["std"] }
 rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 rustls-openssl = { version = "=0.4.2", default-features = false }
 subtle = { version = "=2.6.1", default-features = false }

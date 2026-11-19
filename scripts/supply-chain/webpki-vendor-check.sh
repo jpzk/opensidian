@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# webpki-vendor-check.sh [repo-root] — prove src-tauri/vendor/rustls-webpki-0.103.13 is the
-# crates.io rustls-webpki 0.103.13 .crate byte-for-byte + EXACTLY
+# webpki-vendor-check.sh [repo-root] — prove src-tauri/vendor/rustls-webpki-0.103.15 is the
+# crates.io rustls-webpki 0.103.15 .crate byte-for-byte + EXACTLY
 # scripts/supply-chain/webpki-noring/noring.patch (Cargo.toml only).
 #
 # Why (sync OpenSSL swap, 2026-11-19, docs/sync/deps.md §TLS-OpenSSL): the TLS stack is rustls on
@@ -18,10 +18,10 @@ set -uo pipefail
 H=$(cd "$(dirname "$0")" && pwd)
 T=${1:-$(cd "$H/../.." && pwd)}
 T=$(cd "$T" 2>/dev/null && pwd) || { echo "WEBPKI-VENDOR REFUSED no tree ${1:-}"; exit 1; }
-N=rustls-webpki; VER=0.103.13
-CRATE_SHA=61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e
+N=rustls-webpki; VER=0.103.15
+CRATE_SHA=f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2
 PATCH=$H/webpki-noring/noring.patch
-PATCH_SHA=cc2feedaaba80fd7636f9db43c0fe434b6bb413ef2ab063f8fe94285d2d4ae53
+PATCH_SHA=022975c760e338eaf9dd670f50a31fd04e0313a6765b507b399e5f460320a8b9
 FIXED_FILE=Cargo.toml
 INDEX_URL=${WEBPKI_INDEX_URL:-https://index.crates.io/ru/st/$N}
 CRATE_URL=https://static.crates.io/crates/$N/$N-$VER.crate

@@ -170,15 +170,15 @@ strip = "symbols"
 # crates.io index cksum) + exactly that two-line upstream hunk. Checked by
 # scripts/supply-chain/glib-vendor-check.sh in .github/workflows/supply-chain.yml.
 #
-# sync OpenSSL swap (2026-11-19) — vendor/rustls-webpki-0.103.13 = crates.io rustls-webpki
-# 0.103.13 byte-for-byte (sha256 61c429a8…f756e, the crates.io index cksum) + a Cargo.toml-only
+# sync OpenSSL swap (2026-11-19) — vendor/rustls-webpki-0.103.15 = crates.io rustls-webpki
+# 0.103.15 byte-for-byte (sha256 f3c3cf1d…0ac2, the crates.io index cksum) + a Cargo.toml-only
 # patch that drops the unused optional `ring` dependency: webpki's weak `ring?/alloc` made Cargo
 # list ring in Cargo.lock although nothing enables it (rust-lang/cargo#10801); TLS crypto is
 # the OpenSSL FIPS provider via rustls-openssl. Checked by
 # scripts/supply-chain/webpki-vendor-check.sh (supply-chain.yml). docs/sync/deps.md §TLS-OpenSSL.
 [patch.crates-io]
 glib = { path = "vendor/glib-0.18.5" }
-rustls-webpki = { path = "vendor/rustls-webpki-0.103.13" }
+rustls-webpki = { path = "vendor/rustls-webpki-0.103.15" }
 
 # goal devui — the fast DEV loop profile (`cargo build --profile devfast --features devui`):
 # deps optimised once and cached, the app crate unoptimised + incremental, no debuginfo.

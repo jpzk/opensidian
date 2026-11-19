@@ -14,6 +14,27 @@ ignore = [
   "RUSTSEC-2025-0098", # unic-ucd-version unmaintained (transitive). EXPIRES 2027-05-15
   "RUSTSEC-2025-0100", # unic-ucd-ident unmaintained (transitive). EXPIRES 2027-05-15
   "RUSTSEC-2026-0543", # chrono unmaintained (transitive via serde_with). EXPIRES 2027-05-15
+  # sync deps (ledger 5b, 2026-11-19): fixes < 6 weeks old; reachability in supply-chain/vex.cdx.json
+  "RUSTSEC-2026-0346", # rustls not_affected (code_not_reachable). EXPIRES 2026-11-25
+  "RUSTSEC-2026-0347", # rustls not_affected (requires_configuration). EXPIRES 2026-11-25
+  "RUSTSEC-2026-0348", # rustls not_affected (requires_configuration). EXPIRES 2026-11-25
+  "RUSTSEC-2026-0349", # rustls not_affected (protected_by_mitigating_control). EXPIRES 2026-11-25
+  "RUSTSEC-2026-0391", # zstd not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0395", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0396", # zstd-safe not_affected (code_not_present). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0397", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0398", # zstd-safe not_affected (code_not_present). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0399", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0400", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0401", # zstd-safe not_affected (code_not_present). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0402", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0403", # zstd-safe not_affected (code_not_present). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0404", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0405", # zstd-safe not_affected (code_not_present). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0406", # zstd-safe not_affected (code_not_reachable). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0410", # zstd-sys not_affected (code_not_present). EXPIRES 2026-11-27
+  "RUSTSEC-2026-0459", # libsqlite3-sys not_affected (requires_environment). EXPIRES 2026-12-05
+  "RUSTSEC-2026-0382", # rustls-webpki exploitable (-). EXPIRES 2026-12-01
 ]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 

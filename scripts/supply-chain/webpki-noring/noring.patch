@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 52fe1c7..e029e93 100644
+index aef9222..185b9fc 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -77,7 +77,6 @@ enum_variant_marked_deprecated = "warn"
+@@ -80,7 +80,6 @@ enum_variant_marked_deprecated = "warn"
  
  [features]
  alloc = [
@@ -10,9 +10,9 @@ index 52fe1c7..e029e93 100644
      "pki-types/alloc",
  ]
  aws-lc-rs = [
-@@ -94,7 +93,9 @@ aws-lc-rs-unstable = [
-     "aws-lc-rs/unstable",
+@@ -94,7 +93,9 @@ aws-lc-rs-fips = [
  ]
+ aws-lc-rs-unstable = ["aws-lc-rs"]
  default = ["std"]
 -ring = ["dep:ring"]
 +# opensidian patch (scripts/supply-chain/webpki-noring): the ring backend is removed; the
