@@ -2051,6 +2051,11 @@
     ownRequire.resolve = n => { const e = new Error("Cannot find module '" + String(n) + "' (no module paths in opensidian)"); e.code = "MODULE_NOT_FOUND"; throw e; };
     ownRequire.cache = Object.create(null);
     const proc = processShim();
+    // DIAG (local only, never pushed): does a plugin reach the page-global process?
+    if (!Object.getOwnPropertyDescriptor(window, "process")) {
+      const reads = []; window.__osProcReads = reads;
+      Object.defineProperty(window, "process", { configurable: true, get() { if (reads.length < 20) { const s = String(new Error().stack).replace(/\s+/g, " ").slice(0, 300); reads.push(s); console.error("[os-diag] page process read @ " + s); } return proc; } });
+    }
     const mods = new Map([
       ["buffer", () => bufferMod],
       ["process", () => proc],
