@@ -23,7 +23,7 @@ use sync_core::transport::{Tokens, Transport};
 use sync_crypto::fips::{FipsProvider, FipsSigningKey};
 use sync_crypto::{CryptoProvider, SigAlg};
 use sync_proto::api::{ListQuery, ObjKind};
-use sync_proto::batch::{Class, Parent};
+use sync_proto::batch::{Class, Parent, BATCH_SIG_DOMAIN};
 use sync_proto::container::{Kind, Suite};
 use sync_proto::Id16;
 use sync_server::{serve, App, Config};
@@ -119,6 +119,7 @@ fn hash(p: &FipsProvider, t: &Tree) -> [u8; 32] {
 fn clean(r: &Report) {
     assert!(r.rejected.is_empty(), "rejected: {:?}", r.rejected);
     assert!(r.replica_errors.is_empty(), "replica errors: {:?}", r.replica_errors);
+    assert!(r.invalid.is_empty(), "invalid: {:?}", r.invalid);
 }
 
 #[test]
@@ -302,4 +303,68 @@ fn bad_objects_are_rejected_and_not_propagated() {
         assert!(!a.objects().contains(&bad));
     }
     assert!(text(&mut a, &ks, "evil.md").is_none());
+}
+
+#[test]
+fn commit_with_a_lying_tree_hash_never_becomes_head() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let mut k = [0u8; 32];
+    p.random(&mut k).unwrap();
+    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let d1 = FsTransport::open(tmpdir("lie")).unwrap();
+    let (da, db) = (device(&p), device(&p));
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let mut hook = |_: &Loser, _: &[u8]| {};
+    // a vault member signs a ROOT commit whose tree_hash was computed over a
+    // base tree it does not have (signature and content are valid)
+    let fake = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("hidden.md", Class::Markdown, b"h\n")]).unwrap();
+    let lie = build_commit(&p, &v, &signer(&db), T0 + 1, vec![], &fake.tree, vec![put("x.md", Class::Markdown, b"x\n")]).unwrap();
+    push_commit(&d1, &v, &lie).unwrap();
+
+    // fresh device: nothing to fast-forward to, no error
+    let mut a = Engine::open(&p, v.clone(), tmpdir("elie"), &ks).unwrap();
+    let r = a.sync(&[&d1], &signer(&da), &ks, T0 + 2, &mut hook).expect("pass completes");
+    assert_eq!(r.invalid.len(), 1, "{:?}", r.invalid);
+    assert_eq!(r.invalid[0].0, lie.id);
+    assert_eq!(a.head(), None);
+    assert!(r.folded.is_empty());
+
+    // device with a head: the lying tip is skipped, not merged, pass completes
+    let c1 = a.commit_local(&signer(&da), &ks, T0 + 3, vec![put("n.md", Class::Markdown, b"hi\n")]).unwrap();
+    let r = a.sync(&[&d1], &signer(&da), &ks, T0 + 4, &mut hook).expect("pass completes");
+    assert_eq!(r.invalid.iter().map(|x| x.0).collect::<Vec<_>>(), vec![lie.id]);
+    assert_eq!(a.head(), Some(c1));
+    assert!(text(&mut a, &ks, "x.md").is_none());
+}
+
+#[test]
+fn parent_cycle_is_pending_not_a_hang() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let mut k = [0u8; 32];
+    p.random(&mut k).unwrap();
+    let v = VaultCtx { suite: Suite::P256, vault_id: rid(&p), ns: rid(&p), k_obj: k, prev_k_obj: vec![] };
+    let d1 = FsTransport::open(tmpdir("cyc")).unwrap();
+    let (da, db) = (device(&p), device(&p));
+    let ks: Keys = [&da, &db].iter().map(|d| (d.id, (SigAlg::EcdsaP256Sha256, d.pk.clone()))).collect();
+    let mut hook = |_: &Loser, _: &[u8]| {};
+    // B's parent is A; A is re-signed (same id) with B as ITS parent: A <-> B
+    let a0 = build_commit(&p, &v, &signer(&db), T0, vec![], &Tree::default(), vec![put("a.md", Class::Markdown, b"a\n")]).unwrap();
+    let b = build_commit(&p, &v, &signer(&db), T0 + 1, vec![a0.parent()], &a0.tree, vec![put("b.md", Class::Markdown, b"b\n")]).unwrap();
+    let mut t = a0.batch.clone();
+    t.parents = vec![b.parent()];
+    t.sig.clear();
+    let mut m = BATCH_SIG_DOMAIN.to_vec();
+    m.extend(t.encode_signed().unwrap());
+    t.sig = p.sign(&db.key, &p.sha256(&m)).unwrap();
+    let a1 = seal(&p, &k, &ObjectCtx { suite: v.suite, vault_id: v.vault_id, obj_id: a0.id }, Kind::Batch, &t.encode().unwrap(), Compress::IfSmaller).unwrap();
+    d1.put(ObjKind::Obj, &v.ns, &a0.id, &a1).unwrap();
+    push_commit(&d1, &v, &b).unwrap();
+
+    let mut e = Engine::open(&p, v.clone(), tmpdir("ecyc"), &ks).unwrap();
+    let c1 = e.commit_local(&signer(&da), &ks, T0 + 2, vec![put("n.md", Class::Markdown, b"hi\n")]).unwrap();
+    let r = e.sync(&[&d1], &signer(&da), &ks, T0 + 3, &mut hook).expect("pass completes");
+    assert!(r.rejected.is_empty(), "{:?}", r.rejected);
+    assert_eq!(r.pending, 2, "both cycle members wait forever, neither is ready");
+    assert_eq!(e.head(), Some(c1));
+    assert_eq!(e.tips(), vec![c1]);
 }

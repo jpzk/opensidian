@@ -503,8 +503,9 @@ impl LocalEngine {
         }
         sum.pulled = rep.pulled;
         sum.pushed = rep.pushed;
-        sum.rejected = rep.rejected.len();
+        sum.rejected = rep.rejected.len() + rep.invalid.len();
         sum.rejected_detail = rep.rejected.iter().map(|(i, id, why)| format!("replica {i}: {} {why}", id.to_hex())).collect();
+        sum.rejected_detail.extend(rep.invalid.iter().map(|(id, why)| format!("tip {}: {why}", id.to_hex())));
         sum.replica_errors = rep.replica_errors.iter().map(|(_, e)| e.clone()).collect();
         sum.losers = rep.losers;
         // materialise the head tree; anything changed on disk meanwhile is left for the next pass

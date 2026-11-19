@@ -147,6 +147,9 @@ pub struct Report {
     pub folded: Vec<Folded>,
     pub losers: usize,
     pub head: Option<Id16>,
+    /// `(tip, reason)` — verified commits whose tree does not match their
+    /// declared `tree_hash`; never adopted as head or merged.
+    pub invalid: Vec<(Id16, String)>,
 }
 
 /// Device display names for conflict file names (falls back to the
@@ -444,10 +447,13 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
     /// unknown parent = 0) of every known commit.
     fn ready_and_gen(&self) -> (BTreeSet<Id16>, HashMap<Id16, u64>) {
         let mut st: HashMap<Id16, (bool, u64)> = HashMap::new();
+        // expanded but not finished: meeting one of these again = a cycle
+        // (not expanded twice, or the walk would never end)
+        let mut open: BTreeSet<Id16> = BTreeSet::new();
         for id in self.commits.keys() {
             let mut stack = vec![(*id, false)];
             while let Some((x, expanded)) = stack.pop() {
-                if st.contains_key(&x) {
+                if st.contains_key(&x) || (!expanded && open.contains(&x)) {
                     continue;
                 }
                 let Some(m) = self.commits.get(&x) else {
@@ -455,6 +461,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                     continue;
                 };
                 if !expanded {
+                    open.insert(x);
                     stack.push((x, true));
                     for par in &m.batch.parents {
                         if !st.contains_key(&par.commit_id) {
@@ -470,6 +477,7 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                         ready &= r;
                         g = g.max(pg);
                     }
+                    open.remove(&x);
                     st.insert(x, (ready, g + 1));
                 }
             }
@@ -688,7 +696,17 @@ impl<'p, P: CryptoProvider + ?Sized> Engine<'p, P> {
                 return Err(EngineError::State("head lost its ancestry".into()));
             }
         }
-        let tips = self.tips();
+        // A tip becomes head (fast-forward) or a merge side only after its
+        // declared tree_hash checks out along the first-parent chain: a
+        // validly signed commit that lies about its tree is reported and
+        // skipped, it neither becomes head nor aborts the pass.
+        let mut tips = Vec::new();
+        for t in self.tips() {
+            match self.tree(&t) {
+                Ok(_) => tips.push(t),
+                Err(e) => rep.invalid.push((t, e.to_string())),
+            }
+        }
         let mut cur = self.state.head;
         for t in tips {
             let Some(c) = cur else {

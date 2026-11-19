@@ -25,9 +25,10 @@ use sync_core::vault::{
 use sync_crypto::fips::FipsProvider;
 use sync_crypto::words::Phrase;
 use sync_crypto::CryptoProvider;
-use sync_proto::api::{DestroyConfirm, ErrorCode};
+use sync_proto::api::{DestroyConfirm, ErrorCode, ObjKind};
 use sync_proto::batch::Class;
 use sync_proto::vault::{CfgSigner, SlotState};
+use sync_proto::Id16;
 use sync_server::{serve, App, Config};
 
 static N: AtomicU32 = AtomicU32::new(0);
@@ -88,6 +89,7 @@ fn read(e: &mut Engine<'_, FipsProvider>, keys: &dyn DeviceKeys, path: &str) -> 
 fn clean(r: &Report) {
     assert!(r.rejected.is_empty(), "rejected: {:?}", r.rejected);
     assert!(r.replica_errors.is_empty(), "replica errors: {:?}", r.replica_errors);
+    assert!(r.invalid.is_empty(), "invalid: {:?}", r.invalid);
 }
 
 #[test]
@@ -280,4 +282,83 @@ fn keystore_entries_and_daily_round_trip() {
     assert!(denied.get(&vid, Entry::Daily).unwrap().is_some(), "daily never prompts");
     denied.delete(&vid, Entry::Backup).unwrap();
     assert!(denied.get(&vid, Entry::Backup).unwrap().is_none());
+}
+
+/// Serves at most `cfg_gens` cfg generations per chain walk (a server
+/// replaying an older cfg chain); everything else passes through.
+struct StaleCfg<'a> {
+    inner: &'a HttpTransport,
+    cfg_gens: usize,
+    seen: std::sync::Mutex<usize>,
+}
+
+impl Transport for StaleCfg<'_> {
+    fn health(&self) -> sync_core::transport::Result<sync_proto::api::Health> {
+        self.inner.health()
+    }
+    fn enroll(&self, t: &str, k: &[u8]) -> sync_core::transport::Result<sync_proto::api::EnrollResponse> {
+        self.inner.enroll(t, k)
+    }
+    fn put(&self, kind: ObjKind, ns: &Id16, id: &Id16, b: &[u8]) -> sync_core::transport::Result<sync_core::transport::PutOutcome> {
+        self.inner.put(kind, ns, id, b)
+    }
+    fn get(&self, kind: ObjKind, ns: &Id16, id: &Id16, r: Option<sync_core::transport::Range>) -> sync_core::transport::Result<sync_core::transport::Fetched> {
+        if kind == ObjKind::Cfg {
+            let mut n = self.seen.lock().unwrap();
+            if *n >= self.cfg_gens {
+                *n = 0;
+                return Err(TransportError::Api { status: 404, code: ErrorCode::NotFound, detail: "stale".into() });
+            }
+            *n += 1;
+        }
+        self.inner.get(kind, ns, id, r)
+    }
+    fn get_deleted(&self, kind: ObjKind, ns: &Id16, id: &Id16) -> sync_core::transport::Result<Vec<u8>> {
+        self.inner.get_deleted(kind, ns, id)
+    }
+    fn missing(&self, ns: &Id16, ids: &[Id16]) -> sync_core::transport::Result<Vec<Id16>> {
+        self.inner.missing(ns, ids)
+    }
+    fn list(&self, ns: &Id16, q: sync_proto::api::ListQuery) -> sync_core::transport::Result<sync_proto::api::ListResponse> {
+        self.inner.list(ns, q)
+    }
+    fn delete(&self, kind: ObjKind, ns: &Id16, id: &Id16) -> sync_core::transport::Result<()> {
+        self.inner.delete(kind, ns, id)
+    }
+    fn destroy_request(&self, ns: &Id16) -> sync_core::transport::Result<sync_proto::api::DestroyChallenge> {
+        self.inner.destroy_request(ns)
+    }
+    fn destroy_confirm(&self, ns: &Id16, c: &DestroyConfirm) -> sync_core::transport::Result<sync_proto::api::DestroyReceipt> {
+        self.inner.destroy_confirm(ns, c)
+    }
+}
+
+#[test]
+fn refresh_refuses_a_rolled_back_cfg_chain() {
+    let p = FipsProvider::new().expect("FIPS module in FIPS mode");
+    let s = server();
+    let words = Phrase::generate(&p).unwrap();
+    let ta = client(&s);
+    let tok = s.app.create_enrollment(None, 600).unwrap();
+    let mut a = create_vault(&p, &ta, &s.url, &tok, &words, "laptop").expect("create");
+    let tb = client(&s);
+    let _b = bootstrap(&p, &tb, &s.url, &words, "desktop").expect("bootstrap appends gen 1");
+    a.refresh_chain(&p, &ta).expect("honest refresh");
+    assert_eq!(a.chain.gens.len(), 2);
+    let accepted = a.chain.clone();
+
+    // the server replays gen 0 only: valid signatures, but older than what A accepted
+    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0) };
+    assert_eq!(a.refresh_chain(&p, &stale).unwrap_err(), VaultError::Chain("cfg chain rolled back or forked".into()));
+    assert_eq!(a.chain, accepted, "the accepted chain is kept");
+    let root = root_of(&p, &words).unwrap();
+    let stale = StaleCfg { inner: &ta, cfg_gens: 1, seen: std::sync::Mutex::new(0) };
+    assert_eq!(
+        a.refresh_with_words(&p, &stale, &root).unwrap_err(),
+        VaultError::Chain("cfg chain rolled back or forked".into())
+    );
+    assert_eq!(a.chain, accepted);
+    // control: the full chain still refreshes
+    a.refresh_chain(&p, &ta).expect("refresh after the replay");
+    a.refresh_with_words(&p, &ta, &root).expect("words refresh");
 }

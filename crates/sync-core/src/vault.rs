@@ -286,6 +286,13 @@ impl Chain {
             .and_then(|i| u8::try_from(i).ok())
     }
 
+    /// True if `self` is `old` plus zero or more generations: every
+    /// generation `old` accepted is still there, byte for byte (same
+    /// plaintext hash). A shorter or diverging chain is a rollback.
+    pub fn extends(&self, old: &Chain) -> bool {
+        self.hashes.len() >= old.hashes.len() && self.hashes[..old.hashes.len()] == old.hashes[..]
+    }
+
     /// Unsigned successor of the head (gen+1, prev = head hash).
     fn successor(&self) -> CfgGen {
         let mut n = self.head().clone();
@@ -505,8 +512,14 @@ impl Member {
 
     /// Re-read the cfg chain. Errors with `Revoked` if this device lost its
     /// slot and `NeedWords` if a VK epoch exists that the keyring lacks.
+    /// A chain that does not extend the accepted one (a server serving an
+    /// older or forked cfg chain) is refused and the accepted chain kept.
     pub fn refresh_chain(&mut self, p: &FipsProvider, t: &dyn Transport) -> Result<()> {
-        self.chain = fetch_chain(p, t, &self.env, &self.ns(), None)?;
+        let chain = fetch_chain(p, t, &self.env, &self.ns(), None)?;
+        if !chain.extends(&self.chain) {
+            return Err(chain_err("cfg chain rolled back or forked"));
+        }
+        self.chain = chain;
         self.own_slot()?;
         if self.chain.head().vk_epoch > self.env.current().epoch {
             return Err(VaultError::NeedWords);
@@ -520,9 +533,17 @@ impl Member {
         if env.vault_id != self.env.vault_id {
             return Err(VaultError::Format("words belong to another vault".into()));
         }
-        self.env = env;
         let rs = rsig_key(p, root)?.public_key();
-        self.chain = fetch_chain(p, t, &self.env, &self.ns(), Some(rs.as_slice()))?;
+        let ns = env.servers.get(self.server).ok_or_else(|| VaultError::Format("envelope lost the server".into()))?.ns;
+        let chain = fetch_chain(p, t, &env, &ns, Some(rs.as_slice()))?;
+        if !chain.extends(&self.chain) {
+            return Err(chain_err("cfg chain rolled back or forked"));
+        }
+        if env.current().epoch < self.env.current().epoch {
+            return Err(VaultError::Format("envelope key epoch went back".into()));
+        }
+        self.env = env;
+        self.chain = chain;
         self.own_slot()?;
         Ok(())
     }
@@ -881,5 +902,11 @@ pub fn pair_join(p: &FipsProvider, t: &dyn Transport, j: Joining) -> Result<(Mem
     let chain = fetch_chain(p, t, &j.env, &ns, None)?;
     let m = Member { env: j.env, device: j.device, chain, server: j.server };
     m.own_slot()?;
+    // same gate as from_daily / refresh_chain: a VK epoch the envelope we
+    // were handed does not hold means a newer key exists; activating now
+    // would sync under a stale key
+    if m.chain.head().vk_epoch > m.env.current().epoch {
+        return Err(VaultError::NeedWords);
+    }
     Ok((m, j.words))
 }
