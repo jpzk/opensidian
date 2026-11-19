@@ -419,12 +419,27 @@ impl Vault {
     /// that zero-byte claim. Parents of `to` are created.
     pub fn move_file(&self, from: &Path, to: &Path) -> io::Result<()> {
         let (fd_from, lf) = self.parent(from, false)?;
-        match stat_at(fd_from.fd.as_raw_fd(), &lf) {
-            Ok(st) if is_reg(&st) => {}
+        let src = match stat_at(fd_from.fd.as_raw_fd(), &lf) {
+            Ok(st) if is_reg(&st) => st,
             Ok(_) => return Err(refused(from, "source is not a regular file")),
             Err(e) => return Err(e),
-        }
+        };
         let (fd_to, lt) = self.parent(to, true)?;
+        // macOS port: on a case-insensitive filesystem (APFS's default) `Note.md` -> `note.md` names
+        // the SAME inode, so the O_EXCL claim below says "exists". A case-only rename of that very
+        // file has nothing to claim or clobber: renameat just stores the new case. Same parent, same
+        // inode, names equal ignoring case — a hard link under another name is never taken this way.
+        #[cfg(target_os = "macos")]
+        if let Ok(t) = stat_at(fd_to.fd.as_raw_fd(), &lt) {
+            let same_name = lf.to_string_lossy().to_lowercase() == lt.to_string_lossy().to_lowercase();
+            let same_dir = stat_at(fd_from.fd.as_raw_fd(), &CString::new(".").expect("no NUL"))
+                .and_then(|a| stat_at(fd_to.fd.as_raw_fd(), &CString::new(".").expect("no NUL")).map(|b| (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)))
+                .unwrap_or(false);
+            if same_name && same_dir && (t.st_dev, t.st_ino) == (src.st_dev, src.st_ino) && lf != lt {
+                // SAFETY: valid fds + NUL-terminated names
+                return cvt(unsafe { libc::renameat(fd_from.fd.as_raw_fd(), lf.as_ptr(), fd_to.fd.as_raw_fd(), lt.as_ptr()) }).map(|_| ());
+            }
+        }
         drop(self.create_new_at(&fd_to, &lt)?);
         hook("move_file:claimed");
         // SAFETY: valid fds + NUL-terminated names
@@ -607,7 +622,11 @@ impl Vault {
                 Err(_) => continue,
             };
             // SAFETY: valid fd + NUL-terminated names
+            #[cfg(target_os = "linux")]
             let r = cvt(unsafe { libc::renameat2(dfd, tmp.as_ptr(), dfd, cn.as_ptr(), libc::RENAME_NOREPLACE) });
+            // no renameat2 off Linux: take the link(2) path below, which refuses an existing name too
+            #[cfg(not(target_os = "linux"))]
+            let r: io::Result<libc::c_int> = Err(io::Error::from_raw_os_error(libc::ENOSYS));
             let r = match r {
                 Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
                     // no NOREPLACE here: link(2) refuses an existing name too
@@ -907,6 +926,7 @@ impl Vault {
     /// directory is changed, through /proc/self/fd/<fd>, which names exactly the
     /// inode we hold (fchmod on an O_PATH fd is EBADF), so a swap after the open
     /// cannot redirect it. setuid/setgid/sticky never get through: mode & 0o777.
+    #[cfg(target_os = "linux")]
     pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
         let (d, leaf) = self.parent(rel, false)?;
         // SAFETY: valid fd + NUL-terminated name; the fd is owned below
@@ -917,6 +937,26 @@ impl Vault {
         let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
         // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
         cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+    }
+
+    /// Non-Linux p_chmod: no O_PATH and no /proc. The leaf is opened O_RDONLY with
+    /// O_SYMLINK (a symlink opens as itself and is refused, the target never reached), O_NONBLOCK (a FIFO
+    /// cannot hang the open) and O_NOCTTY; fstat refuses anything but a regular file
+    /// or directory, and fchmod acts on the held fd, so a swap after the open cannot
+    /// redirect it. A file without read permission cannot be opened and is refused.
+    #[cfg(not(target_os = "linux"))]
+    pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        let (d, leaf) = self.parent(rel, false)?;
+        // O_SYMLINK opens a symlink ITSELF (fstat S_IFLNK -> pstat_of refuses it, the same EPERM as
+        // Linux's O_PATH|O_NOFOLLOW fd), never its target; a regular file or directory opens as itself
+        let flags = libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC;
+        // SAFETY: valid fd + NUL-terminated name; the fd is owned below
+        let raw = cvt(unsafe { libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), flags) })?;
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        pstat_of(rel, &fstat(fd.as_raw_fd())?)?; // FIFO, device, socket -> refused
+        hook("p_chmod:opened");
+        // SAFETY: valid fd we own
+        cvt(unsafe { libc::fchmod(fd.as_raw_fd(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
     }
 }
 

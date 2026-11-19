@@ -50,7 +50,22 @@ async fn read(window: tauri::Window) -> Option<String> {
         .flatten()
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: NSPasteboard's plain text, read on the main thread (AppKit), same verdict (accept)
+#[cfg(target_os = "macos")]
+async fn read(window: tauri::Window) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(accept(crate::macos::clipboard_text().as_deref()));
+        })
+        .ok()?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(2)).ok().flatten())
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 async fn read(_window: tauri::Window) -> Option<String> {
     None
 }

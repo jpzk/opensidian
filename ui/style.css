@@ -2545,3 +2545,11 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .mermaid-error { padding: 8px 12px; border: 1px solid var(--text-error, #e93147); border-radius: 6px;
   color: var(--text-error, #e93147); background: var(--background-secondary); }
 .mermaid-error-detail { margin: 6px 0 0; white-space: pre-wrap; font-size: 0.85em; }
+
+/* macOS port: the window keeps AppKit's own chrome — traffic lights overlaid on the top-left
+   corner (title_bar_style Overlay) and native resize edges — so the app's own window buttons and
+   resize strips go, and the ribbon + left sidebar tabs start below a strip that holds the lights
+   (still a drag region: #stabs / #ribbon, main.js wfDragRegion). 30px clears the 28px title bar. */
+html.os-mac #wframe > button, html.os-mac #wrz { display: none }
+html.os-mac #ribbon { padding-top: 30px }
+html.os-mac #stabs { padding-top: 30px }

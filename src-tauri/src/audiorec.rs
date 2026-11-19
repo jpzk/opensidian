@@ -347,7 +347,11 @@ pub fn rec_offscreen_drop<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
 
 #[cfg(not(target_os = "linux"))]
 pub fn rec_offscreen<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>, _: &tauri::WebviewWindow<R>) {}
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub fn rec_offscreen_drop<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    let _ = w.with_webview(|pw| crate::macos::media_gate_forget(pw.inner()));
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn rec_offscreen_drop<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
 
 /// the kill switch (codeant C1 on #124): every microphone track of the window's
@@ -369,9 +373,27 @@ pub fn mic_off<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) -> Result<(), Str
     .map_err(|e| format!("audio recorder: {e}"))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: the same gate on wry's WKUIDelegate (macos::media_gate) — registered for this window's
+/// webview; the app window is registered too, so its requests meet the rule (#136: always Deny)
+#[cfg(target_os = "macos")]
+pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
+    install_then(w, || {});
+}
+#[cfg(target_os = "macos")]
+pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
+    let label = w.label().to_string();
+    let r = w.with_webview(move |pw| {
+        crate::macos::media_gate(pw.inner(), &label, |l, a, v| decide(l, a, v, false, Instant::now()) == Verdict::Allow);
+        done();
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] gate not installed: {e}");
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn install<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>) {}
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn install_then<R: tauri::Runtime>(_: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
     done();
 }

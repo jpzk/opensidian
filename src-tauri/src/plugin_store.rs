@@ -206,7 +206,97 @@ pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> 
     Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: libsoup does not exist here, so each hop is one run of Apple's /usr/bin/curl (SIP-protected,
+/// absolute path, fixed arguments, no new crate). The egress rules are unchanged and stay in Rust:
+/// check_url on every hop; curl follows NO redirect (--max-redirs 0, no -L), next_hop re-checks each
+/// Location; --proto limits the scheme (http only for the loopback mirror); -q skips ~/.curlrc;
+/// the idle timeout is --speed-time, the whole-request deadline --max-time plus the read loop; the
+/// byte cap is enforced while reading stdout (curl is killed past it). Anonymous: no cookies, no auth.
+#[cfg(target_os = "macos")]
+pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    crate::net_allowed(what)?; // #144 toggle 3: the choke point, before any request exists
+    let base = mirror_base();
+    let mut cur = check_url(logical)?;
+    let deadline = Instant::now() + DEADLINE;
+    let io = IO_TIMEOUT_S.to_string();
+    for _ in 0..=MAX_REDIRECTS {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!("{what}: timed out"));
+        }
+        let wire = wire_url(&cur, base.as_ref());
+        let mut c = Command::new("/usr/bin/curl");
+        c.arg("-q") // must be first: no ~/.curlrc
+            .args(["--silent", "--show-error", "--globoff", "--max-redirs", "0"])
+            .args(["--proto", if base.is_some() { "=http,https" } else { "=https" }])
+            .args(["--connect-timeout", &io, "--speed-limit", "1", "--speed-time", &io])
+            .args(["--max-time", &format!("{:.0}", left.as_secs_f64().ceil())])
+            .args(["--user-agent", concat!("opensidian/", env!("CARGO_PKG_VERSION"), " plugin-browser")]);
+        if cur.host_str() == Some("api.github.com") {
+            c.args(["--header", "Accept: application/vnd.github+json"]);
+        }
+        // status + raw Location to stderr, after any error text; the body alone goes to stdout
+        c.args(["--write-out", "%{stderr}\n\u{1}CODE %{http_code}\n\u{1}LOC %header{location}\n"])
+            .arg("--url")
+            .arg(&wire)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = c.spawn().map_err(|e| format!("{what}: cannot run /usr/bin/curl: {e}"))?;
+        let mut stdout = child.stdout.take().expect("piped");
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match stdout.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{what}: read: {e}"));
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            if out.len() as u64 > cap {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("refused: {what} is larger than the {cap}-byte cap"));
+            }
+        }
+        let mut err = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            let _ = e.read_to_string(&mut err);
+        }
+        let _ = child.wait();
+        let field = |tag: &str| err.lines().find_map(|l| l.strip_prefix(tag)).map(|v| v.trim().to_string());
+        let code: u32 = field("\u{1}CODE ").and_then(|v| v.parse().ok()).unwrap_or(0);
+        if code == 0 {
+            let msg = err.lines().find(|l| !l.trim().is_empty() && !l.starts_with('\u{1}')).unwrap_or("no response").trim();
+            return Err(format!("{what}: {} — {msg}", cur.host_str().unwrap_or("?")));
+        }
+        if (300..400).contains(&code) && code != 304 {
+            let loc = field("\u{1}LOC ").filter(|l| !l.is_empty()).ok_or_else(|| format!("{what}: HTTP {code} without a Location"))?;
+            cur = next_hop(&cur, &loc, base.as_ref()).map_err(|e| format!("{what}: redirect {e}"))?;
+            continue;
+        }
+        if code != 200 {
+            let hint = if (code == 403 || code == 429) && cur.host_str() == Some("api.github.com") {
+                " (GitHub's anonymous API rate limit; try again later)"
+            } else {
+                ""
+            };
+            return Err(format!("{what}: HTTP {code} from {}{hint}", cur.host_str().unwrap_or("?")));
+        }
+        return Ok(out);
+    }
+    Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn http_get(logical: &str, _cap: u64, what: &str) -> Result<Vec<u8>, String> {
     crate::net_allowed(what)?; // #144 toggle 3
     check_url(logical)?;

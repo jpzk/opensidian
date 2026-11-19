@@ -562,8 +562,40 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     d.present();
 }
 
+/// macOS: the same question as an NSAlert sheet on the window (macos::consent_alert): head as the
+/// message, the body in a read-only scrolling text view, the any-arguments note only where Always
+/// is offered. The refusing button comes FIRST, so Return answers it, as Enter does on Linux.
+#[cfg(target_os = "macos")]
+fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
+    let (_title, no, yes) = match kind {
+        Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
+        Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
+        Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
+        Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+    };
+    // GTK mnemonics ("_Trust") have no meaning in AppKit
+    let plain = |s: &str| s.replace('_', "");
+    let mut buttons = vec![plain(no), plain(yes)];
+    if q.always {
+        buttons.push(plain(ALWAYS_LABEL));
+    }
+    eprintln!("[consent] dialog text: {:?}", q.log);
+    let tx = std::cell::RefCell::new(Some(tx));
+    let refs: Vec<&str> = buttons.iter().map(String::as_str).collect();
+    let nsw = win.ns_window().unwrap_or(std::ptr::null_mut());
+    crate::macos::consent_alert(nsw, &q.head, &q.text, q.always.then_some(ALWAYS_NOTE), &refs, move |i| {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.send(match i {
+                1 => Answer::Once,
+                2 => Answer::Always,
+                _ => Answer::No,
+            });
+        }
+    });
+}
+
 /// no native prompt on this platform = NO (nothing is trusted or started)
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     let _ = tx.send(Answer::No);
 }
