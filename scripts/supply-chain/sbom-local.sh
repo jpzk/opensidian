@@ -94,21 +94,26 @@ webkit_native() {
   done
   bash "$here/webkit-bundle-sbom.sh" ${bin:+--bin "$bin"}
 }
+# Literal pins (pin-check #189 reads them from this file); asserted == appimage-build.sh below,
+# like webkit-apt.sh --check, so the SBOM cannot drift from what the AppImage bundles.
+WK_IMG=docker.io/library/ubuntu@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+# = appimage-build.sh PKGS + jq/libjq1 for webkit-bundle-sbom.sh (same snapshot, resolute-security;
+# not in the WebKit ldd closure, so they add nothing to the SBOM)
+PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.1 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260601~26.04.1 curl=8.18.0-1ubuntu2.7 xz-utils=5.8.3-1 jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2"
 webkit_podman() {
   command -v podman >/dev/null || die "podman: not installed (or use --webkit native on Ubuntu 26.04, or --skip webkit)"
-  local img snap pkgs ca
-  img=docker.io/library/ubuntu@$(ab_var DIGEST); snap=$(ab_var SNAP); pkgs=$(ab_var PKGS)
-  [[ $img =~ @sha256:[0-9a-f]{64}$ ]] && [ -n "$snap" ] && [ -n "$pkgs" ] || die "cannot read DIGEST/SNAP/PKGS from $AB"
-  # jq for webkit-bundle-sbom.sh, pinned at the same snapshot (resolute-security); not in the
-  # WebKit ldd closure, so it adds nothing to the SBOM
-  pkgs="$pkgs jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2"
+  local snap ca
+  snap=$(ab_var SNAP)
+  [ -n "$snap" ] || die "cannot read SNAP from $AB"
+  [ "$WK_IMG" = "docker.io/library/ubuntu@$(ab_var DIGEST)" ] || die "WK_IMG $WK_IMG != appimage-build.sh DIGEST $(ab_var DIGEST)"
+  [ "$PKGS" = "$(ab_var PKGS) jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2" ] || die "sbom-local.sh PKGS != appimage-build.sh PKGS + jq libjq1"
   ca=${HOST_CA_BUNDLE:-}
   if [ -z "$ca" ]; then for c in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do [ -s "$c" ] && { ca=$c; break; }; done; fi
   [ -s "$ca" ] || die "no host CA bundle (set HOST_CA_BUNDLE)"
-  say "webkit via podman: $img, apt snapshot $snap"
-  podman image exists "$img" || podman pull -q "$img" >&2 || die "podman pull $img"
-  podman run --rm --network=host -e SNAP="$snap" -e PKGS="$pkgs" -e HASBIN="${bin:+1}" \
-    -v "$ca":/host-ca.crt:ro -v "$root":/src:ro ${bin:+-v "$bin":/opensidian-bin:ro} "$img" bash -euo pipefail -c '
+  say "webkit via podman: $WK_IMG, apt snapshot $snap"
+  podman image exists "$WK_IMG" || podman pull -q "$WK_IMG" >&2 || die "podman pull $WK_IMG"
+  podman run --rm --network=host -e SNAP="$snap" -e PKGS="$PKGS" -e HASBIN="${bin:+1}" \
+    -v "$ca":/host-ca.crt:ro -v "$root":/src:ro ${bin:+-v "$bin":/opensidian-bin:ro} "$WK_IMG" bash -euo pipefail -c '
     rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt.conf.d/docker-clean
     printf "Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/%s/\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nCheck-Valid-Until: no\n" "$SNAP" > /etc/apt/sources.list.d/snapshot.sources
     echo "Acquire::https::CAInfo \"/host-ca.crt\";" > /etc/apt/apt.conf.d/99host-ca

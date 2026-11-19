@@ -43,7 +43,7 @@ if [ "$rc" -eq 0 ] && [ "$(tail -1 "$t/so")" = "$F" ]; then ok "skip webkit: rc=
 n_lock=$(grep -c '^\[\[package\]\]' "$s/src-tauri/Cargo.lock")
 check "merged CycloneDX 1.6, root opensidian-release@9.8.7" "$F" \
   '.bomFormat == "CycloneDX" and .specVersion == "1.6" and .metadata.component."bom-ref" == "opensidian-release@9.8.7"'
-check "all $((n_lock-1)) cargo crates + npm stub present" "$F" \
+check "all $((n_lock-1)) cargo crates + pkg:npm/stub present" "$F" \
   "([.components[] | select(.purl // \"\" | startswith(\"pkg:cargo/\"))] | length) == $((n_lock-1)) and ([.components[] | select(.purl == \"pkg:npm/stub@1.0.0\")] | length) == 1"
 check "skip recorded: opensidian:sbom-local:skipped == webkit, parts == rust vendor flatpak" "$F" \
   '(.metadata.properties | from_entries) as $p | $p["opensidian:sbom-local:skipped"] == "webkit" and $p["opensidian:sbom-local:parts"] == "rust vendor flatpak" and $p["opensidian:sbom-local:dirty"] == "false"'

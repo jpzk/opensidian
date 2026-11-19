@@ -25,7 +25,7 @@ die(){ say "FAIL: $*"; exit 1; }
 DIGEST=sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 IMG=docker.io/library/ubuntu@$DIGEST
 SNAP=20261004T000000Z
-PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.1 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3 librsvg2-2=2.61.3+dfsg-3 librsvg2-common=2.61.3+dfsg-3 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260601~26.04.1 curl=8.18.0-1ubuntu2.7 xz-utils=5.8.3-1"
+PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.1 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.1 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260601~26.04.1 curl=8.18.0-1ubuntu2.7 xz-utils=5.8.3-1"
 RUST=1.98.0   # = release.yml RUST_TOOLCHAIN (checked below)
 RUST_MANIFEST_SHA256=3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a
 [ "$RUST" = "$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$(dirname "$0")/../../rust-toolchain.toml")" ] || { echo "rust-toolchain.toml channel != $RUST" >&2; exit 1; }
