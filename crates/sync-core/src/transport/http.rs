@@ -653,7 +653,8 @@ mod tests {
         let mut b = [0u8; 1];
         let e = loop {
             match d.read(&mut b) {
-                Ok(_) => continue,
+                Ok(n) if n > 0 => continue,
+                Ok(_) => panic!("peer closed before the deadline"),
                 Err(e) => break e,
             }
         };

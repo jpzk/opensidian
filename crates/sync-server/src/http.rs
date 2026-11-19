@@ -6,6 +6,10 @@
 //! Order of checks on every request: route + method -> proto header ->
 //! size limit (Content-Length before reading, `Limited` while reading) ->
 //! auth -> body parse. Store calls run on the blocking pool.
+// Handlers return `Result<Resp, Resp>`: the Err side is the finished error
+// response (same type as the Ok side), sent once per request; boxing it would
+// only add an allocation on the error path.
+#![allow(clippy::result_large_err)]
 
 use std::convert::Infallible;
 use std::net::IpAddr;

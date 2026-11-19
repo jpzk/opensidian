@@ -164,7 +164,7 @@ impl FsTransport {
         let log = self.read_log(ns)?;
         let mut out = Vec::new();
         // A torn trailing record (crash mid-append) is ignored.
-        for (i, rec) in log.chunks_exact(RECORD).enumerate() {
+        for (i, rec) in log.as_chunks::<RECORD>().0.iter().enumerate() {
             let seq = i as u64 + 1;
             if seq <= q.after {
                 continue;

@@ -250,8 +250,8 @@ fn random_eff_phrases_fail_checksum_at_expected_rate() {
     for _ in 0..20000 {
         f.random(&mut b).unwrap();
         let m: Vec<&str> = b
-            .chunks_exact(2)
-            .map(|c| word(u16::from_be_bytes([c[0], c[1]]) % LIST_LEN as u16).unwrap())
+            .as_chunks::<2>().0.iter()
+            .map(|c| word(u16::from_be_bytes(*c) % LIST_LEN as u16).unwrap())
             .collect();
         if Phrase::parse(&f, &m.join(" ")).is_ok() {
             passed += 1;
