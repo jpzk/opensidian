@@ -1,9 +1,9 @@
 # Opensidian Sync (#238, PR #238) — screenshots
 
-Product feat/sync **c1e091c** (debug build, OpenSSL 3.5.9 FIPS provider, CMVP #5586), harness phase/238-sync **a07509ed**.
+Product feat/sync **777dfc9** (debug build, OpenSSL 3.5.9 FIPS provider, CMVP #5586), harness phase/238-sync **a07509ed**.
 Taken on the shared box (hz-176764494) by the harness phases `syncset` and `synchist` on a boxd display lease
 (box-run.sh BOX_BX=1 t1, 1280x800 display; the sync window is 760x640). Server: a local opensidian-sync-server on 127.0.0.1;
-the vault was created by the CLI and joined by the app with its 12 backup words. Run 20261119T132907Z: synce2e, syncset,
+the vault was created by the CLI and joined by the app with its 12 backup words. Run 20261119T135106Z: synce2e, syncset,
 synchist, syncplg all PASS.
 
 - `syncset-1-setup-form.png` — Sync tab before setup: server URL, device name, create (enrollment token) or join (12 words), CA file.
