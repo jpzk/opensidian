@@ -9855,7 +9855,24 @@ mod tests {
             let ask = b.find(&format!("engineOff(\"{f}\")")).unwrap_or_else(|| panic!("{load} does not ask its switch"));
             assert!(ask < b.find(lib).expect(lib), "{load}: the switch is asked before {lib}");
         }
-        assert!(js.contains("loadMermaid: () => engineOff(\"mermaid\")"), "loadMermaid names its switch when off");
+        // #187 (3477e8b, #232) replaced the "not bundled" stub `loadMermaid: () => engineOff("mermaid") || ...`
+        // with the vendored loader: it must still name its switch FIRST, before any fetch, global or
+        // config, and every Mermaid entry (plugin API, __osLibs, the app's renderMermaid) is that one loader
+        let m = js.find("function loadMermaid() {").expect("loadMermaid");
+        let mb = &js[m..m + js[m..].find("\n    }\n").expect("loadMermaid end")];
+        let ask = mb.find("const off = engineOff(\"mermaid\"); if (off) return off;").expect("loadMermaid names its switch when off");
+        for later in ["loadOnce(", "mermaidReady()", "loadScript(\"mermaid/mermaid.min.js\"", "window.mermaid", "configureMermaid("] {
+            assert!(ask < mb.find(later).unwrap_or_else(|| panic!("loadMermaid: {later}")), "loadMermaid: {later} runs before the switch");
+        }
+        assert_eq!(js.matches("loadScript(\"mermaid/").count(), 1, "Mermaid is fetched only inside the gated loader");
+        assert_eq!(js.matches("function loadMermaid(").count(), 1, "one Mermaid loader");
+        let r = js.find("function renderMermaid(").expect("renderMermaid");
+        let rb = &js[r..r + js[r..].find("\n    }\n").expect("renderMermaid end")];
+        assert!(rb.contains("return loadMermaid().then(") && !rb.contains("window.mermaid"), "renderMermaid reaches Mermaid only through the gated loader");
+        let g = js.find("const GATED = {").expect("GATED");
+        let gb = &js[g..g + js[g..].find("};").expect("GATED end")];
+        assert!(gb.contains("\n      loadMermaid,\n") && !gb.contains("loadMermaid:"), "the plugin API exports the gated loader itself");
+        assert!(js.contains("Object.freeze({ loadPrism, loadMermaid, renderMermaid })"), "__osLibs hands out the gated loader");
         let set = src.find("async fn security_set(").expect("security_set");
         let sb = &src[set..set + src[set..].find("\n}\n").expect("end")];
         assert!(sb.contains("win.emit(\"security-changed\", field)"), "security_set tells the page whoever called it");
