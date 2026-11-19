@@ -6,13 +6,13 @@ changed — every OPEN code fix needs a compile + test run on the build box,
 which is gone since 2026-11-18 22:31Z (no cargo on the agent VM).
 Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 
-- crates/sync-crypto/tests/wycheproof.rs:12-12 Preserve the pinned fixture bytes on checkout. — OPEN
+- crates/sync-crypto/tests/wycheproof.rs:12-12 Preserve the pinned fixture bytes on checkout. — FIXED (42235fe: .gitattributes marks crates/sync-crypto/vectors/** and wordlists/** -text; the test still asserts the pinned sha256)
 - crates/sync-core/src/vault.rs:708-709 Recover a published envelope when the cfg append fails. — OPEN
 - crates/sync-core/src/vault.rs:883-883 Check the key epoch before activating a paired device. — FIXED (22fe9be: pair_join returns NeedWords when the cfg head vk_epoch is newer than the envelope epoch, same gate as from_daily/refresh_chain)
 - crates/sync-core/src/vault.rs:509-509 Reject chain refreshes that roll back the accepted cfg chain. — FIXED (22fe9be: refresh refuses a chain that is shorter than or forks the accepted cfg chain, envelope key epoch going back refused; test refresh_refuses_a_rolled_back_cfg_chain)
-- crates/sync-core/src/keystore.rs:140-140 Make directory durability handling platform-specific. — OPEN
-- crates/sync-core/src/keystore.rs:134-134 Use a unique temporary file for each write. — OPEN
-- crates/sync-core/src/keystore.rs:105-105 Windows keystore entries have no owner-only access control. — OPEN
+- crates/sync-core/src/keystore.rs:140-140 Make directory durability handling platform-specific. — FIXED (42235fe: directory fsync cfg(unix); on Windows the rename is the durability point)
+- crates/sync-core/src/keystore.rs:134-134 Use a unique temporary file for each write. — FIXED (42235fe: create_new temp named pid.seq.nanos.attempt, removed on failure; test keystore_concurrent_puts_use_unique_temp_files)
+- crates/sync-core/src/keystore.rs:105-105 Windows keystore entries have no owner-only access control. — FIXED (42235fe: fail closed, FileKeystore::open refuses off unix instead of writing secrets without owner-only access; a Windows ACL/DPAPI keystore is a follow-up)
 - crates/sync-core/src/transport/fs.rs:250-250 Reject unsupported USB volumes during replica setup. — OPEN
 - crates/sync-core/src/transport/fs.rs:164-164 Read the replica log from the requested cursor. — OPEN
 - crates/sync-core/src/transport/fs.rs:233-235 Repair the list index before returning Identical. — OPEN
@@ -20,7 +20,7 @@ Each OPEN item is a follow-up and blocks goal_done (criterion 8).
 - crates/sync-core/src/transport/http.rs:259-260 Check the resolved address before opening a plain HTTP connection. — FIXED (plain http skips every resolved non-loopback address; test plain_http_connects_to_loopback_addresses_only)
 - crates/sync-core/src/engine.rs:436-440 Detect ancestry cycles before expanding parents. — FIXED (22fe9be: cyclic parents stay pending, ready_and_gen terminates; test parent_cycle_is_pending_not_a_hang)
 - crates/sync-core/src/engine.rs:644-644 Skip the push phase for replicas that fail during pull. — OPEN
-- crates/sync-core/src/engine.rs:262-262 Use a Windows-compatible state persistence path. — OPEN
+- crates/sync-core/src/engine.rs:262-262 Use a Windows-compatible state persistence path. — FIXED (42235fe: parent-dir fsync cfg(unix) only)
 - crates/sync-core/src/engine.rs:723-723 Order new merge commits after their parents. — OPEN
 - crates/sync-core/src/engine.rs:577-579 Keep the live head consistent when saving state fails. — OPEN
 - crates/sync-core/src/engine.rs:613-615 Try another replica after verification rejects an object. — OPEN
