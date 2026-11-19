@@ -23,7 +23,7 @@ bad=$(grep -Ev '^(#.*|crate [a-z0-9_-]+ [0-9]+\.[0-9]+\.[0-9]+ [0-9a-f]{64}|)$' 
 [ "$(awk -v n="$name" '$1 == "crate" && $2 == n' "$pins" | wc -l)" = 1 ] || fail "need exactly one pin for $name in $pins"
 line=$(awk -v n="$name" '$1 == "crate" && $2 == n {print $3, $4}' "$pins"); ver=${line% *}; sha=${line#* }
 # read the list once (no `| grep -q` under pipefail: an early grep exit SIGPIPEs cargo -> flaky red)
-inst=$("$cargo" install --list) || fail "$cargo install --list failed"
+inst=$("$cargo" install --list) || fail "could not list installed crates via $cargo"
 grep -Fqx "$name v$ver:" <<<"$inst" || fail "$name installed version != pinned $ver ($(grep -F "$name v" <<<"$inst" || echo none))"
 shopt -s nullglob
 c=("$ch"/registry/cache/*/"$name-$ver.crate")
