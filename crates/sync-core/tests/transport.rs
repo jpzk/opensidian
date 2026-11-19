@@ -481,3 +481,50 @@ fn fs_torn_log_tail_is_ignored_and_repaired() {
     let l = t.list(&ns, q(0, 0, 10)).unwrap();
     assert_eq!(l.items.iter().map(|i| (i.seq, i.id)).collect::<Vec<_>>(), vec![(1, id(1)), (2, id(2))]);
 }
+
+#[test]
+fn fs_list_reads_from_the_cursor_and_skips_tombstones() {
+    let t = FsTransport::open(tmpdir("cursor")).unwrap();
+    let ns = id(0x21);
+    for i in 1..=12u8 {
+        let x = id(i);
+        t.put(ObjKind::Obj, &ns, &x, &container(x, 8, i)).unwrap();
+    }
+    t.delete(ObjKind::Obj, &ns, &id(6)).unwrap();
+    let l = t.list(&ns, q(4, 0, 3)).unwrap();
+    assert_eq!(l.items.iter().map(|i| i.seq).collect::<Vec<_>>(), vec![5, 7, 8]);
+    assert_eq!(l.next, 8);
+    let l = t.list(&ns, q(8, 0, 1000)).unwrap();
+    assert_eq!(l.items.iter().map(|i| i.seq).collect::<Vec<_>>(), vec![9, 10, 11, 12]);
+    let l = t.list(&ns, q(12, 0, 10)).unwrap();
+    assert!(l.items.is_empty());
+    assert_eq!(l.next, 12);
+    // cursor past the end (other replica's numbering) is just empty
+    assert!(t.list(&ns, q(500, 0, 10)).unwrap().items.is_empty());
+}
+
+#[test]
+fn fs_identical_retry_repairs_a_missing_log_record() {
+    // crash between hard link and log append: object on disk, not listed
+    let t = FsTransport::open(tmpdir("repair")).unwrap();
+    let ns = id(0x22);
+    let a = id(1);
+    t.put(ObjKind::Obj, &ns, &a, &container(a, 8, 1)).unwrap();
+    let b = id(2);
+    let cb = container(b, 8, 2);
+    std::fs::write(t.root().join(ns.to_hex()).join("obj").join(b.to_hex()), &cb).unwrap();
+    assert_eq!(t.list(&ns, q(0, 0, 10)).unwrap().items.len(), 1);
+    assert_eq!(t.put(ObjKind::Obj, &ns, &b, &cb).unwrap(), PutOutcome::Identical);
+    let l = t.list(&ns, q(0, 0, 10)).unwrap();
+    assert_eq!(l.items.iter().map(|i| (i.seq, i.id)).collect::<Vec<_>>(), vec![(1, a), (2, b)]);
+    // a second retry does not duplicate the record
+    assert_eq!(t.put(ObjKind::Obj, &ns, &b, &cb).unwrap(), PutOutcome::Identical);
+    assert_eq!(t.list(&ns, q(0, 0, 10)).unwrap().items.len(), 2);
+    // the volume probe leaves nothing behind in the replica root
+    let stray: Vec<_> = std::fs::read_dir(t.root())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".osy-probe"))
+        .collect();
+    assert!(stray.is_empty());
+}

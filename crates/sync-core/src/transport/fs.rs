@@ -99,7 +99,10 @@ impl FsTransport {
                     root.display()
                 )));
             }
+            probe_volume(&root)?;
             fs::write(&marker, b"opensidian sync dir replica v1\n").map_err(io)?;
+        } else {
+            probe_volume(&root)?;
         }
         Ok(FsTransport {
             root,
@@ -161,34 +164,133 @@ impl FsTransport {
     }
 
     fn list_now(&self, ns: &Id16, q: &ListQuery) -> Result<Vec<ListItem>> {
-        let log = self.read_log(ns)?;
+        // Start reading at the cursor: record `seq` sits at byte
+        // (seq - 1) * RECORD, so a poll costs O(new records), not O(log).
+        let mut f = match File::open(self.ns_dir(ns).join("log")) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io(e)),
+        };
+        let start = q.after.saturating_mul(RECORD as u64);
+        if start >= f.metadata().map_err(io)?.len() {
+            return Ok(Vec::new());
+        }
+        f.seek(SeekFrom::Start(start)).map_err(io)?;
         let mut out = Vec::new();
-        // A torn trailing record (crash mid-append) is ignored.
-        for (i, rec) in log.as_chunks::<RECORD>().0.iter().enumerate() {
-            let seq = i as u64 + 1;
-            if seq <= q.after {
-                continue;
-            }
-            let Some(kind) = byte_kind(rec[0]) else { continue };
-            let mut id = [0u8; 16];
-            id.copy_from_slice(&rec[1..17]);
-            let id = Id16(id);
-            let mut sz = [0u8; 8];
-            sz.copy_from_slice(&rec[17..25]);
-            if matches!(kind, ObjKind::Obj | ObjKind::Cfg) && !self.tomb_path(kind, ns, &id).exists() {
-                out.push(ListItem {
-                    seq,
-                    kind,
-                    id,
-                    size: u64::from_be_bytes(sz),
-                });
-                if out.len() >= q.limit as usize {
-                    break;
+        let mut seq = q.after;
+        let mut buf = vec![0u8; RECORD * 1024];
+        let mut have = 0usize;
+        loop {
+            let n = f.read(&mut buf[have..]).map_err(io)?;
+            have += n;
+            // A torn trailing record (crash mid-append) is ignored.
+            let whole = have - have % RECORD;
+            for rec in buf[..whole].as_chunks::<RECORD>().0 {
+                seq += 1;
+                let Some(kind) = byte_kind(rec[0]) else { continue };
+                let mut id = [0u8; 16];
+                id.copy_from_slice(&rec[1..17]);
+                let id = Id16(id);
+                let mut sz = [0u8; 8];
+                sz.copy_from_slice(&rec[17..25]);
+                if matches!(kind, ObjKind::Obj | ObjKind::Cfg) && !self.tomb_path(kind, ns, &id).exists() {
+                    out.push(ListItem {
+                        seq,
+                        kind,
+                        id,
+                        size: u64::from_be_bytes(sz),
+                    });
+                    if out.len() >= q.limit as usize {
+                        return Ok(out);
+                    }
                 }
             }
+            buf.copy_within(whole..have, 0);
+            have -= whole;
+            if n == 0 {
+                return Ok(out);
+            }
         }
-        Ok(out)
     }
+
+    /// True if the log already holds a record for `kind`/`id`.
+    fn log_has(&self, ns: &Id16, kind: ObjKind, id: &Id16) -> Result<bool> {
+        let log = self.read_log(ns)?;
+        let k = kind_byte(kind);
+        Ok(log.as_chunks::<RECORD>().0.iter().any(|r| r[0] == k && r[1..17] == id.0))
+    }
+
+    /// Append the list record for a published object (caller holds the lock).
+    fn append_log(&self, ns: &Id16, kind: ObjKind, id: &Id16, size: u64) -> Result<()> {
+        let mut rec = [0u8; RECORD];
+        rec[0] = kind_byte(kind);
+        rec[1..17].copy_from_slice(&id.0);
+        rec[17..].copy_from_slice(&size.to_be_bytes());
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(self.ns_dir(ns).join("log"))
+            .map_err(io)?;
+        // Drop a torn tail first so records stay aligned.
+        let len = log.seek(SeekFrom::End(0)).map_err(io)?;
+        if len % RECORD as u64 != 0 {
+            log.set_len(len - len % RECORD as u64).map_err(io)?;
+        }
+        log.write_all(&rec).and_then(|_| log.sync_data()).map_err(io)
+    }
+
+    /// The object is already published with these bytes. A crash between
+    /// the hard link and the log append leaves it unlisted forever, so the
+    /// retry repairs the log before it reports Identical.
+    fn identical(&self, ns: &Id16, kind: ObjKind, id: &Id16, size: u64) -> Result<PutOutcome> {
+        if matches!(kind, ObjKind::Obj | ObjKind::Cfg) && !self.log_has(ns, kind, id)? {
+            self.append_log(ns, kind, id, size)?;
+        }
+        Ok(PutOutcome::Identical)
+    }
+}
+
+/// Refuse a volume that cannot keep the replica's guarantees: write-once
+/// publish needs hard links (`link` fails if the name exists) and the log
+/// needs exclusive file locks. FAT32/exFAT USB sticks and some network
+/// shares have neither; on them two writers could replace an object or
+/// interleave log records, so setup fails instead of syncing unsafely.
+fn probe_volume(root: &Path) -> Result<()> {
+    let unsupported = |what: &str, e: std::io::Error| {
+        TransportError::Config(format!(
+            "{} cannot hold a replica: the filesystem does not support {what} ({e}); \
+             FAT32/exFAT drives are not supported, format the drive with a filesystem \
+             that has hard links and file locks (ext4, APFS, NTFS)",
+            root.display()
+        ))
+    };
+    let n = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let a = root.join(format!(".osy-probe-{}-{n}", std::process::id()));
+    let b = root.join(format!(".osy-probe-{}-{n}.link", std::process::id()));
+    let res = (|| {
+        let f = OpenOptions::new().write(true).create_new(true).open(&a).map_err(io)?;
+        f.lock().map_err(|e| unsupported("exclusive file locks", e))?;
+        let _ = f.unlock();
+        fs::hard_link(&a, &b).map_err(|e| unsupported("hard links", e))?;
+        // A link on a filesystem that fakes it (copies) would not share the inode.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (ma, mb) = (fs::metadata(&a).map_err(io)?, fs::metadata(&b).map_err(io)?);
+            if ma.ino() != mb.ino() || ma.nlink() < 2 {
+                return Err(unsupported("hard links", std::io::Error::other("link is not the same file")));
+            }
+        }
+        match fs::hard_link(&a, &b) {
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(unsupported("exclusive link creation", e)),
+            Ok(()) => Err(unsupported("exclusive link creation", std::io::Error::other("link replaced an existing name"))),
+        }
+    })();
+    let _ = fs::remove_file(&b);
+    let _ = fs::remove_file(&a);
+    res
 }
 
 fn same_bytes(path: &Path, bytes: &[u8]) -> Result<bool> {
@@ -232,7 +334,7 @@ impl Transport for FsTransport {
         }
         if dst.exists() {
             return if same_bytes(&dst, bytes)? {
-                Ok(PutOutcome::Identical)
+                self.identical(ns, kind, id, bytes.len() as u64)
             } else {
                 Err(TransportError::api(ErrorCode::Conflict, "id exists with different bytes"))
             };
@@ -255,35 +357,21 @@ impl Transport for FsTransport {
             // Another writer outside our lock (foreign tool) beat us.
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                 return if same_bytes(&dst, bytes)? {
-                    Ok(PutOutcome::Identical)
+                    self.identical(ns, kind, id, bytes.len() as u64)
                 } else {
                     Err(TransportError::api(ErrorCode::Conflict, "id exists with different bytes"))
                 };
             }
             Err(e) => return Err(io(e)),
         }
-        if matches!(kind, ObjKind::Obj | ObjKind::Cfg) {
-            let mut rec = [0u8; RECORD];
-            rec[0] = kind_byte(kind);
-            rec[1..17].copy_from_slice(&id.0);
-            rec[17..].copy_from_slice(&(bytes.len() as u64).to_be_bytes());
-            let mut log = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .read(true)
-                .open(self.ns_dir(ns).join("log"))
-                .map_err(io)?;
-            // Drop a torn tail first so records stay aligned.
-            let len = log.seek(SeekFrom::End(0)).map_err(io)?;
-            if len % RECORD as u64 != 0 {
-                log.set_len(len - len % RECORD as u64).map_err(io)?;
-            }
-            log.write_all(&rec).and_then(|_| log.sync_data()).map_err(io)?;
-        }
+        // The link is made durable before the log names it.
         if let Some(parent) = dst.parent() {
             if let Ok(d) = File::open(parent) {
                 let _ = d.sync_all();
             }
+        }
+        if matches!(kind, ObjKind::Obj | ObjKind::Cfg) {
+            self.append_log(ns, kind, id, bytes.len() as u64)?;
         }
         Ok(PutOutcome::Created)
     }
