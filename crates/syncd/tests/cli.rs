@@ -306,6 +306,52 @@ fn move_burns_the_old_vault() {
     assert_eq!(st["vault_id"], new.as_str());
     assert!(!staging.exists() && a.state.join(format!("burned-{old}.receipt.json")).exists());
 }
+/// A local edit made while a remote change of the same path was pending
+/// (the materialisation skipped the path because the user was editing) is
+/// relative to the version the disk was synced at, not to the head: a
+/// Markdown note is 3-way merged with the head (the remote change stays),
+/// anything else becomes a conflicted copy and the path keeps the head.
+#[test]
+fn late_local_edit_rebases_on_the_synced_base() {
+    let s = server();
+    let a = dev("lea");
+    let b = dev("leb");
+    let tok = s.app.create_enrollment(None, 600).unwrap();
+    ok(&cli(&a, &["setup", "--url", &s.url, "--vault", a.vault.to_str().unwrap(), "--name", "laptop", "--enroll", &tok], None));
+    std::fs::write(a.vault.join("n.md"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(a.vault.join("d.txt"), "x").unwrap();
+    ok(&cli(&a, &["--local", "sync-now"], None));
+    let idx_path = a.state.join("disk-index.json");
+    let base: Value = serde_json::from_slice(&std::fs::read(&idx_path).unwrap()).unwrap();
+    let words = LocalEngine::open(&a.state, Box::new(FixedPresence(true))).unwrap().reveal_words().unwrap();
+    ok(&cli(&b, &["setup", "--url", &s.url, "--vault", b.vault.to_str().unwrap(), "--name", "desktop", "--words"], Some(words.as_str())));
+    ok(&cli(&b, &["--local", "sync-now"], None));
+    std::fs::write(b.vault.join("n.md"), "ONE\ntwo\nthree\n").unwrap();
+    std::fs::write(b.vault.join("d.txt"), "y").unwrap();
+    ok(&cli(&b, &["--local", "sync-now"], None));
+    // A pulls B's change, then A's state is put back to "update pending,
+    // disk still at the synced base, user edited it": disk index = base
+    ok(&cli(&a, &["--local", "sync-now"], None));
+    assert_eq!(std::fs::read_to_string(a.vault.join("n.md")).unwrap(), "ONE\ntwo\nthree\n");
+    std::fs::write(&idx_path, serde_json::to_vec(&base).unwrap()).unwrap();
+    std::fs::write(a.vault.join("n.md"), "one\ntwo\nTHREE\n").unwrap();
+    std::fs::write(a.vault.join("d.txt"), "z").unwrap();
+    ok(&cli(&a, &["--local", "sync-now"], None));
+    assert_eq!(std::fs::read_to_string(a.vault.join("n.md")).unwrap(), "ONE\ntwo\nTHREE\n", "merged, B's change kept");
+    assert_eq!(std::fs::read_to_string(a.vault.join("d.txt")).unwrap(), "y", "the path keeps the head");
+    let copies: Vec<_> = std::fs::read_dir(&a.vault)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("d.txt (Conflicted copy laptop "))
+        .collect();
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(std::fs::read_to_string(a.vault.join(&copies[0])).unwrap(), "z", "the late edit is kept as a copy");
+    ok(&cli(&b, &["--local", "sync-now"], None));
+    assert_eq!(std::fs::read_to_string(b.vault.join("n.md")).unwrap(), "ONE\ntwo\nTHREE\n");
+    assert_eq!(std::fs::read_to_string(b.vault.join("d.txt")).unwrap(), "y");
+}
+
+
 /// `$XDG_RUNTIME_DIR` stand-in: TMPDIR can be too long for sun_path
 /// (108 bytes) once `opensidian-syncd/<32 hex>.sock` is appended.
 fn short_run(tag: &str) -> PathBuf {

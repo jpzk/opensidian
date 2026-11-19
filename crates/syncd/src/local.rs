@@ -646,6 +646,89 @@ impl LocalEngine {
         }
         Ok(edits)
     }
+
+    /// A local edit of a path whose head moved since the disk last synced
+    /// it (a pending update the materialisation skipped because the user
+    /// was editing) is relative to that older synced version, NOT to the
+    /// head: committing its bytes over the head would revert the remote
+    /// change. Rebased onto the exact base the disk was synced at (the
+    /// DiskIndex sha, its bytes from file history):
+    ///  - Markdown in auto-merge mode with the base bytes available:
+    ///    3-way merge (base, disk, head) — the head's non-overlapping
+    ///    changes stay;
+    ///  - anything else (no base bytes, not text, merge conflict,
+    ///    conflict-file mode): the disk bytes are committed as a conflicted
+    ///    copy next to the path and the path keeps the head (the disk
+    ///    version is in history: record_external above + the
+    ///    pre-overwrite snapshot).
+    #[allow(clippy::too_many_arguments)]
+    fn rebase_late_edits(
+        &self,
+        edits: Vec<Edit>,
+        e: &Engine<'_, FipsProvider>,
+        m: &Member,
+        before: &sync_core::commit::Tree,
+        disk: &std::collections::BTreeMap<String, workdir::DiskFile>,
+        idx: Option<&DiskIndex>,
+        hist: &mut dyn HistSink,
+        now: i64,
+    ) -> ApiResult<Vec<Edit>> {
+        let Some(idx) = idx else { return Ok(edits) };
+        let roster = m.roster();
+        let mut out = Vec::with_capacity(edits.len());
+        let mut taken: std::collections::BTreeSet<String> = before.0.keys().chain(disk.keys()).cloned().collect();
+        for ed in edits {
+            let (path, class, mtime_ms, content) = match ed {
+                Edit::Put { path, class, mtime_ms, content } => (path, class, mtime_ms, content),
+                other => {
+                    out.push(other);
+                    continue;
+                }
+            };
+            let (Some(base_hex), Some(head)) = (idx.files.get(&path), before.0.get(&path)) else {
+                out.push(Edit::Put { path, class, mtime_ms, content });
+                continue;
+            };
+            if hex32(&head.sha256) == *base_hex {
+                // the head is still the version the disk was synced at
+                out.push(Edit::Put { path, class, mtime_ms, content });
+                continue;
+            }
+            let mut merged = None;
+            if matches!(workdir::class_of(&path), sync_core::sync_proto::batch::Class::Markdown) &&matches!(self.cfg.conflict_mode, ConflictMode::AutoMerge) {
+                let mut base = None;
+                hist.with(&mut |s| {
+                    if let Some(v) = s.versions(&path).into_iter().find(|v| v.sha.as_deref() == Some(base_hex.as_str())) {
+                        base = s.read_version(v.seq).ok();
+                    }
+                    Ok(())
+                })?;
+                let base = base.filter(|b| hex32(&self.p.sha256(b)) == *base_hex);
+                if let Some(base) = base {
+                    let theirs = e.read(head, &roster).map_err(engine_err)?;
+                    if let (Ok(b), Ok(o), Ok(t)) = (std::str::from_utf8(&base), std::str::from_utf8(&content), std::str::from_utf8(&theirs)) {
+                        merged = sync_core::merge::dmp::merge3(b, o, t).ok();
+                    }
+                }
+            }
+            match merged {
+                Some(text) => out.push(Edit::Put { path, class, mtime_ms, content: text.into_bytes() }),
+                None => {
+                    let mut n = 1;
+                    let copy = loop {
+                        let c = sync_core::merge::conflict_name(&path, &self.cfg.device_name, now, n);
+                        if !taken.contains(&c) {
+                            break c;
+                        }
+                        n += 1;
+                    };
+                    taken.insert(copy.clone());
+                    out.push(Edit::Put { path: copy, class, mtime_ms, content });
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl SyncApi for LocalEngine {
@@ -766,6 +849,7 @@ impl LocalEngine {
                 hist.with(&mut |s| s.record_external(path, now as u64).map(|_| ()))?;
             }
         }
+        let edits = self.rebase_late_edits(edits, &e, &m, &before, &disk, idx.as_ref(), hist, now)?;
         for batch in batches(edits) {
             let id = e.commit_local(&m.device.signer(), &m.roster(), now, batch).map_err(engine_err)?;
             sum.committed = Some(id.to_hex());
