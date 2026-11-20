@@ -420,3 +420,23 @@ analysis); deny.toml and src-tauri/.cargo/audit.toml hold the same ids
 - **cargo deny**: licenses/bans/sources ok without any OpenSSL-licence
   exception (CI 44515121547); advisories ok after §Advisories-5b (CI
   44517061643).
+
+### CLI release workflow (sync-cli.yml, 2026-11-20)
+
+`.github/workflows/sync-cli.yml` (docs/sync/release-cli.md) adds **no new
+crate and no new action**: it reuses release.yml's pins (actions/checkout
+`d23441a4…` v6.1.0, actions/attest-build-provenance `4d101475…` v4.2.2,
+actions/upload-artifact `043fb46d…` v7.0.1, actions/download-artifact
+`3e5f45b2…` v8.0.1). New pinned inputs:
+
+- **OpenSSL release keyring**: `supply-chain/keys/openssl-release-keyring.gpg`
+  (`gpg --export` of `B146 647E 45A7 B339 47AB 226B 2A2C 87D1 6169 2D40`,
+  OpenSSL <openssl@openssl.org>, rsa4096 created 2026-05-26, signing subkey
+  `C46E D3F2 CBEF DA1F DAAD A442 64ED 7B1D CCE7 1CB2`, fetched from
+  keys.openpgp.org 2026-11-20), sha256 in `supply-chain/keyrings.tsv`,
+  re-checked by `packaging/sync/openssl-fips.sh` before `gpgv`.
+- **openssl-3.5.9.tar.gz.asc** sha256
+  `bdccf2057a7c4ae377b40e832cb8c632ae8b532d4fb64cc7b843066eee748f89`
+  (same file as the box build's research copy), tarball sha256 unchanged.
+- OpenSSL is configured `enable-fips no-shared` for the CLIs (libcrypto
+  static; fips.so stays the separate module). The box build stays shared.
