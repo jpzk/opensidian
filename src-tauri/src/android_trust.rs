@@ -96,14 +96,14 @@ fn read(path: &Path) -> Option<(u64, String)> {
     if !l.file_type().is_file() {
         return None;
     }
-    let mut f = fs::File::open(path).ok()?;
+    let f = fs::File::open(path).ok()?;
     let m = f.metadata().ok()?;
     // the file opened is the regular file lstat'ed (not a symlink slipped in between)
     if !m.is_file() || m.ino() != l.ino() || m.dev() != l.dev() {
         return None;
     }
     let mut s = String::new();
-    f.by_ref().take(2 * NONCE_BYTES as u64 + 2).read_to_string(&mut s).ok()?;
+    f.take(2 * NONCE_BYTES as u64 + 2).read_to_string(&mut s).ok()?;
     let n = s.strip_suffix('\n').unwrap_or(&s);
     (n.len() == 2 * NONCE_BYTES && n.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))).then(|| (m.ino(), n.to_string()))
 }
@@ -187,7 +187,11 @@ mod tests {
         // a copy of the old folder including the very marker bytes (cp -r of a backup)
         let (cfg2, k2) = trusted_on(&r);
         let marker = fs::read(r.join(MARKER)).unwrap();
-        fs::remove_dir_all(&r).unwrap();
+        // the original moved aside (still on disk: its inodes are not free for reuse, as for a
+        // replaced folder whose original was kept), the copy created at the path
+        let aside = r.with_file_name(format!("{}-aside", r.file_name().unwrap().to_string_lossy()));
+        let _ = fs::remove_dir_all(&aside);
+        fs::rename(&r, &aside).unwrap();
         fs::create_dir_all(r.join(".obsidian")).unwrap();
         fs::write(r.join(MARKER), &marker).unwrap();
         assert_ne!(identity(&r), k2.id, "a copied marker in another folder is another identity");
@@ -204,6 +208,7 @@ mod tests {
         flip(&mut cfg3, &key(&r), true).unwrap();
         assert!(is_trusted_key(&cfg3, &key(&r)));
         let _ = fs::remove_dir_all(&r);
+        let _ = fs::remove_dir_all(&aside);
     }
 
     /* the identity record: missing marker / no identity source / a record that does not match */
