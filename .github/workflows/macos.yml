@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # macOS build — the FIRST CI build + test of the macOS port (#248), arm64 and x86_64, UNSIGNED.
-# Separate from release.yml on purpose (PR #249 rewrites release.yml); release.yml is meant to call
-# this workflow through workflow_call later (see the wiring note in the PR / goal RESULT.md).
+# release.yml calls this workflow (job `macos`, workflow_call): its zips + SBOMs go into the DRAFT
+# release and SHA256SUMS, and draft-release needs every job here green (build, test, CVE scan).
+# It also runs alone on PRs (paths below) and by workflow_dispatch.
 #
 # Per arch (matrix, native runner, no cross-compile):
 #   build    Rust from rust-toolchain.toml, dist manifest sha256 + rustc commit verified by
@@ -49,7 +50,8 @@ permissions:
 
 concurrency:
   group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # a tag build is never cancelled by a re-push of the same tag (same rule as release.yml)
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 defaults:
   run:
