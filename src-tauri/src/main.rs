@@ -818,13 +818,39 @@ fn is_pdf_target(target: &str) -> bool {
 async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) -> Result<Option<pdf::Info>, String> {
     // #144 toggle 4: refused BEFORE the path is resolved or the worker queued
     media_allowed("pdf_info")?;
-    let Some(p) = cur_vault(&v).and_then(|r| pdf_path_in(&r, &path)) else { return Ok(None) };
+    let Some(root) = cur_vault(&v) else { return Ok(None) };
+    let Some(p) = pdf_path_in(&root, &path) else { return Ok(None) };
     let (tx, rx) = std::sync::mpsc::channel();
     pdf::queue_info(p, Box::new(move |i| {
         let _ = tx.send(i);
     }));
-    span_timed!(otel => "pdf_info", tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten()).await)
-        .map_err(|e| e.to_string())
+    let info = span_timed!(otel => "pdf_info", tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten()).await)
+        .map_err(|e| e.to_string())?;
+    Ok(info.map(|mut i| {
+        if !i.model3d.is_empty() {
+            i.twin = pdf_twin_in(&root, &path);
+        }
+        i
+    }))
+}
+
+/// the 2D drawing of the 3D PDF `target` (an encoded vault path, as pdf_info
+/// gets it): a sibling regular file paired by name (pdf::twin_of), returned as
+/// a vault-relative path ONLY if pdf_path_in accepts it, i.e. under the very
+/// rules the frame will fetch it by. Names only; nothing is opened here.
+fn pdf_twin_in(root: &Path, target: &str) -> Option<String> {
+    let rel = safe_rel(&pct_decode(target)?)?;
+    let name = rel.file_name()?.to_str()?;
+    let dir = rel.parent().unwrap_or(Path::new(""));
+    let names: Vec<String> = fs::read_dir(root.join(dir))
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    let twin = pdf::twin_of(name, names.iter().map(String::as_str))?;
+    let out = dir.join(twin).to_string_lossy().into_owned();
+    pdf_path_in(root, &pct_encode(&out)).map(|_| out)
 }
 
 /* ---- R31 drop-to-attach (feedback #18), MOVE since osdrop -----------------
@@ -12195,6 +12221,23 @@ mod tests {
         assert!(p.parent().unwrap().is_dir());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// the 2D drawing of a 3D model is found next to it, returned vault-relative
+    /// with '/', and only if the frame could fetch it (a PDF, a regular file)
+    #[test]
+    fn pdf_twin_is_the_drawing_beside_the_model_or_nothing() {
+        let root = tmp_vault("pdftwin");
+        fs::create_dir_all(root.join("sub/dir")).unwrap();
+        for f in ["sub/dir/Chassis - 3D.PDF", "sub/dir/Chassis.pdf", "sub/dir/Lone - 3D.pdf", "sub/dir/Odd - 3D.pdf"] {
+            fs::write(root.join(f), b"%PDF-1.6\n").unwrap();
+        }
+        fs::create_dir_all(root.join("sub/dir/Odd.pdf")).unwrap();   // a FOLDER named like the twin
+        assert_eq!(pdf_twin_in(&root, "sub/dir/Chassis%20-%203D.PDF").as_deref(), Some("sub/dir/Chassis.pdf"));
+        assert_eq!(pdf_twin_in(&root, "sub/dir/Lone%20-%203D.pdf"), None, "no drawing next to it");
+        assert_eq!(pdf_twin_in(&root, "sub/dir/Odd%20-%203D.pdf"), None, "a folder is not a drawing");
+        assert_eq!(pdf_twin_in(&root, "../x%20-%203D.pdf"), None);
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// R29 images, POSITIVE half: the shapes that MUST serve bytes. Kept next

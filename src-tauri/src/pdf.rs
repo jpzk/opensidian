@@ -51,6 +51,70 @@ const PNG_CACHE_BYTES: usize = 32 * 1024 * 1024;
 pub struct Info {
     pub pages: usize,
     pub sizes: Vec<[f32; 2]>,
+    /// 1-based numbers of the listed pages that hold ONLY an interactive 3D
+    /// model (see `model_3d`). Absent from the JSON for every other PDF, so the
+    /// answer for an ordinary document is byte for byte what it was.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model3d: Vec<usize>,
+    /// For a file with 3D-only pages: the vault-relative path of its 2D drawing
+    /// in the same folder, if there is one (`twin_of`). Filled by main.rs, which
+    /// knows the vault; None everywhere else and then absent from the JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub twin: Option<String>,
+}
+
+/* THE 2D DRAWING NEXT TO A 3D MODEL. A CAD export usually comes as a pair: the
+   drawing sheets ("Chassis - Ind 00.pdf") and the model ("Chassis - Ind 00 -
+   3D.PDF"). The model cannot be drawn here, the drawing can, so the frame of
+   the model offers the drawing.
+   The pairing is by NAME, and deliberately narrow, so it never offers an
+   unrelated file: the 3D file's name must END in "3D" set apart by a space, a
+   dash, an underscore or a dot ("X - 3D", "X 3D", "X_3D"); the twin is the
+   name before that marker, trailing separators trimmed, compared without case,
+   in the SAME folder, and a PDF. "Model3D.pdf" has no separate marker and gets
+   no twin. */
+
+/// the twin's stem for a 3D file's stem, or None if the name does not follow the pattern
+pub fn twin_stem(stem: &str) -> Option<&str> {
+    let t = stem.trim_end();
+    let cut = t.len().checked_sub(2)?;
+    if !t.is_char_boundary(cut) || !t[cut..].eq_ignore_ascii_case("3d") {
+        return None;
+    }
+    let before = &t[..cut];
+    if !before.ends_with([' ', '-', '_', '.']) {
+        return None;
+    }
+    let base = before.trim_end_matches([' ', '-', '_', '.']);
+    (!base.is_empty()).then_some(base)
+}
+
+/// among `names` (one folder's entries), the 2D drawing of the 3D file `name`
+pub fn twin_of<'a>(name: &str, names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let (stem, _) = name.rsplit_once('.')?;
+    let want = twin_stem(stem)?;
+    names.into_iter().find(|n| {
+        *n != name
+            && n.rsplit_once('.').is_some_and(|(s, e)| e.eq_ignore_ascii_case(PDF_EXT) && s.trim_end().eq_ignore_ascii_case(want))
+    })
+}
+
+/* A "3D PDF" (CAD exports: SolidWorks, CATIA, ...) is a page with NO drawing of
+   its own and one /3D annotation carrying the model as a PRC or U3D stream. A
+   reader that implements those formats draws the model live; everything else —
+   this renderer, and every browser's PDF viewer — draws the page's content,
+   which is nothing, and shows a white sheet. A blank card looks like a bug, so
+   such a page is NAMED: the frame then says what the file is and how to see it
+   (ui/editor.js pdfFill). Decoding PRC is a 3D engine of its own and is not
+   attempted.
+   Only a page with an EMPTY content stream is reported. A page that draws
+   something (a title block, or the poster image some exporters add) is rendered
+   as usual: showing what is there beats replacing it with a notice. */
+fn model_3d(pg: &hayro::hayro_syntax::page::Page) -> bool {
+    use hayro::hayro_syntax::object::{Array, Dict, Name};
+    let Some(annots) = pg.raw().get::<Array>("Annots") else { return false };
+    let has_model = annots.iter::<Dict>().any(|a| a.get::<Name>("Subtype").is_some_and(|n| matches!(n.as_ref(), b"3D" | b"RichMedia")));
+    has_model && pg.page_stream().is_none_or(|s| s.iter().all(u8::is_ascii_whitespace))
 }
 
 /// `?page=N&w=PX` -> (N, PX), strictly: both keys present, decimal, N >= 1,
@@ -103,7 +167,14 @@ pub fn info(pdf: &Pdf) -> Info {
             if dims_ok(w, h) { [w, h] } else { [612.0, 792.0] }
         })
         .collect();
-    Info { pages: pages.len(), sizes }
+    let model3d = pages
+        .iter()
+        .take(MAX_LISTED)
+        .enumerate()
+        .filter(|(_, pg)| catch_unwind(AssertUnwindSafe(|| model_3d(pg))).unwrap_or(false))
+        .map(|(i, _)| i + 1)
+        .collect();
+    Info { pages: pages.len(), sizes, model3d, twin: None }
 }
 
 /// the scale for page (pw x ph) pt rendered `w` px wide, within the caps
@@ -289,6 +360,74 @@ pub mod tests {
         let p = std::env::temp_dir().join(format!("opensidian-pdf-{}-{name}", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
         p
+    }
+
+    /// a one-page PDF whose page dictionary gets `extra` (annotations, contents);
+    /// object 4 is a content stream that draws a rectangle, object 5 a 3D annotation
+    fn page_pdf(extra: &str) -> Vec<u8> {
+        let stream = "0.5 g 0 0 100 100 re f\n";
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << >> {extra} >>"),
+            format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
+            "<< /Type /Annot /Subtype /3D /Rect [50 50 750 550] /Contents (3D Model) >>".to_string(),
+            "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".to_string(),
+        ];
+        let mut out = b"%PDF-1.6\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).bytes());
+        for o in offs {
+            out.extend(format!("{o:010} 00000 n \n").bytes());
+        }
+        out.extend(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).bytes());
+        out
+    }
+
+    /// a page that is nothing but a 3D model is named; a page that draws
+    /// something is rendered as ever, 3D annotation or not; and an ordinary
+    /// PDF's answer does not even carry the key
+    #[test]
+    fn pdf_info_names_pages_that_hold_only_a_3d_model() {
+        let of = |name: &str, extra: &str| info(&load(&tmp(name, &page_pdf(extra))).expect("parses")).model3d;
+        assert_eq!(of("m3-only.pdf", "/Annots [5 0 R]"), vec![1], "empty page + 3D annotation");
+        assert_eq!(of("m3-drawn.pdf", "/Annots [5 0 R] /Contents 4 0 R"), Vec::<usize>::new(), "the page draws something: render it");
+        assert_eq!(of("m3-link.pdf", "/Annots [6 0 R]"), Vec::<usize>::new(), "an empty page with a link is just an empty page");
+        assert_eq!(of("m3-none.pdf", ""), Vec::<usize>::new());
+        let plain = info(&load(&tmp("m3-plain.pdf", &mini_pdf(2))).unwrap());
+        assert!(plain.model3d.is_empty());
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"pages":2,"sizes":[[612.0,792.0],[612.0,792.0]]}"#, "an ordinary PDF answers exactly as before");
+        let m = info(&load(&tmp("m3-json.pdf", &page_pdf("/Annots [5 0 R]"))).unwrap());
+        assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"pages":1,"sizes":[[792.0,612.0]],"model3d":[1]}"#);
+    }
+
+    /// a 3D export is paired with its drawing by name, narrowly: the user's real
+    /// file names pair, and nothing without a separate "3D" marker does
+    #[test]
+    fn pdf_twin_pairs_a_3d_model_with_its_drawing_by_name_only() {
+        let dir = [
+            "00 - Chassis - Ind 00.pdf", "00 - Chassis - Ind 00 - 3D.PDF",
+            "Arbre Potager - Active.pdf", "Arbre Potager - Active 3D.PDF",
+            "07 - Serre.pdf", "07 - Serre - Ind 00 - 3D.PDF",
+            "Part_3D.pdf", "Part.PDF", "Model3D.pdf", "Model.pdf", "Notes.md", "Box.pdf.md", "Lone - 3D.pdf",
+        ];
+        let t = |n: &str| twin_of(n, dir);
+        assert_eq!(t("00 - Chassis - Ind 00 - 3D.PDF"), Some("00 - Chassis - Ind 00.pdf"));
+        assert_eq!(t("Arbre Potager - Active 3D.PDF"), Some("Arbre Potager - Active.pdf"));
+        assert_eq!(t("Part_3D.pdf"), Some("Part.PDF"), "case of the extension does not matter");
+        assert_eq!(t("07 - Serre - Ind 00 - 3D.PDF"), None, "07 - Serre.pdf is a different name: no guess");
+        assert_eq!(t("Model3D.pdf"), None, "no separate marker: no twin");
+        assert_eq!(t("Lone - 3D.pdf"), None, "no drawing in the folder");
+        assert_eq!(t("00 - Chassis - Ind 00.pdf"), None, "a drawing has no twin");
+        assert_eq!(twin_stem("X - 3d"), Some("X"));
+        assert_eq!(twin_stem(" - 3D"), None);
+        assert_eq!(twin_stem("3D"), None);
+        assert_eq!(twin_stem("é 3D"), Some("é"));
     }
 
     #[test]
