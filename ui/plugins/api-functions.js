@@ -896,7 +896,10 @@
        - htmlLabels false: labels are SVG text, not foreignObject HTML.
        - every key that changes sanitizing, HTML, CSS, fonts or the caps is in `secure`,
          which Mermaid strips from %%{init}%% directives and frontmatter `config:`.
-       - no icon packs and no layout loaders are registered: nothing is fetched.
+       - no icon packs are registered: nothing is fetched. Mermaid 12 bundles ELK and
+         makes it the default layout; layout is pinned to "dagre" (the 11.x layout, and the
+         upstream-documented way to keep it) and is in `secure`, so ELK only runs for an
+         explicit `flowchart-elk` diagram, in-process (bundled FakeWorker, no fetch).
        - maxTextSize / maxEdges cap hostile input; errors are thrown to the caller
          (suppressErrorRendering) so the app shows them inline instead of Mermaid
          painting into document.body. */
@@ -934,7 +937,7 @@
         startOnLoad: false, securityLevel: "strict", secure: MERMAID_SECURE.slice(),
         maxTextSize: MERMAID_MAX_TEXT, maxEdges: MERMAID_MAX_EDGES, suppressErrorRendering: true,
         htmlLabels: false, flowchart: { htmlLabels: false }, legacyMathML: false, forceLegacyMathML: false,
-        theme: "base", darkMode: t.dark, themeVariables: t.vars, fontFamily: t.vars.fontFamily,
+        theme: "base", darkMode: t.dark, themeVariables: t.vars, fontFamily: t.vars.fontFamily, layout: "dagre",
         dompurifyConfig: {},
       });
       mermaidThemeKey = key;

@@ -1,9 +1,6 @@
 # pin-check allowlist (#189). TAB-separated: rule path needle expires scanner reason
-# Scanner exception (operator 2026-11-17: "dont pin scanners in workflow but everything else"):
-# a stale scanner misses new advisories, so scanners float. They fetch over HTTPS with an integrity check
-# (cargo install --locked, release sha256 from the API, image digest logged), only read and report.
-# Renew the expiry by review, like the advisory ignores; anything else in this file needs a reason too.
-image	.github/workflows/semgrep.yml	semgrep/semgrep:latest	2027-05-17	semgrep	scanner exception: semgrep image floats on purpose, resolved digest logged by the job
-cargo	.github/workflows/supply-chain.yml	cargo install --locked cargo-audit	2027-05-17	cargo-audit	scanner exception: latest crates.io release, --locked, version logged
-cargo	.github/workflows/supply-chain.yml	cargo install --locked cargo-deny	2027-05-17	cargo-deny	scanner exception: latest crates.io release, --locked, version logged
-cargo	.github/workflows/supply-chain.yml	cargo install --locked cargo-vet	2027-05-17	cargo-vet	scanner exception: latest crates.io release, --locked, version logged
+# Empty since 2026-11-19: the scanner exception (operator 2026-11-17, "dont pin scanners") was
+# superseded by the 2026-11-19 15:49Z decision (scanners = newest release, but PINNED by version +
+# sha256): semgrep image digest-pinned, cargo-audit/deny/vet `--locked --version` + .crate sha256
+# (cargo-scanner-verify.sh), osv-scanner pinned only (osv-install.sh). Anything added here needs a
+# reason and an expiry, renewed by review.

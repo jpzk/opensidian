@@ -12,16 +12,27 @@
 #                                   AppImage's brotli in webkit-bundle-sbom.sh, merged once).
 # The manifest is parsed with a narrow awk reader of these keys only (no YAML library); an archive
 # without a sha256 fails closed.
+# LICENSES: the manifest carries none, so module licenses come from MODLIC below (SPDX id, read
+# from the module's upstream LICENSE file at the pinned tag); a module missing from MODLIC fails
+# closed. The runtime is an aggregate of many projects (Flathub's scope): it gets license.name
+# LicenseRef-flathub-runtime plus an opensidian:license-note, and opensidian:hash-note says why
+# no hash is recorded (the manifest pins a branch, not an ostree commit; flatpak verifies the
+# commit against Flathub's signed summary at install time).
 # Usage: flatpak-sbom.sh [manifest.yml] [> flatpak.cdx.json]; SOURCE_DATE_EPOCH fixes the timestamp.
 set -euo pipefail
 export LC_ALL=C
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
 mf=${1:-$root/packaging/flatpak/dev.koto.opensidian.yml}
 die() { echo "flatpak-sbom: $*" >&2; exit 1; }
+# module name -> SPDX license of the pinned upstream source. brotli v1.2.1: LICENSE = MIT.
+MODLIC='{"brotli":"MIT"}'
 [ -f "$mf" ] || die "no $mf"
 val() { sed -n "s/^$1:[[:space:]]*['\"]\{0,1\}\([^'\" ]*\)['\"]\{0,1\}[[:space:]]*$/\1/p" "$mf" | head -1; }
 rt=$(val runtime); rv=$(val runtime-version); app=$(val app-id)
 [ -n "$rt" ] && [ -n "$rv" ] && [ -n "$app" ] || die "runtime/runtime-version/app-id missing in $mf"
+# the flatpak root IS the opensidian app: same license as src-tauri/Cargo.toml (sbom-merge asserts that one)
+applic=$(awk -F'"' '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^license *=/{print $2; exit}' "$root/src-tauri/Cargo.toml")
+[ -n "$applic" ] || die "no [package] license in src-tauri/Cargo.toml"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 # module name, archive url, sha256 — one TSV row per archive source
 awk '
@@ -33,10 +44,13 @@ awk '
   /^        sha256:/      { sha=v($0); next }
   END { emit() }' "$mf" >"$t/arch.tsv"
 ts=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
-jq -R -s --arg ts "$ts" --arg rt "$rt" --arg rv "$rv" --arg app "$app" '
+jq -R -s --arg ts "$ts" --arg applic "$applic" --arg rt "$rt" --arg rv "$rv" --arg app "$app" --argjson lic "$MODLIC" '
   [split("\n")[] | select(length > 0) | split("\t") | {mod: .[0], url: .[1], sha: .[2]}] as $a
   | if ($a | map(select((.sha | test("^[0-9a-f]{64}$") | not) or .url == "")) | length) > 0
       then error("archive source without url/sha256: \($a | map(select((.sha | test("^[0-9a-f]{64}$") | not))) | map(.mod) | join(", "))")
+    else . end
+  | if ($a | map(select($lic[.mod] == null)) | length) > 0
+      then error("module without a known license (add it to MODLIC): \($a | map(select($lic[.mod] == null) | .mod) | join(", "))")
     else . end
   | def comp($x):
       ($x.url | capture("^https://github\\.com/(?<o>[^/]+)/(?<r>[^/]+)/archive/refs/tags/(?<tag>.+)\\.tar\\.gz$")?) as $g
@@ -47,18 +61,22 @@ jq -R -s --arg ts "$ts" --arg rt "$rt" --arg rv "$rv" --arg app "$app" '
           {type: "library", "bom-ref": "flatpak-module:\($x.mod)", name: $x.mod,
            purl: "pkg:generic/\($x.mod)?download_url=\($x.url | @uri)"}
         end
-      + {hashes: [{alg: "SHA-256", content: $x.sha}],
+      + {licenses: [{expression: $lic[$x.mod]}],
+         hashes: [{alg: "SHA-256", content: $x.sha}],
          externalReferences: [{type: "distribution", url: $x.url}],
          properties: [{name: "opensidian:flatpak-module", value: $x.mod}]};
   ($a | map(comp(.))) as $mods
   | {type: "platform", "bom-ref": "flatpak-runtime:\($rt)//\($rv)", name: $rt, version: $rv,
      purl: "pkg:generic/\($rt)@\($rv)?repository_url=https%3A%2F%2Fdl.flathub.org%2Frepo",
+     licenses: [{license: {name: "LicenseRef-flathub-runtime"}}],
      externalReferences: [{type: "distribution", url: "https://dl.flathub.org/repo/flathub.flatpakrepo"}],
-     properties: [{name: "opensidian:note", value: "flatpak runtime; its WebKitGTK and other libraries are the runtime vendor scope (slim flatpak uses the runtime WebKit)"}]} as $runtime
+     properties: [{name: "opensidian:note", value: "flatpak runtime; its WebKitGTK and other libraries are the runtime vendor scope (slim flatpak uses the runtime WebKit)"},
+                  {name: "opensidian:license-note", value: "aggregate of many projects under their own licenses; per-package licenses are in the runtime vendor (Flathub/GNOME) SBOM"},
+                  {name: "opensidian:hash-note", value: "no hash: the manifest pins runtime branch \($rv), not an ostree commit; flatpak verifies the installed commit against the GPG-signed Flathub summary"}]} as $runtime
   | { bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
       metadata: { timestamp: $ts,
         tools: { components: [{type: "application", name: "scripts/supply-chain/flatpak-sbom.sh"}] },
-        component: { type: "application", "bom-ref": "opensidian-flatpak", name: $app,
+        component: { type: "application", "bom-ref": "opensidian-flatpak", name: $app, licenses: [{expression: $applic}],
                      properties: [{name: "opensidian:source", value: "packaging/flatpak/dev.koto.opensidian.yml"}] } },
       components: ([$runtime] + $mods),
       dependencies: [{ref: "opensidian-flatpak", dependsOn: ([$runtime] + $mods | map(."bom-ref"))}] }

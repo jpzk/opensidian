@@ -1,0 +1,12 @@
+# osv-scanner pin for EVERY CI gate (release.yml appimage job + supply-chain.yml vendor-js-cve):
+# osv-install.sh (pinned only; the unpinned "latest" mode was removed 2026-11-19).
+# One version, one sha256 per linux asset of THAT version.
+# Scanners track the NEWEST upstream release (operator decision 2026-11-19 15:49Z: exception to the
+# 6-week rule for scanners only), still version + per-arch sha256, fail closed. Bumps are proposed
+# weekly as a PR by .github/workflows/snapshot-bump.yml (never auto-merged).
+# v2.7.1 published 2026-11-09T04:15:04Z (before: v2.6.0 2026-09-14). Cross-checked 2026-11-19 against
+# the GitHub release API asset "digest" fields AND the release's osv-scanner_SHA256SUMS.
+# format: version <tag> | sha256 <goarch> <64 hex>
+version v2.7.1
+sha256 amd64 fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+sha256 arm64 983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81
