@@ -22,6 +22,7 @@ var CENSUS = [];
 CENSUS.push(() => { const L = CMDS.filter(c => c.id === "editor:toggle-bullet-list" || c.id === "editor:toggle-numbered-list"); return " [lt:" + L.length + "/" + L.filter(c => !c.when || c.when()).length + "]"; });   // listtoggle: both list commands registered / offered by the palette (editing view only)
 CENSUS.push(() => sgeoTok());   // setcenter R3: settings modal geometry [sbox:] [snav:] [srow1:] [shkf:] [shkc:] [shk1/2:] (only while settings is open)
 CENSUS.push(() => Ed.rvTaskTok());   // rvtask R5: reading-view task boxes [rvtask:n/checked] + painted centres per source line [rvtaskxy:]
+CENSUS.push(() => Ed.lpTaskTok());   // #128 task_toggle: painted centres of the Live Preview task boxes in view [lptaskxy:<line>:x,y|...] + [lpst:] scrollTop
 CENSUS.push(() => foldTok());   // collapseall R7: [fold:fe<c>/<n>:<C|E>,bm<c>/<n>:<C|E>] fold state of both trees, read off the DOM
 CENSUS.push(() => caSync());   // collapseall R3/R4: [fecab:x0-x1,y][bmcab:x0-x1,y] painted rects of the two header toggles
 CENSUS.push(() => sidePane === "bm" ? " [bmvis:" + bmVisRows().length + "]" : "");   // collapseall: bookmark rows NOT folded away (what is seen)
@@ -81,3 +82,8 @@ CENSUS.push(() => audvTok());   // issue #140: [audv:<path>|<loading|ready|error
 var CSPV = { n: 0, d: "-" };
 window.addEventListener("securitypolicyviolation", e => { CSPV.n++; CSPV.d = String(e.effectiveDirective || e.violatedDirective || "?").replace(/[[\]|@\s]/g, "_"); }, true);
 CENSUS.push(() => " [csp:" + CSPV.n + "|" + CSPV.d + "]");
+CENSUS.push(() => window.Merm ? Merm.tok() : "");   // #187 mermaid: [mmd:lib=<window.mermaid loaded 0/1>|allow=<0/1>|g=<guards>|ok=<diagrams>|err=<errors>|busy=<n>|kinds=<svg aria-roledescription,...>|th=<d/l>|pwn=<hostile payload ran 0/1>|sl=<mermaid securityLevel>|net=<non-localhost resource fetches>|fill=<first node fill>|btn=x,y] read off the DOM
+CENSUS.push(() => window.CodeHL ? CodeHL.tok() : "");   // #186 code highlighting: [chl:<rv|ed>|P<grammars>|<lang>/<pre.language-L><code.is-loaded>/<tokens>,...] [chlkw:] [chlnorm:] [chlxss:] [chlrc:] the focused pane's painted fences (ui/codehl.js) — gate phase codehl
+CENSUS.push(() => window.MathView ? MathView.tok() : "");   // #185 math: [mth:<rv|ed>|M<0/1 MathJax loaded>|i<inline>/b<block>/l<typeset>|d<first block display>] [mthxss:] [mthrc:] the focused pane's math (ui/mathview.js) — gate phase mathjax
+CENSUS.push(() => modalKind === "cp" ? " [cphint:" + [...document.querySelectorAll("#mlist .mrow .mhint")].map(h => h.textContent.replace(/[\[\]|]/g, "")).filter(Boolean).join("|") + "]" : "");   // macOS port: the hotkey hints the open command palette PAINTS (Mod spelled per platform: "Cmd + W" on macOS)
+CENSUS.push(() => { const a = [...document.querySelectorAll("a.ext")].find(e => { const r = e.getBoundingClientRect(); return getComputedStyle(e).visibility === "visible" && r.width > 0 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; }); if (!a) return ""; const b = a.getBoundingClientRect(); return " [extxy:" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "]"; });   // macOS port: painted centre of the first external link inside the viewport (the links gate clicks it)

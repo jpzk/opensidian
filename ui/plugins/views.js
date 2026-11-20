@@ -61,8 +61,27 @@
           return b;
         }
       }
+      /* issue #239: a FileView's header carries its file's name as the TITLE (stock 1.13.7, black-box: an
+         Excalidraw board's view header reads "Drawing.excalidraw", and a click on it edits the name in place).
+         The name is painted on every file change and every vault rename (_osPaintTitle); a click hands the
+         title to the app's inline rename (main.js pvTitleRename, the tab/explorer editor of #101/#142), so a
+         drawing renames through the same tail as a note: disk, tabs, explorer, bookmarks, links. */
       class FileView extends ItemView {
-        constructor(leaf) { super(leaf); this.file = null; this.allowNoFile = false; this.navigation = true; }
+        constructor(leaf) {
+          super(leaf); this.file = null; this.allowNoFile = false; this.navigation = true;
+          this.titleEl.classList.add("os-pvtitle");
+          this.titleEl.addEventListener("click", e => {
+            if (e.button !== 0 || e.target.closest(".exren")) return;
+            try { if (typeof pvTitleRename === "function") pvTitleRename(this, e); } catch (er) { console.error("[plugin] title rename:", er); }
+          });
+        }
+        _osPaintTitle() {
+          const t = this.titleEl;
+          if (!t || t.querySelector(".exren")) return;   // an open rename editor owns the title until it closes
+          const f = this.file, s = f && f.basename ? String(f.basename) : "";
+          if (t.textContent !== s) t.textContent = s;
+          t.title = s;
+        }
         getDisplayText() { return this.file ? this.file.basename : "No file"; }
         getState() { return this.file ? { file: this.file.path } : {}; }
         async setState(state) {
@@ -75,6 +94,7 @@
         async loadFile(file) {
           if (this.file) try { await this.onUnloadFile(this.file); } catch (e) { console.error(e); }
           this.file = file;
+          this._osPaintTitle();
           await this.onLoadFile(file);
         }
         onLoadFile() { return Promise.resolve(); }
@@ -182,6 +202,21 @@
         t.raw = raw;
         const name = title || r.type;
         if (t.name !== name) { t.name = name; const g = groupOfTab(t); if (g && typeof renderTabs === "function") try { renderTabs(g); } catch (_) {} }
+        if (typeof v._osPaintTitle === "function") safe("view title", () => v._osPaintTitle());   // #239: the header title follows the file
+      }
+      /* issue #239: a vault rename (the app's rename: tab, header title, explorer, F2) reaches every open view of
+         the file as stock does it — FileView.onRename(file) — and the tab label + header title follow the new name. */
+      let renRef = null;
+      function armRename() {
+        if (renRef) return;
+        try {
+          renRef = d.vault().on("rename", f => {
+            for (const r of recs.values()) if (r.view && f && r.view.file === f) {
+              safe("view onRename " + r.type, () => r.view.onRename(f));
+              syncTab(r);
+            }
+          });
+        } catch (e) { renRef = null; console.error("[plugin] rename hook:", e); }
       }
       function makeView(t, type, state, inst) {   // instantiate (or adopt inst) + load + onOpen, once per tab
         const ty = types.get(type);
@@ -194,6 +229,7 @@
         }
         const r = { t, leaf, view, type, pid: ty ? ty.pid : null, opened: null };
         recs.set(t, r);
+        armRename();
         // main.js mounts a plugin-view tab only through PVHOST, which registerView arms; a view handed to
         // WorkspaceLeaf.open needs no registered type, so the first record arms it too (else the tab shows
         // "No view for" and the view's containerEl is never attached)

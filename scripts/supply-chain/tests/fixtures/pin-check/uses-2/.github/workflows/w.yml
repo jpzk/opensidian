@@ -1,0 +1,4 @@
+jobs:
+  a:
+    steps:
+      - uses: docker://alpine:3.22

@@ -143,6 +143,7 @@ pub fn next_hop(cur: &url::Url, loc: &str, base: Option<&url::Url>) -> Result<ur
 pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> {
     use soup::glib::translate::IntoGlib;
     use soup::prelude::*;
+    crate::net_allowed(what)?; // #144 toggle 3: the choke point, before any session exists
     let base = mirror_base();
     let mut cur = check_url(logical)?;
     let sess = soup::Session::new();
@@ -205,8 +206,152 @@ pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> 
     Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// the status code, Location and Content-Length of one HTTP response head (the bytes before the
+/// blank line, as `curl -i` prints them); None when it is not an HTTP status line
+#[cfg(any(test, target_os = "macos"))]
+pub fn parse_head(head: &[u8]) -> Option<(u32, Option<String>, Option<u64>)> {
+    let text = String::from_utf8_lossy(head);
+    let mut lines = text.split("\r\n").flat_map(|l| l.split('\n'));
+    let status = lines.next()?;
+    let mut parts = status.split_whitespace();
+    if !parts.next()?.starts_with("HTTP/") {
+        return None;
+    }
+    let code: u32 = parts.next()?.parse().ok()?;
+    let (mut loc, mut len) = (None, None);
+    for l in lines {
+        if let Some((k, v)) = l.split_once(':') {
+            match k.trim().to_ascii_lowercase().as_str() {
+                "location" => loc = Some(v.trim().to_string()),
+                "content-length" => len = v.trim().parse().ok(),
+                _ => {}
+            }
+        }
+    }
+    Some((code, loc, len))
+}
+
+/// macOS: libsoup does not exist here, so each hop is one run of Apple's /usr/bin/curl (SIP-protected,
+/// absolute path, fixed arguments, no new crate). The egress rules are unchanged and stay in Rust:
+/// check_url on every hop; curl follows NO redirect (--max-redirs 0, no -L), next_hop re-checks each
+/// Location; --proto limits the scheme (http only for the loopback mirror); -q skips ~/.curlrc.
+/// Like the libsoup client, the response HEAD is read first (`-i`): a redirect is followed without
+/// reading its body, a non-200 is an error, a declared length over the cap is refused, and the cap
+/// is enforced again while the body is read. curl must exit 0: a transfer cut short is an error,
+/// never a truncated success. Anonymous: no cookies, no auth.
+#[cfg(target_os = "macos")]
+pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    const MAX_HEAD: usize = 64 * 1024;
+    crate::net_allowed(what)?; // #144 toggle 3: the choke point, before any request exists
+    let base = mirror_base();
+    let mut cur = check_url(logical)?;
+    let deadline = Instant::now() + DEADLINE;
+    let io = IO_TIMEOUT_S.to_string();
+    for _ in 0..=MAX_REDIRECTS {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!("{what}: timed out"));
+        }
+        let wire = wire_url(&cur, base.as_ref());
+        let mut c = Command::new("/usr/bin/curl");
+        c.arg("-q") // must be first: no ~/.curlrc
+            .args(["--silent", "--show-error", "--globoff", "--max-redirs", "0", "--include", "--suppress-connect-headers"])
+            .args(["--proto", if base.is_some() { "=http,https" } else { "=https" }])
+            .args(["--connect-timeout", &io, "--speed-limit", "1", "--speed-time", &io])
+            .args(["--max-time", &format!("{:.0}", left.as_secs_f64().ceil())])
+            .args(["--user-agent", concat!("opensidian/", env!("CARGO_PKG_VERSION"), " plugin-browser")]);
+        if cur.host_str() == Some("api.github.com") {
+            c.args(["--header", "Accept: application/vnd.github+json"]);
+        }
+        c.arg("--url").arg(&wire).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = c.spawn().map_err(|e| format!("{what}: cannot run /usr/bin/curl: {e}"))?;
+        let mut stdout = child.stdout.take().expect("piped");
+        let host = cur.host_str().unwrap_or("?").to_string();
+        let stop = |child: &mut std::process::Child| {
+            let _ = child.kill();
+            let _ = child.wait();
+        };
+        let curl_err = |child: &mut std::process::Child| {
+            let mut e = String::new();
+            if let Some(mut s) = child.stderr.take() {
+                let _ = s.read_to_string(&mut e);
+            }
+            e.lines().find(|l| !l.trim().is_empty()).unwrap_or("no response").trim().to_string()
+        };
+        // 1. the head
+        let mut buf = Vec::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        let split = loop {
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+            if buf.len() > MAX_HEAD {
+                stop(&mut child);
+                return Err(format!("{what}: {host}: response head over {MAX_HEAD} bytes"));
+            }
+            let n = stdout.read(&mut chunk).map_err(|e| format!("{what}: read: {e}"))?;
+            if n == 0 {
+                let msg = curl_err(&mut child);
+                let _ = child.wait();
+                return Err(format!("{what}: {host} — {msg}"));
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        let Some((code, loc, len)) = parse_head(&buf[..split]) else {
+            stop(&mut child);
+            return Err(format!("{what}: {host}: not an HTTP response"));
+        };
+        // 2. a redirect: its body is never read
+        if (300..400).contains(&code) && code != 304 {
+            stop(&mut child);
+            let loc = loc.filter(|l| !l.is_empty()).ok_or_else(|| format!("{what}: HTTP {code} without a Location"))?;
+            cur = next_hop(&cur, &loc, base.as_ref()).map_err(|e| format!("{what}: redirect {e}"))?;
+            continue;
+        }
+        if code != 200 {
+            stop(&mut child);
+            let hint = if (code == 403 || code == 429) && cur.host_str() == Some("api.github.com") {
+                " (GitHub's anonymous API rate limit; try again later)"
+            } else {
+                ""
+            };
+            return Err(format!("{what}: HTTP {code} from {host}{hint}"));
+        }
+        if len.is_some_and(|l| l > cap) {
+            stop(&mut child);
+            return Err(format!("refused: {what} is {} bytes, over the {cap}-byte cap", len.unwrap_or(0)));
+        }
+        // 3. the body, capped while it is read
+        let mut out = buf.split_off(split);
+        loop {
+            if out.len() as u64 > cap {
+                stop(&mut child);
+                return Err(format!("refused: {what} is larger than the {cap}-byte cap"));
+            }
+            let n = stdout.read(&mut chunk).map_err(|e| format!("{what}: read: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&chunk[..n]);
+        }
+        // 4. curl itself must report success: a transfer cut short is not a body
+        let status = child.wait().map_err(|e| format!("{what}: curl: {e}"))?;
+        if !status.success() {
+            return Err(format!("{what}: {host}: transfer failed (curl exit {}) — {}", status.code().unwrap_or(-1), curl_err(&mut child)));
+        }
+        if len.is_some_and(|l| l != out.len() as u64) {
+            return Err(format!("{what}: {host}: got {} of {} bytes", out.len(), len.unwrap_or(0)));
+        }
+        return Ok(out);
+    }
+    Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn http_get(logical: &str, _cap: u64, what: &str) -> Result<Vec<u8>, String> {
+    crate::net_allowed(what)?; // #144 toggle 3
     check_url(logical)?;
     Err(format!("{what}: the plugin browser has no network client on this platform"))
 }
@@ -545,6 +690,17 @@ pub(crate) async fn store_uninstall(v: tauri::State<'_, crate::Vault>, id: Strin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_head_reads_status_location_and_length() {
+        let h = b"HTTP/2 302 \r\nlocation: https://release-assets.githubusercontent.com/x?y=1\r\ncontent-length: 0\r\n\r\n";
+        assert_eq!(parse_head(h), Some((302, Some("https://release-assets.githubusercontent.com/x?y=1".into()), Some(0))));
+        let h = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 42\r\n\r\n";
+        assert_eq!(parse_head(h), Some((200, None, Some(42))));
+        assert_eq!(parse_head(b"HTTP/1.1 404 Not Found\r\n\r\n"), Some((404, None, None)));
+        assert_eq!(parse_head(b"garbage\r\n\r\n"), None);
+        assert_eq!(parse_head(b""), None);
+    }
+
     use super::*;
     use std::path::PathBuf;
 

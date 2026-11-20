@@ -82,6 +82,7 @@ eq "platform: linux x86_64 (no platform word)"    "$("$S" platform opensidian-0.
 eq "platform: linux aarch64"                      "$("$S" platform opensidian-0.9.6-aarch64.cdx.json)" "linux aarch64"
 eq "platform: macos arm64 -> aarch64"             "$("$S" platform opensidian-0.9.6-macos-arm64.cdx.json)" "macos aarch64"
 eq "platform: macos x86_64"                       "$("$S" platform opensidian-0.9.6-macos-x86_64.cdx.json)" "macos x86_64"
+eq "platform: macos universal (fat Mach-O SBOM)"     "$("$S" platform opensidian-0.9.6-macos-universal.cdx.json)" "macos universal"
 refuses "platform: unknown arch"          "$S" platform opensidian-0.9.6.cdx.json
 for a in aarch64 armv7 i686 x86_64; do
   eq "platform: android $a"                      "$("$S" platform "opensidian-0.9.6-android-$a.cdx.json")" "android $a"

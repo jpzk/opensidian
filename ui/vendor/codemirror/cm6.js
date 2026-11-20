@@ -1,6 +1,6 @@
 /*! cm6.js — CodeMirror 6 + Lezer, bundled for Opensidian (generated, do not edit).
- * Recipe: harness bin/hz/cm6-vendor (package.json + package-lock.json + build.sh), esbuild 0.28.2.
- * Packages and versions: ui/vendor/codemirror/VENDOR.md. Licenses: THIRD-PARTY.md.
+ * Recipe: ui/vendor/codemirror/build (package.json + package-lock.json + build.sh), esbuild 0.28.2.
+ * Packages and versions: ui/vendor/vendor.lock.json + build/package-lock.json. Licenses: THIRD-PARTY.md.
  * CodeMirror 6 and Lezer: MIT License, Copyright (C) 2018-2021 by Marijn Haverbeke
  * <marijn@haverbeke.berlin> and others. style-mod, w3c-keyname, crelt,
  * @marijn/find-cluster-break: MIT License, Copyright (C) Marijn Haverbeke.

@@ -792,13 +792,12 @@
 
     /* ------------------------------------------------------ lib loaders
        PDF.js, MathJax and Prism are vendored under ui/vendor/<lib>/ (exact pin,
-       sha256 + license in each VENDOR.md / SHA256SUMS) and loaded on first use
+       pin, sha256, license in ui/vendor/vendor.lock.json + SHA256SUMS) and loaded on first use
        from 'self' under the unchanged CSP: no network, no eval. Each loader
        resolves with the real library (also published on window like a plugin
        expects: pdfjsLib, MathJax, Prism) and rejects honestly when the bytes
-       cannot be loaded; a failed load is retried by the next call. Mermaid is
-       still not vendored: loadMermaid rejects. */
-    const unsupported = what => new Error("unsupported in opensidian: " + what);
+       cannot be loaded; a failed load is retried by the next call. Mermaid
+       (loadMermaid) is vendored the same way; its locked configuration is below. */
     const vendorUrl = p => new URL("vendor/" + p, document.baseURI).href;
     const once = {};
     function loadOnce(key, start) {
@@ -815,6 +814,19 @@
       });
     }
 
+    /* #144 toggle 11 (Settings › Security › MathJax / Prism / Mermaid): the boundary is the
+       app scheme answering 403 for ui/vendor/<engine>/ while the switch is off (main.rs
+       page_window, security::engine_refusal), whoever asks. This only names the toggle first,
+       from the effective values security.js publishes, before window.<lib> is touched.
+       Rejects (or answers null when on) — a refusal, never a throw out of the caller. */
+    const ENGINE_NAMES = { mathjax: "MathJax", prism: "Prism", mermaid: "Mermaid" };
+    function engineOff(f) {
+      const s = window.opensidianSecurity;
+      if (!s || s[f] !== false) return null;
+      const n = ENGINE_NAMES[f];
+      return Promise.reject(new Error("load" + (f === "mathjax" ? "MathJax" : n) + ": " + n + " is off (Settings › Security › " + n + ")"));
+    }
+
     function loadPdfJs() {
       if (window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve(window.pdfjsLib);
       return loadOnce("pdfjs", () => import(vendorUrl("pdfjs/pdf.min.mjs")).then(mod => {
@@ -829,19 +841,25 @@
     const mathJaxReady = () => !!(window.MathJax && window.MathJax.startup && window.MathJax.startup.document &&
       typeof window.MathJax.tex2chtml === "function");
     function loadMathJax() {
+      const off = engineOff("mathjax"); if (off) return off;
       if (mathJaxReady()) return Promise.resolve(window.MathJax);
       return loadOnce("mathjax", () => {
-        // configuration MathJax reads at startup: never typeset the app on its own, no context menu
-        window.MathJax = { startup: { typeset: false }, options: { enableMenu: false } };
+        // configuration MathJax reads at startup: never typeset the app on its own, no context menu;
+        // #185: no TeX \require extension, so note text can never make MathJax load a script
+        const cfg = window.MathJax = { startup: { typeset: false }, options: { enableMenu: false }, tex: { packages: { "[-]": ["require"] } } };
         return loadScript("mathjax/tex-chtml-full.js", "MathJax")
           .then(() => window.MathJax.startup.promise)
           .then(() => {
             if (!mathJaxReady()) throw new Error("MathJax loaded without tex2chtml");
             return window.MathJax;
-          });
+          })
+          // a refused / failed load leaves no half-made global behind (window.MathJax stays undefined)
+          .catch(e => { if (window.MathJax === cfg) delete window.MathJax; throw e; });
       });
     }
     function renderMath(source, display) {
+      const s = window.opensidianSecurity;
+      if (s && s.mathjax === false) throw new Error("renderMath: MathJax is off (Settings › Security › MathJax)");
       if (!mathJaxReady()) throw new Error("renderMath: MathJax is not loaded yet (await loadMathJax() first)");
       return window.MathJax.tex2chtml(String(source), { display: !!display });
     }
@@ -851,21 +869,110 @@
     }
 
     function loadPrism() {
+      const off = engineOff("prism"); if (off) return off;
       if (window.Prism && typeof window.Prism.highlight === "function") return Promise.resolve(window.Prism);
       return loadOnce("prism", () => {
         // read by Prism at startup: no highlightAll over the app, no worker message handler
-        window.Prism = { manual: true, disableWorkerMessageHandler: true };
+        const cfg = window.Prism = { manual: true, disableWorkerMessageHandler: true };
+        // #186: then every language component of the same pinned release (prism-components.js, recorded in
+        // vendor.lock.json as a concatenation of the tarball's components), so the app and plugins get the
+        // grammars Obsidian has (Prism.languages.rust, .python ...)
         return loadScript("prism/prism.js", "Prism").then(() => {
           if (!window.Prism || typeof window.Prism.highlight !== "function") throw new Error("Prism loaded without highlight");
-          return window.Prism;
-        });
+          return loadScript("prism/prism-components.js", "Prism languages").then(() => window.Prism, e => {
+            // the core loaded but its languages did not: drop the half-loaded engine so a retry starts clean
+            try { delete window.Prism; } catch (_) { window.Prism = undefined; } throw e;
+          });
+        }, e => { if (window.Prism === cfg) delete window.Prism; throw e; });
       });
+    }
+
+    /* Mermaid: untrusted note text goes through a big parser + SVG generator, so the
+       configuration is fixed here and cannot be loosened from a note.
+       - securityLevel "strict": labels are sanitized by the bundled DOMPurify, click
+         callbacks / javascript: links are dropped and nothing is bound (we never call
+         bindFunctions). "sandbox" (iframe with a data: URL) was evaluated and not used:
+         the CSP has no frame-src for data: and it would also break in-diagram links.
+       - htmlLabels false: labels are SVG text, not foreignObject HTML.
+       - every key that changes sanitizing, HTML, CSS, fonts or the caps is in `secure`,
+         which Mermaid strips from %%{init}%% directives and frontmatter `config:`.
+       - no icon packs are registered: nothing is fetched. Mermaid 12 bundles ELK and
+         makes it the default layout; layout is pinned to "dagre" (the 11.x layout, and the
+         upstream-documented way to keep it) and is in `secure`, so ELK only runs for an
+         explicit `flowchart-elk` diagram, in-process (bundled FakeWorker, no fetch).
+       - maxTextSize / maxEdges cap hostile input; errors are thrown to the caller
+         (suppressErrorRendering) so the app shows them inline instead of Mermaid
+         painting into document.body. */
+    const MERMAID_SECURE = ["secure", "securityLevel", "startOnLoad", "maxTextSize", "maxEdges",
+      "suppressErrorRendering", "dompurifyConfig", "htmlLabels", "flowchart", "theme", "themeVariables",
+      "themeCSS", "darkMode", "fontFamily", "altFontFamily", "arrowMarkerAbsolute", "legacyMathML",
+      "forceLegacyMathML", "deterministicIds", "deterministicIDSeed", "layout", "look", "elk"];
+    const MERMAID_MAX_TEXT = 50000, MERMAID_MAX_EDGES = 500;
+    function mermaidThemeVars() {
+      const cs = getComputedStyle(document.body || document.documentElement);
+      const v = (name, dflt) => (cs.getPropertyValue(name) || "").trim() || dflt;
+      const dark = !!(document.body && document.body.classList.contains("theme-dark"));
+      const bg = v("--background-primary", dark ? "#1e1e1e" : "#ffffff");
+      const bg2 = v("--background-secondary", dark ? "#262626" : "#f6f6f6");
+      const text = v("--text-normal", dark ? "#dadada" : "#222222");
+      const muted = v("--text-muted", dark ? "#b3b3b3" : "#5c5c5c");
+      const border = v("--background-modifier-border", dark ? "#363636" : "#e0e0e0");
+      const accent = v("--interactive-accent", dark ? "#7f6df2" : "#7b6cd9");
+      return { dark, vars: {
+        darkMode: dark, background: bg, mainBkg: bg2, primaryColor: bg2, primaryTextColor: text,
+        primaryBorderColor: accent, secondaryColor: bg2, tertiaryColor: bg, lineColor: muted,
+        textColor: text, nodeTextColor: text, titleColor: text, edgeLabelBackground: bg,
+        clusterBkg: bg2, clusterBorder: border, noteBkgColor: bg2, noteTextColor: text, noteBorderColor: border,
+        actorBkg: bg2, actorBorder: accent, actorTextColor: text, signalColor: text, signalTextColor: text,
+        labelBoxBkgColor: bg2, labelTextColor: text, loopTextColor: text,
+        fontFamily: v("--font-text", "sans-serif"),
+      } };
+    }
+    let mermaidThemeKey = "";
+    function configureMermaid(M, force) {
+      const t = mermaidThemeVars();
+      const key = JSON.stringify(t.vars);
+      if (!force && key === mermaidThemeKey) return M;
+      M.initialize({
+        startOnLoad: false, securityLevel: "strict", secure: MERMAID_SECURE.slice(),
+        maxTextSize: MERMAID_MAX_TEXT, maxEdges: MERMAID_MAX_EDGES, suppressErrorRendering: true,
+        htmlLabels: false, flowchart: { htmlLabels: false }, legacyMathML: false, forceLegacyMathML: false,
+        theme: "base", darkMode: t.dark, themeVariables: t.vars, fontFamily: t.vars.fontFamily, layout: "dagre",
+        dompurifyConfig: {},
+      });
+      mermaidThemeKey = key;
+      return M;
+    }
+    const mermaidReady = () => !!(window.mermaid && typeof window.mermaid.render === "function" &&
+      typeof window.mermaid.initialize === "function");
+    function loadMermaid() {
+      // #144 gate first: Settings › Security › Mermaid off refuses before any file is fetched
+      const off = engineOff("mermaid"); if (off) return off;
+      return loadOnce("mermaid", () => (mermaidReady() ? Promise.resolve() : loadScript("mermaid/mermaid.min.js", "Mermaid")).then(() => {
+        if (!mermaidReady()) throw new Error("Mermaid loaded without render/initialize");
+        return window.mermaid;
+      })).then(M => configureMermaid(M));
+    }
+    // app renderer entry: render one diagram with the CURRENT theme (re-initializes on
+    // light/dark or accent change); resolves { svg } or rejects with Mermaid's error.
+    let mermaidSeq = 0;
+    function renderMermaid(source) {
+      // re-initialize every time: a plugin may have called mermaid.initialize() itself
+      return loadMermaid().then(M => configureMermaid(M, true)).then(M => M.render("os-mermaid-" + (++mermaidSeq), String(source)))
+        .then(r => ({ svg: r && r.svg || "" }));
     }
 
     const GATED = {
       loadMathJax, loadPdfJs, loadPrism, renderMath, finishRenderMath,
-      loadMermaid: () => Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
+      loadMermaid,
     };
     Object.assign(K.exportValues, GATED);
+    // first-party renderers (reading view, Live Preview: ui/mermaid.js, #186 ui/codehl.js) use the
+    // plugin API's loaders, so app and plugins share ONE Mermaid/Prism instance and the vendor gate
+    // covers both
+    try { Object.defineProperty(window, "__osLibs", { value: Object.freeze({ loadPrism, loadMermaid, renderMermaid }), configurable: false, writable: false, enumerable: false }); } catch (_) {}
+    // #185: the app's own math renderer (ui/mathview.js) loads MathJax through this same loader, so one
+    // instance is shared with plugins and any gate on the loader covers the app's rendering too
+    try { Object.defineProperty(window, "__osMath", { value: Object.freeze({ loadMathJax }), configurable: false, writable: false, enumerable: false }); } catch (_) {}
   });
 })();

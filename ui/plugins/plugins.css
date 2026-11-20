@@ -161,6 +161,11 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-pv > .view-header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; flex: 0 0 auto }
 .os-pv > .view-header[hidden] { display: none }
 .os-pv > .view-header > .view-header-title { flex: 1 1 auto; min-width: 0 }
+/* issue #239: a FileView's header title = its file's name, centred, a caret surface (a click renames, stock) */
+.os-pv > .view-header > .os-pvtitle { text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: var(--font-ui-small, 13px); color: var(--text-chrome, inherit); cursor: text }
+.os-pv > .view-header > .os-pvtitle .exren { width: min(100%, 360px); box-sizing: border-box; background: var(--bg-base); color: var(--text-chrome);
+  border: 1px solid var(--border-focus-ring); border-radius: 3px; font: inherit; padding: 0 4px; outline: none; user-select: text; cursor: text; text-align: center }
 .os-pv > .view-header .view-actions { display: flex; gap: 2px }
 .os-pv > .view-content { flex: 1 1 0; min-height: 0; overflow: auto; padding: 8px 12px }
 /* a plugin View in a sidebar pane (.spane, a bounded flex column) fills it the same way:

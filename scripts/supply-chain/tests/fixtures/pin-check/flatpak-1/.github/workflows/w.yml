@@ -1,0 +1,1 @@
+      - run: flatpak --user install -y flathub org.gnome.Platform//49

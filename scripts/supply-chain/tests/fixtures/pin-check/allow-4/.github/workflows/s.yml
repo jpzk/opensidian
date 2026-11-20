@@ -1,0 +1,4 @@
+jobs:
+  s:
+    container:
+      image: semgrep/semgrep:latest

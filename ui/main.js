@@ -4,6 +4,12 @@
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
 // are welcome to redistribute it under the terms of the GNU GPL version 3 or
 // (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
+// macOS port: Mod is Cmd on macOS and Ctrl elsewhere (ui/plugins/api-core.js Keymap uses the same test);
+// MODNAME is how labels and hints spell it. A physical Ctrl on macOS is not Mod (it stays the editor's).
+const OS_MAC = /Mac/.test(navigator.platform);
+const modKey = e => !!(e && (OS_MAC ? e.metaKey : e.ctrlKey));
+const MODNAME = OS_MAC ? "Cmd" : "Ctrl";
+if (OS_MAC) document.documentElement.classList.add("os-mac");   // style.css: native traffic lights, no own window buttons
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
@@ -129,6 +135,15 @@ let PTABGONE = null;
    function that reads it at top-level evaluation time (renderTabs re-hosts an open tab editor). */
 let exRen = null;                          // {path, kind: "note"|"canvas", inp, tn, row, orig, label, tab, moving}
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
+/* #242: stock 1.13.7 never shows a main area without a leaf. Closing the last tab (Ctrl+W, the tab's
+   close glyph, Close all, the empty state's Close) leaves ONE empty "New tab" leaf whose empty state
+   offers Create new note / Go to file / Close. Here a tab is a note name, so that leaf is the lone
+   group's empty tab list: once the vault has booted (leafBoot) a group with zero tabs paints the
+   "New tab" header + the empty state, counts as one tab in the census ([tabs:1] [tord:empty*]) and is
+   written to workspace.json as Obsidian's `empty` leaf (restored as such on the next start). Opening
+   a note there fills it, as stock replaces its empty leaf. Before boot the window has no leaf yet. */
+let leafBoot = false;
+const emptyLeaf = g => leafBoot && !!g && !g.tabs.length;
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
 // Rust renderer feeds — lp/source render in JS, see ui/editor.js)
@@ -349,6 +364,11 @@ let rTab = "bl", rT = null, rpInfo = "";   // rpInfo -> census [rp:...]
    the difference, and it is monotone, so a probe compares it across an action
    instead of trusting a snapshot. */
 let rbN = 0;
+/* issue #176: a render generation per pane. rBacklinks / rOutgoing clear their box, AWAIT, then append —
+   two calls in flight (fast note switches) both appended, so the pane showed two "Unlinked mentions"
+   headers or the previous note's rows. A call that is no longer the latest drops its result after
+   every await (stock 1.13.7 always shows one set, for the active note). */
+let blGen = 0, outGen = 0;
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
@@ -389,13 +409,14 @@ async function rPanesRefresh() {
 // Backlinks: "Linked mentions N" + one expandable row per linking note; the
 // matching lines show with the [[link]] highlighted; click opens the note
 async function rBacklinks(n) {
-  rbN++;                                  // [rpn:] — counted at ENTRY: the bug is calling it at all
+  rbN++; const gen = ++blGen;            // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
   // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
   const isCv = !!n && /\.canvas$/i.test(n);
   const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  if (gen !== blGen) return;              // issue #176: a newer render owns the pane
   head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
@@ -434,6 +455,7 @@ async function rBacklinks(n) {
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
   // to Linked mentions on the pane's next refresh)
   const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
+  if (gen !== blGen) return;              // issue #176
   rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
   if (!n) return;
   const uh = document.createElement("div");
@@ -455,11 +477,13 @@ async function rBacklinks(n) {
     row.title = "line " + (m.line + 1);
     const d = document.createElement("div");
     d.className = "blline"; d.dataset.ol = "ul:" + m.note;
-    const t = m.text, i = t.toLowerCase().indexOf(n.split("/").pop().toLowerCase());
-    if (i >= 0) {
+    // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
+    // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
+    const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
+    if (i >= 0 && i < t.length && w > 0) {
       d.appendChild(document.createTextNode(t.slice(0, i)));
-      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + m.len); d.appendChild(mk);
-      d.appendChild(document.createTextNode(t.slice(i + m.len)));
+      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
+      d.appendChild(document.createTextNode(t.slice(i + w)));
     } else d.textContent = t;
     sideRow(d, m.note);
     sideRow(row, m.note);
@@ -565,9 +589,10 @@ function sideRow(el, name, create) {
 }
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
-  const box = $("outlist"), head = $("outhead");
+  const box = $("outlist"), head = $("outhead"), gen = ++outGen;
   box.textContent = ""; head.textContent = "";
   const out = n ? await inv("outgoing", { name: n }) : [];
+  if (gen !== outGen) return;             // issue #176: a newer render owns the pane
   head.textContent = "Links"; rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = out.length; head.appendChild(c);
@@ -930,7 +955,9 @@ function scShift(g, from, to, ins) {
   const v = scView(g);
   if (!v || !(v.scHl && v.scHl.length)) return;
   const d = ins - (to - from);
-  const map = (p, start) => (p <= from ? p : p >= to ? p + d : start ? from : from + ins);
+  // issue #174: both ends are NON-inclusive, as stock 1.13.7 maps its flash: a pure insert AT the start
+  // pushes the start along (text typed right before the match stays outside), one at the end stays outside
+  const map = (p, start) => (p < from || (p === from && (!start || from < to)) ? p : p >= to ? p + d : start ? from : from + ins);
   v.scHl = v.scHl.map(h => {
     const a = map(h.off, true), b = map(h.off + h.len, false);
     return { off: a, len: Math.max(0, b - a) };
@@ -1091,8 +1118,12 @@ async function scOpen(g, note, ev) {
   const newTab = !!(ev && (ev.ctrlKey || ev.metaKey || ev.button === 1)) && !(ev && ev.altKey);
   if (newTab) {
     await flushSave(g);
-    g.tabs.push(mkTab(note));
-    g.active = g.tabs.length - 1;
+    // #173: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract), not at the far end — stock
+    // 1.13.7: cfA,cfB*,cfC,cfD + Ctrl/middle-click a cfC match -> cfA,cfB,cfC*,cfC,cfD. An insert without splice:
+    // the tabclose census (main.rs tabclose_every_removal_path_names_a_cause) counts every g.tabs splice as a removal.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(note);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     return;
   }
@@ -1534,6 +1565,7 @@ function tywGhost(g, R) {
 }
 function tywMeasure(rd, R) {
   const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
   const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
   const find = s => { const w = document.createTreeWalker(R, NodeFilter.SHOW_TEXT);
@@ -1606,6 +1638,7 @@ function ttlTok() {
   const s = getComputedStyle(R, "::before");
   if (s.content === "none" || s.display === "none") return "";
   const ctx = (ttlCanvas = ttlCanvas || document.createElement("canvas")).getContext("2d");
+  if (!ctx) return "";   // #144 toggle 6: HTML canvas off (census only)
   const fnt = c => c.fontStyle + " " + c.fontWeight + " " + c.fontSize + " " + c.fontFamily;
   const f = v => Number.isFinite(v) ? String(Math.round(v * 100) / 100) : "-";
   const rr = R.getBoundingClientRect(), rs = getComputedStyle(R);
@@ -1777,24 +1810,24 @@ function bmRowMenu(e, nm, ix) {             // right-click a FILE .bmrow -> Obsi
   // issue #31: a graph row (no file behind it) and a canvas / plugin-file row (a vault PATH) open through bmOpenRow
   const vr = bmTree[ix] && bmTree[ix].name === nm && !pdf && (bmTree[ix].graph || bmTree[ix].path) ? bmTree[ix] : null;
   if (vr) {
-    item("Open in new tab", () => bmOpenRow(vr, { ctrlKey: true }));
-    if (vr.path && Ed.isImg(vr.name)) item("Open to the right", () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
-    else if (vr.path && Ed.isAudio(vr.name)) item("Open to the right", () => openAudio(vr.name, null, "split"));   // issue #140: a recording, the audio view
-    else item("Open to the right", null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
+    item(I18N.m("Open in new tab"), () => bmOpenRow(vr, { ctrlKey: true, metaKey: true }));
+    if (vr.path && Ed.isImg(vr.name)) item(I18N.m("Open to the right"), () => openImage(vr.name, null, "split"));   // issue #102: an image bookmark opens the image view to the right
+    else if (vr.path && Ed.isAudio(vr.name)) item(I18N.m("Open to the right"), () => openAudio(vr.name, null, "split"));   // issue #140: a recording, the audio view
+    else item(I18N.m("Open to the right"), null, "Not wired for a graph / canvas / plugin-file bookmark: click the row, then Split right");
   } else {
-  item("Open in new tab",   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
-  item("Open to the right", () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
+  item(I18N.m("Open in new tab"),   () => (pdf ? openPdf(nm, null, "tab") : openNewTab(nm)));                         // WIRED: openNewTab — right of the active tab, focused, never deduped (opentab REQ-8/9/14, Obsidian c20)
+  item(I18N.m("Open to the right"), () => (pdf ? openPdf(nm, null, "split") : splitWith(fg(), "row", mkTab(nm))));      // WIRED: splitWith — the verb behind the tab menu's "Split right" (M7/R6.2), carrying a fresh tab of this note
   }
-  item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
+  item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename",  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
-  item("Edit...", hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
+  item(I18N.m("Rename"),  () => bmGroupRenameStart(ix));                          // WIRED (issue #101): the inline editor in the row edits the bookmark TITLE, never the file (06-rename.png -> 08-rename-enter.png)
+  item(I18N.m("Edit..."), hasGrp ? () => openBmEdit(ix) : null,                    // WIRED (R4X.7) once a group exists: the move route, in and out
        hasGrp ? null : "Edit bookmark chooses a GROUP and this pane has none — right-click the pane background to create one");
   sep();
-  if (vr && vr.graph) item("Reveal file in navigation", null, "A graph bookmark has no file behind it");   // issue #31
-  else item("Reveal file in navigation", () => bmReveal(nm));              // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
+  if (vr && vr.graph) item(I18N.m("Reveal file in navigation"), null, "A graph bookmark has no file behind it");   // issue #31
+  else item(I18N.m("Reveal file in navigation"), () => bmReveal(nm));              // WIRED: bmReveal — setPane("files") + the explorer row's focus ring (R9.3 pane switch, treeRows)
   sep();
-  item("Remove", () => { if (vr) bmApply("bm_remove", { ix }); else if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // issue #31: a graph / canvas row is removed BY ROW (bm_remove)
+  item(I18N.m("Remove"), () => { if (vr) bmApply("bm_remove", { ix }); else if (pdf) toggleBm(nm, true); else if (bmCache.includes(nm)) toggleBm(nm); });   // issue #31: a graph / canvas row is removed BY ROW (bm_remove)
   // WIRED: toggleBm — the same toggle the explorer-row / tab menus use (R9.4 / R20.4); guarded so it can only REMOVE. A PDF row removes its Pdf entry EXPLICITLY (pdf:true) so a same-named note bookmark ("x.pdf.md") is never the one dropped (PR #57 qodo High)
   placeMenu(m, e.clientX, e.clientY);      // R22: viewport-clamped by measured size — the same seam as noteMenu/tabMenu
 }
@@ -1812,15 +1845,15 @@ function bmGroupMenu(e, ix, title) {
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
   const OPEN_WHY = "A group holds NAMES, not a note (R9.4) — there is nothing behind this row to open; the behaviour to match here is UNMEASURED (docs/recon-bmfolder/README.md)";
-  item("Open in new tab",    null, OPEN_WHY);                              // NOT WIRED
-  item("Open to the right",  null, OPEN_WHY);                              // NOT WIRED
-  item("Open in new window", null, "Single-window app: there is no second window to open into");   // NOT WIRED
+  item(I18N.m("Open in new tab"),    null, OPEN_WHY);                              // NOT WIRED
+  item(I18N.m("Open to the right"),  null, OPEN_WHY);                              // NOT WIRED
+  item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");   // NOT WIRED
   sep();
-  item("Rename", () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
-  item("Bookmark the active tab...", () => openBmAdd(ix));                // WIRED (bmactive): Obsidian's "Add bookmark" modal, docs/recon-bmactive F1/F2
-  item("New group", () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
+  item(I18N.m("Rename"), () => bmGroupRenameStart(ix));                            // WIRED: inline editor in the row (07-nest-named.png -> 08-nest-commit.png)
+  item(I18N.m("Bookmark the active tab..."), () => openBmAdd(ix));                // WIRED (bmactive): Obsidian's "Add bookmark" modal, docs/recon-bmactive F1/F2
+  item(I18N.m("New group"), () => bmGroupNew(ix));                                 // WIRED: nests INSIDE this group (04-groupmenu.png -> 05-nest.png)
   sep();
-  item("Remove", () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
+  item(I18N.m("Remove"), () => bmGroupDelete(ix));                                 // WIRED: takes the SUBTREE, no confirmation (23-del-menu.png -> 24-deleted.png)
   // [mt:bmgroup:<title>] — WHICH row the browser's hit test handed us (R20.8's
   // lesson): "Remove" on a group drops its whole subtree, so an OCR/geometry
   // miss followed by Remove would delete a group nobody named and still look green.
@@ -1838,7 +1871,7 @@ function bmEmptyMenu(e) {                  // right-click the "No bookmarks." LI
      exact line and criterion 8 forbids editing it, so THIS line keeps its
      committed answer. The affordance is not lost: the same right-click anywhere
      else in the pane background creates a group (bmPaneMenu), empty list or not. */
-  bmMenuItems(m).item("New group", null, "Not from the empty-state line — right-click the pane background below it to create a group");
+  bmMenuItems(m).item(I18N.m("New group"), null, "Not from the empty-state line — right-click the pane background below it to create a group");
   placeMenu(m, e.clientX, e.clientY);
 }
 function bmPaneMenu(e) {                   // right-click the pane BACKGROUND -> Obsidian's one-item "New group" (02-emptymenu.png)
@@ -1847,7 +1880,7 @@ function bmPaneMenu(e) {                   // right-click the pane BACKGROUND ->
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  bmMenuItems(m).item("New group", () => bmGroupNew(null));                // WIRED: appends at the END of the top level, titled "Untitled group" (03-newgroup.png)
+  bmMenuItems(m).item(I18N.m("New group"), () => bmGroupNew(null));                // WIRED: appends at the END of the top level, titled "Untitled group" (03-newgroup.png)
   m.dataset.mt = "bmpane:";
   placeMenu(m, e.clientX, e.clientY);
 }
@@ -2462,9 +2495,9 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   };
   /* opentab REQ-10/11/12/16: Obsidian 1.13.7's file menu opens with this group (recon c07-b.json) */
   { const { item, sep } = bmMenuItems(m);
-    item("Open in new tab",    () => openNewTab(nm));                     // WIRED: REQ-11
-    item("Open to the right",  () => splitWith(fg(), "row", mkTab(nm)));  // WIRED: REQ-12, the bookmark menu's verb
-    item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
+    item(I18N.m("Open in new tab"),    () => openNewTab(nm));                     // WIRED: REQ-11
+    item(I18N.m("Open to the right"),  () => splitWith(fg(), "row", mkTab(nm)));  // WIRED: REQ-12, the bookmark menu's verb
+    item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
   /* CVR-A-087 / issue #101: the row names the note, so its menu renames it — IN THE ROW, as stock
@@ -2532,9 +2565,9 @@ function graphNodeMenu(e, hit, scope) {
     m.innerHTML = "";
     label();
     sep();
-    if (here) item("(vault root)", () => moveNoteTo(nm, ""));
+    if (here) item(I18N.m("(vault root)"), () => moveNoteTo(nm, ""));
     for (const f of fl) if (f !== here) item(f, () => moveNoteTo(nm, f));
-    if (m.children.length === 2) item("(no other folder)", () => {});
+    if (m.children.length === 2) item(I18N.m("(no other folder)"), () => {});
     clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
     setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
@@ -3080,6 +3113,10 @@ function wsNode(node) {
              children: kids.filter(Boolean),
              direction: node.dir === "row" ? "vertical" : "horizontal" };
   }
+  // #242: the empty leaf is written as Obsidian writes it (one leaf of type `empty`), never a 0-leaf layout
+  if (emptyLeaf(node))
+    return { id: wsIdOf(node, "wid"), type: "tabs",
+             children: [{ id: wsIdOf(node, "eid"), type: "leaf", state: { type: "empty", state: {} } }] };
   const tabs = node.tabs.filter(wsPersistable);
   const act = node.active >= 0 ? tabs.indexOf(node.tabs[node.active]) : -1;
   const o = { id: wsIdOf(node, "wid"), type: "tabs", children: tabs.map(t => {
@@ -3152,7 +3189,7 @@ function wsDoc() {
   // W4: unknown top-level keys, where Obsidian puts its own extra key (left-ribbon)
   if (wsExtra) for (const k of Object.keys(wsExtra)) d[k] = wsClone(wsExtra[k]);
   return Object.assign(d, {
-    active: wsPersistable(ft) ? wsIdOf(ft, "lid") : "",   // R28.12: focus lands on the NAMED leaf
+    active: wsPersistable(ft) ? wsIdOf(ft, "lid") : emptyLeaf(fg()) ? wsIdOf(fg(), "eid") : "",   // R28.12: focus lands on the NAMED leaf (#242: or the empty one)
     // R28.15: `lastOpenFiles` is the note-use order, newest first. It is the
     // SAME list the quick switcher already keeps (mruList) rather than a second
     // one that could disagree with it — nothing reads the key back yet beyond
@@ -3334,6 +3371,19 @@ function wsLinksIn(gs) {
     if (key) wsGrp[key] = hex;
   }
 }
+/* #242: the ids of the main area's leaves when EVERY leaf in it is an `empty` one, else null
+   (a leaf of any other type, or a malformed node, means the layout was not just the empty leaf). */
+function wsEmptyLeaves(node, out = []) {
+  if (!node || typeof node !== "object" || !Array.isArray(node.children)) return null;
+  for (const c of node.children) {
+    if (!c || typeof c !== "object") return null;
+    if (c.type === "leaf") {
+      if (!c.state || c.state.type !== "empty") return null;
+      out.push(typeof c.id === "string" ? c.id : "");
+    } else if (!wsEmptyLeaves(c, out)) return null;
+  }
+  return out;
+}
 function wsNodeIn(node, have) {
   if (!node || typeof node !== "object") return null;
   if (node.type === "split" && Array.isArray(node.children)) {
@@ -3384,7 +3434,7 @@ function wsNodeIn(node, have) {
 async function wsRead() {
   try { return await inv("read_workspace"); } catch (e) { return null; }
 }
-async function wsApply(doc, names) {
+async function wsApply(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
   if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
   // W4: captured BEFORE anything can bail — even a file whose main area is
   // unusable must not lose its unknown keys or its sidebars on the next write
@@ -3396,7 +3446,23 @@ async function wsApply(doc, names) {
   const have = new Set(names);
   let root = null;
   try { root = wsNodeIn(doc.main, have); } catch (e) { root = null; }
-  if (!root) { wsSide0 = { left: sidePane, right: rTab }; return false; }
+  if (!root) {
+    // #158: no main leaf survived (every tab closed = stock's one "empty" leaf) — the SIDEBARS are still the
+    // file's: stock 1.13.7 restores a collapsed left sidebar collapsed and its next write keeps "collapsed": true.
+    // Returning before wsSidesIn left them at their defaults, and wsSideKeep then erased the saved collapse.
+    try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+    wsSide0 = { left: sidePane, right: rTab };
+    wsSideIdsIn(doc);
+    // #242: a main area that holds ONLY Obsidian `empty` leaves (what closing the last tab writes, here and in
+    // stock) comes back as that empty leaf, not as the first-launch note. A layout whose notes were all
+    // dropped (gone from disk, unknown) still takes the first-launch path (R28.13).
+    const el = wsEmptyLeaves(doc.main);
+    if (boot && el && el.length) {
+      const g = fg();
+      if (g && !g.tabs.length) { if (typeof el[0] === "string" && el[0]) g.eid = el[0]; return "empty"; }
+    }
+    return false;
+  }
   if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
   state.root = root;
   state.focused = null;
@@ -3423,7 +3489,11 @@ async function wsApply(doc, names) {
   if (Array.isArray(doc.lastOpenFiles)) {
     mruList = doc.lastOpenFiles.map(wsPathIn).filter(n => typeof n === "string" && have.has(n)).slice(0, 20);
   }
-  // the ids the file used are the ids the next save writes (R28.4)
+  wsSideIdsIn(doc);
+  updateTitle();
+  return true;
+}
+function wsSideIdsIn(doc) {           // the sidebar ids the file used are the ids the next save writes (R28.4)
   for (const k of ["left", "right"]) {
     const s = doc[k];
     if (!s || typeof s.id !== "string") continue;
@@ -3433,8 +3503,6 @@ async function wsApply(doc, names) {
     const leaf = tabs && tabs.children && tabs.children[0];
     if (leaf && typeof leaf.id === "string") wsIds[k + "leaf"] = leaf.id;
   }
-  updateTitle();
-  return true;
 }
 const WS_VIEW_L_IN = { "file-explorer": "files", search: "search", bookmarks: "bm" };
 const WS_VIEW_R_IN = { backlink: "bl", "outgoing-link": "out", tag: "tags", outline: "toc" };
@@ -3558,6 +3626,7 @@ async function wsmLoad(name) {
     state.focused = null;
     renderLayout();
     focusGroup(g);
+    if (emptyLeaf(g)) showEmptyLeaf(g);     // #242: stock's empty leaf, with its empty state
     renderTabs(g);
   }
   wsmLoadsN++;
@@ -4060,7 +4129,9 @@ function utLite() {
   const H = window.__osPluginHost;
   if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
   const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
-  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || "")) : "";
+  // #177: a view tab (graph, local graph, plugin view) carries its display text in name, the same text its tab
+  // header shows ("Graph view", "Graph of note") — stock 1.13.7 titles the window with it; there is no tb.title
+  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.name || "").split("/").pop()) : "";
   const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
   if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
@@ -4131,6 +4202,7 @@ function utBuild() {             // pane/focus census in the window title (headl
     const tg = fg();
     if (tg && tg.tabs.length) lg += " [tord:" + tg.tabs.map((t, i) =>
       String(t.kind ? t.kind : t.name).split("/").pop().replace(/[[\]|*]/g, "") + (i === tg.active ? "*" : "")).join("|") + "]";
+    else if (emptyLeaf(tg)) lg += " [tord:empty*]";   // #242: the empty "New tab" leaf, named by its kind like gg / lg
   }
   // R8.10: focused tab's view mode -> [mode:lp|src|read]; when the lp raw
   // row is active, [mode:lp:<l0>] exposes its block start line (headless probe)
@@ -4248,6 +4320,13 @@ function utBuild() {             // pane/focus census in the window title (headl
       const xi = s => String(s == null ? "" : s).replace(/[[\]|]/g, "").slice(0, 100);
       md += " [xi:" + ims.length + "/" + ims.filter(i => i.naturalWidth > 0).length + "/" + nmiss +
             ims.slice(0, 3).map(i => "|" + xi(i.getAttribute("src"))).join("") + "]";
+      // #144 toggle 1: [xr:<banners naming Load external resources>/<https players>/<page CSP https: 1|0>]
+      const rs = window.__osSecurity && __osSecurity.get();
+      md += " [xr:" + rv.querySelectorAll(".imgmiss[data-sec=\"remoteMedia\"]").length + "/" +
+            rv.querySelectorAll("audio.rmedia, video.rmedia").length + "/" + (rs && rs.pageRemote ? 1 : 0) + "]";
+      // #144 toggle 4: [xm:<placeholders naming Render media>/<vault media elements>/<page CSP vault media 1|0>]
+      md += " [xm:" + rv.querySelectorAll(".imgmiss[data-sec=\"vaultMedia\"]").length + "/" +
+            rv.querySelectorAll("img.vimg, .pdf-embed, .audio-embed").length + "/" + (rs && rs.pageMedia === false ? 0 : 1) + "]";
     }
   }
   // pdfembed probe: the focused note view's PDF frames ->
@@ -4381,7 +4460,7 @@ function utBuild() {             // pane/focus census in the window title (headl
           if (q && q.width) ys[w] = Math.round(q.top);
         }
       }
-      const bk = rvq(rvp, "pre, table, .math-display");
+      const bk = rvq(rvp, "pre, table, .math-display, .math-block");   // #185: a typeset $$ block is div.math-block
       const bh = bk ? bk.tagName.toLowerCase() + ":" + Math.round(bk.getBoundingClientRect().height) + ":" + bk.querySelectorAll("br").length : "-";
       md += " [rvab:" + ys.Alpha + "," + ys.Beta + "," + rvp.querySelectorAll("br").length + "," + bh + "]";
     }
@@ -4459,6 +4538,7 @@ function utBuild() {             // pane/focus census in the window title (headl
       const tokc = (n, alt) => { const raw = tokv(n);   // the same three rungs as palette() (PAL_ALT)
         return res(raw) || res(csR.getPropertyValue(n).trim().toLowerCase()) || (alt ? res(tokv(alt)) : "") || raw; };
       gpx = " [gl:" + ((fgr && fgr.graphRenderer) || "none") + "] [graphbg:" + tokc("--graph-bg") + "] [graphnode:" + tokc("--accent-blue", "--color-accent") + "]";
+      if (fgr && fgr.graphGlWhy) gpx += " [glsec:" + fgr.graphGlWhy + "]";   // #144 toggle 5
       const cvEl = fgr && fgr.graph;
       if (cvEl && !cvEl.hidden) {
         const r = cvEl.getBoundingClientRect();
@@ -4597,7 +4677,7 @@ function utBuild() {             // pane/focus census in the window title (headl
     : "";
   let t = "Opensidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
-            " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
+            " [tabs:" + groups().map(g => g.tabs.length || (emptyLeaf(g) ? 1 : 0)).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
             (rightOpen ? ":" + rTab : "") + "]" +
             (rightOpen && rpInfo ? " [rp:" + rpInfo + "]" : "") +
@@ -4614,6 +4694,7 @@ function utBuild() {             // pane/focus census in the window title (headl
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
             exRenTok() +                                        // issue #101: an explorer row is in inline rename, [exren:<path>|sel=<selected>]
+            pvHdrTok() +                                        // issue #239: plugin-view header titles, [pvhdr:<i>:<title>@x,y]
             sfontTok() +                                        // sidefont: computed sidebar row font sizes (t=trow b=bmrow r=rlist)
             (sidePane === "search" && searchCount >= 0 ? " [sr:" + searchCount + "]" + srGeom() : "") +
             (sidePane === "bm" ? " [bm:" + bmRows() + "]" +          // RENDERED rows, not the model's length:
@@ -4635,6 +4716,7 @@ function utBuild() {             // pane/focus census in the window title (headl
              tgTok() +                                                    // tabclose: why every tab went
              ucTok() +                                                    // tabclose: the undo-close RESCUE buffer (depth/with-bytes)
              tcxTok() +                                                   // tabclose S4: the close glyph's PAINTED centres
+             esaTok() +                                                   // #242: the empty leaf's header + empty-state actions
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
   const ov = ovfScan();            // R22: layout overflow census (window + frame)
@@ -4651,6 +4733,14 @@ function utBuild() {             // pane/focus census in the window title (headl
   wsTouch();   // R28.3: every mutation already funnels through here — arm the layout write
 }
 let tSending = false, tWant = "";
+/* #144 toggle 12: while the process runs in lockdown (latched at start; security.js sets
+   window.__osLockdown from security_get) the WINDOW title carries " — Lockdown", inserted
+   before the first census token so the tokens stay at the end. document.title is untouched. */
+function lockTitle(t) {
+  if (!window.__osLockdown) return t;
+  const i = t.indexOf(" [");
+  return i < 0 ? t + " — Lockdown" : t.slice(0, i) + " — Lockdown" + t.slice(i);
+}
 function pushTitle(t) {
   tWant = t;
   if (tSending) return;
@@ -4663,7 +4753,7 @@ function pushTitle(t) {
     if (tWant !== cur) pushTitle(tWant);
   };
   try {
-    TAURI.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+    TAURI.window.getCurrentWindow().setTitle(lockTitle(cur)).catch(() => {}).then(fin);
   } catch (e) { fin(); }
   setTimeout(fin, 500);
 }
@@ -4751,6 +4841,7 @@ async function collapseGroup(g, via) {  // R6.5: closing the last tab removes th
   if (!parent) return;                        // lone root group: caller keeps it
   if (g.sim) cancelAnimationFrame(g.sim);     // stop the removed group's machinery
   g.simGen = 0; if (g.gwRelease) g.gwRelease();   // and retire its sim: a physics batch still in the Worker is dropped, not stepped on
+  if (g.dprOff) g.dprOff();                   // #166: and its dpr media-query listener (holds the sim closure)
   // tabclose: the SECOND unflushed path. This clears an armed save exactly like
   // dropTab does, and it is reachable with tabs still in the group (a drag that
   // moves the last tab out, :1837/:1844) — so the record is unconditional and
@@ -4974,7 +5065,10 @@ async function closeTabsAfter(g, i) {      // Close tabs after: target + everyth
 }
 async function closeAllTabs(g) {           // Close all: a split pane goes with its tabs (#8); the lone root pane survives
   await flushSave(g);
-  while (g.tabs.length > 1) await closeTab(g, g.tabs.length - 1);
+  /* #175: LEFT to right, so the undo stack holds the strip in order and Ctrl+Shift+T
+     reopens the rightmost first — stock 1.13.7 (lone pane cfA,cfB,cfC -> Close all ->
+     undo x3 = cfC, cfB, cfA, each a real note tab). */
+  while (g.tabs.length > 1) await closeTab(g, 0);
   if (!g.tabs.length) return;
   /* #8: in a SPLIT the emptied pane leaves the tree, exactly like the ✕ / Ctrl+W
      close of a last tab (closeTab's R6.5 path). Kept, it was a zero-tab pane with
@@ -4982,14 +5076,15 @@ async function closeAllTabs(g) {           // Close all: a split pane goes with 
      pane stays: R38.6 was measured on a lone group, and there the group is not
      removed. That case cannot go through closeTab (it would collapse nothing but
      must still tear the tab down), so it keeps the hand teardown below.
-     DEVIATION, stated: Obsidian leaves an empty leaf whose tab reads `New tab`; we
-     have no empty-tab entity (a tab is a note name), so the group survives with
-     ZERO tabs — observably [tabs:0] with the pane still there, one tab row
-     fewer than Obsidian. docs/recon-tabmenu/README.md records it. */
+     #242: like stock, the group is then the empty "New tab" leaf (emptyLeaf): zero tabs in the
+     model, painted and counted as the one empty leaf ([tabs:1] [tord:empty*]), never [tabs:0]. */
   if (groups().length > 1) return closeTab(g, 0, undefined, "closeAll");
   const t = g.tabs[0];
   await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
-    if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
+    // R14: undo close tab still works on the last one. #175: through ucPush — a bare
+    // name string here had no .name, so Ctrl+Shift+T reopened a tab called "undefined".
+    // flushSave above already wrote the buffer, so nothing is at risk (text null).
+    if (!t.kind) ucPush(t.name, null, "user-close");
     unlinkTab(g, t, true);
     dropView(t);
     g.tabs.length = 0;
@@ -5027,7 +5122,7 @@ function tabMenu(e, g, i, hdr) {
   /* item(label, fn) wires a row; item(label, null, why) renders it DISABLED with
      `why` (the missing subsystem) as the hover title; chk adds the radio marker
      as an ELEMENT so textContent — and therefore [menu:] — stays Obsidian's label. */
-  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — the icon gutter is reserved whether or not this one is the active mode
+  const item = (label, fn, why, chk, warn) =>   // chk: a RADIO row — true puts the check mark after the title (#214: no reserved gutter)
     B.item({ title: label, fn: fn || undefined, why: why == null ? undefined : why, chk, warn });
   const sep = () => B.sep();
   const inPlace = fill => {              // the ctxmenu's ONE submenu seam: rebuild in place (R13.1's pick list)
@@ -5044,32 +5139,32 @@ function tabMenu(e, g, i, hdr) {
       any = true;
       item((t.kind === "gg" ? "Graph" : t.name.split("/").pop()), () => { closeMenu(); linkTabs(tab, t); });
     }
-    if (!any) item("(no other tabs)");
+    if (!any) item(I18N.m("(no other tabs)"));
   });
   const pickFolder = async () => {       // R38.16: Obsidian opens a modal folder SUGGESTER; ours is the same in-place list
     let fl = [];
     try { fl = await inv("list_folders"); } catch (err) { fl = []; }
     const here = tab.name.includes("/") ? tab.name.slice(0, tab.name.lastIndexOf("/")) : "";
     inPlace(() => {
-      if (here) item("(vault root)", () => { closeMenu(); moveNoteTo(tab.name, ""); });
+      if (here) item(I18N.m("(vault root)"), () => { closeMenu(); moveNoteTo(tab.name, ""); });
       for (const f of fl) if (f !== here) item(f, () => { closeMenu(); moveNoteTo(tab.name, f); });
-      if (!OMenu.census.rows(m).length) item("(no other folder)");
+      if (!OMenu.census.rows(m).length) item(I18N.m("(no other folder)"));
     });
   };
   if (hdr && !tab) {                     // graphhdr REQ-11: the empty tab's ⋮ — a split of an empty pane is an empty pane
-    item("Split right", () => { closeMenu(); splitGroup(g, "row", -1); });
-    item("Split down",  () => { closeMenu(); splitGroup(g, "col", -1); });
+    item(I18N.m("Split right"), () => { closeMenu(); splitGroup(g, "row", -1); });
+    item(I18N.m("Split down"),  () => { closeMenu(); splitGroup(g, "col", -1); });
     place();
     return;
   }
   // ---- group 1, the close group. R38.31: the SET is the absence rule ----
   const n = g.tabs.length, rightmost = i === n - 1;
   if (!hdr) {
-  item("Close", () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
+  item(I18N.m("Close"), () => { closeMenu(); closeTab(g, i); });                        // WIRED: closeTab — flushes, focus to the NEXT tab (R38.3)
   if (n > 1) {
-    item("Close others", () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
-    if (!rightmost) item("Close tabs after", () => { closeMenu(); closeTabsAfter(g, i); });   // WIRED, absent when rightmost (R38.5)
-    item("Close all", () => { closeMenu(); closeAllTabs(g); });                 // WIRED (R38.6)
+    item(I18N.m("Close others"), () => { closeMenu(); closeOtherTabs(g, i); });         // WIRED (R38.4)
+    if (!rightmost) item(I18N.m("Close tabs after"), () => { closeMenu(); closeTabsAfter(g, i); });   // WIRED, absent when rightmost (R38.5)
+    item(I18N.m("Close all"), () => { closeMenu(); closeAllTabs(g); });                 // WIRED (R38.6)
   }
   /* R38.31, the first absence rule: an INACTIVE tab's menu is the close group
      and NOTHING else (M5/M8, 4 rows not 28). Measured twice, and it is why
@@ -5080,8 +5175,8 @@ function tabMenu(e, g, i, hdr) {
   }                                      // !hdr: the close group is a TAB verb — Obsidian's ⋮ has none
   const pinRow = () => item(tab.pinned ? "Unpin" : "Pin", () => { closeMenu(); togglePin(g, tab); });   // WIRED (R38.7)
   const linkRow = () => isLinked(g, tab, i)
-    ? item("Unlink tab", () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — Obsidian's wording in Obsidian's slot
-    : item("Link with tab...", pick);
+    ? item(I18N.m("Unlink tab"), () => { closeMenu(); unlinkTab(g, tab); })             // WIRED: R6.8, unchanged — Obsidian's wording in Obsidian's slot
+    : item(I18N.m("Link with tab..."), pick);
   if (tab.kind) {
     /* ---- R38.30: a GRAPH tab gets a DIFFERENT menu, assembled from the view
        type — 11 rows with a second tab in the group, 8 alone. It drops every
@@ -5089,63 +5184,65 @@ function tabMenu(e, g, i, hdr) {
     if (!hdr) {
       pinRow(); linkRow();
       sep();
-      item("Move to new window", null, DIS_WIN);
+      item(I18N.m("Move to new window"), null, DIS_WIN);
     }
-    item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });
-    item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });
+    item(I18N.m("Split right"), () => { closeMenu(); splitGroup(g, "row", i); });
+    item(I18N.m("Split down"),  () => { closeMenu(); splitGroup(g, "col", i); });
     sep();
-    item("Copy screenshot", null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
+    item(I18N.m("Copy screenshot"), null, "Missing subsystem: canvas-to-clipboard — no programmatic clipboard write exists in this tree (ui/editor.js writes only inside real copy events) and the graph view has no canvas-to-PNG step");
     const pvn = pvNoteName(tab);          // issue-48: a board backed by a note bookmarks that note (STOCK.md S2/S3/S5)
     const cvp = fileTabPath(tab);         // issue #31 (D3): a canvas bookmarks its path, as stock; #140: so does an image / PDF / audio viewer tab
     if (pvn) item(bmCache.includes(pvn) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBm(pvn); });
     else if (cvp) item(bmHasPath(cvp) ? "Remove bookmark" : "Bookmark...", () => { closeMenu(); toggleBmPath(cvp); });
     // issue #31 (D1/D2): a graph TAB opens stock's Add bookmark modal ("Untitled Graph"); the ⋮ header keeps its
     // pinned shape (graphhdr REQ-10: global inert row, local no row) — the tab menu carries the verb
-    else if ((tab.kind === "gg" || tab.kind === "lg") && !hdr) item("Bookmark...", () => { closeMenu(); openBmAdd(null, tab); });
+    else if ((tab.kind === "gg" || tab.kind === "lg") && !hdr) item(I18N.m("Bookmark..."), () => { closeMenu(); openBmAdd(null, tab); });
     else if (!hdr || tab.kind !== "lg")
-      item("Bookmark...", null, "Not bookmarkable: this view has no file behind it (stock offers no bookmark for it either)");
+      item(I18N.m("Bookmark..."), null, "Not bookmarkable: this view has no file behind it (stock offers no bookmark for it either)");
     place();
     return;
   }
   // ---- group 2 (5 rows) ----
   if (!hdr) { pinRow(); linkRow(); }
-  item("Backlinks in document", null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
-  item("Reading view", () => { closeMenu(); setMode(g, "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
-  item("Source mode",  () => { closeMenu(); setMode(g, "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
+  item(I18N.m("Backlinks in document"), null, "Missing subsystem: an in-document backlinks section, appended to the BOTTOM OF THE NOTE PANE; ours is a right-sidebar pane (R27), a different surface");
+  // #179: both rows are TOGGLES, as stock 1.13.7: the checked Reading view goes back to editing in the
+  // sub-mode it left from (tab.src untouched), the checked Source mode goes back to Live Preview.
+  item(I18N.m("Reading view"), () => { closeMenu(); setMode(g, tab.mode === "reading" ? (tab.src ? "source" : "livepreview") : "reading"); }, null, tab.mode === "reading");     // WIRED: setMode (R38.10)
+  item(I18N.m("Source mode"),  () => { closeMenu(); setMode(g, tab.mode === "source" ? "livepreview" : "source"); },  null, tab.mode === "source");      // WIRED: setMode — the ✓ is the R12.4 radio, now a marker element
   // ---- group 3 (4 rows) ----
   sep();
-  if (!hdr) item("Move to new window", null, DIS_WIN);
-  item("Split right", () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
-  item("Split down",  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
-  item("Open in new window", null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
+  if (!hdr) item(I18N.m("Move to new window"), null, DIS_WIN);
+  item(I18N.m("Split right"), () => { closeMenu(); splitGroup(g, "row", i); });         // WIRED: R6.2 — row 11 now, not row 1 (R38.12)
+  item(I18N.m("Split down"),  () => { closeMenu(); splitGroup(g, "col", i); });         // WIRED: R6.2 (R38.13)
+  item(I18N.m("Open in new window"), null, DIS_WIN + " — and this row COPIES the tab where the one above MOVES it (measured), so the two stay distinct");
   // ---- group 4 (6 rows) ----
   sep();
-  item("Rename...", () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
-  item("Move file to...", pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
+  item(I18N.m("Rename..."), () => { closeMenu(); focusGroup(g); cmdRename(); });        // WIRED: R24.2/R34 rename + the prompted link update
+  item(I18N.m("Move file to..."), pickFolder);                                          // WIRED: moveNoteTo behind the in-place folder list (R38.16)
   item(bmCache.includes(tab.name) ? "Remove bookmark" : "Bookmark...",          // WIRED: toggleBm — Obsidian's wording, our flat-list toggle (R38.17/R20.4)
     () => { closeMenu(); toggleBm(tab.name); });
-  item("Merge entire file with...", null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
-  item("Add file property", async () => { closeMenu(); focusGroup(g); if (tab.mode === "reading") await setMode(g, "lp"); if (window.Props) Props.addCommand(g); });   // WIRED: #119 ui/props.js, the Ctrl+; command
-  item("Export to PDF...", null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
+  item(I18N.m("Merge entire file with..."), null, "Missing subsystem: file merge — no command concatenates one note into another (a suggester with four modifier behaviours)");
+  item(I18N.m("Add file property"), async () => { closeMenu(); focusGroup(g); if (tab.mode === "reading") await setMode(g, "lp"); if (window.Props) Props.addCommand(g); });   // WIRED: #119 ui/props.js, the Ctrl+; command
+  item(I18N.m("Export to PDF..."), null, "Missing subsystem: a PDF pipeline — no renderer and no page-size/margin model; PDF export is an explicit project non-goal");
   // ---- group 5 (2 rows) ----
   sep();
-  item("Find...",    () => { closeMenu(); fOpen(g); });                         // WIRED: R26 find bar
-  item("Replace...", () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
+  item(I18N.m("Find..."),    () => { closeMenu(); fOpen(g); });                         // WIRED: R26 find bar
+  item(I18N.m("Replace..."), () => { closeMenu(); fOpenRep(g); });                      // WIRED: R26 replace row
   // ---- group 6 (1 row) ----
   sep();
-  item("Copy path", null, "Missing subsystems: submenu panels in ctxmenu (the parent menu stays OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
+  item(I18N.m("Copy path"), null, "Missing subsystems: submenu panels in ctxmenu (the parent menu stays OPEN beside a child panel; ours can only rebuild itself in place) and a programmatic clipboard write (the only clipboard access in the tree is inside real copy/paste events, ui/editor.js)");
   // ---- group 7 (2 rows) ----
   sep();
-  item("Open version history", null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
-  item("Open linked view", null, "Missing subsystem: submenu panels in ctxmenu — four of its five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
+  item(I18N.m("Open version history"), null, "Missing subsystem: file history — nothing here keeps a revision of a note to show changes from or restore");
+  item(I18N.m("Open linked view"), null, "Missing subsystem: submenu panels in ctxmenu — four of its five children already have backends here (R7 local graph, backlinks, outgoing, outline), so this is the highest-value row in this list");
   // ---- group 8 (3 rows) ----
   sep();
-  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
-  item("Show in system explorer", null, "Missing subsystem: a file-manager handler — no command reveals a path in a file manager");
-  item("Reveal file in navigation", () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
+  item(I18N.m("Open in default app"), null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item(I18N.m("Show in system explorer"), null, "Missing subsystem: a file-manager handler — no command reveals a path in a file manager");
+  item(I18N.m("Reveal file in navigation"), () => { closeMenu(); bmReveal(tab.name); });  // WIRED: bmReveal — the identical verb bmRowMenu wires, publishes [bmrv:] (R38.28)
   // ---- group 9 (1 row) ----
   sep();
-  item("Delete file", () => { closeMenu(); askDelete(tab.name); }, null, undefined, true);   // .is-warning (stock). WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
+  item(I18N.m("Delete file"), () => { closeMenu(); askDelete(tab.name); }, null, undefined, true);   // .is-warning (stock). WIRED: askDelete — Obsidian's row is the link-COUNTING confirmation, not an unlink (R38.29)
   place();   /* R22: viewport-clamped by MEASURED size */
 }
 async function togglePin(g, tab) {      // R38.7: the flag + the tab-bar glyph; Close stays enabled on a pinned tab (measured)
@@ -5379,8 +5476,8 @@ function updateModeBtn(g) {
   g.modebtn.hidden = !tb || !!tb.kind;
   // graphhdr REQ-3: Obsidian's three-line tooltip for the CURRENT mode
   g.modebtn.title = m === "reading"
-    ? "Current view: reading\nClick to edit\nCtrl+Click to open to the right"
-    : "Current view: editing\nClick to read\nCtrl+Click to open to the right";
+    ? "Current view: reading\nClick to edit\n" + MODNAME + "+Click to open to the right"
+    : "Current view: editing\nClick to read\n" + MODNAME + "+Click to open to the right";
 }
 
 function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
@@ -5393,7 +5490,8 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
      a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
      refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
   const cbk = m === "reading" ? "r" : m === "source" ? "s" : "l";
-  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; if (Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }
+  // #187: the app's own mermaid widgets live in the same field — rebuild for them too (no plugin hook needed)
+  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; const cm = Ed.cm(g); if (Ed.cbFx && cm && (Ed.cbHook || (Ed.cbMm && Ed.cbMm(cm.state.doc)))) cm.dispatch({ effects: Ed.cbFx.of(null) }); }
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
@@ -5596,6 +5694,21 @@ function renderTabs(g) {
       d.classList.add("renaming"); ren.row = d; ren.tn = ttl;
     }
   });
+  if (emptyLeaf(g)) {                            // #242: the empty leaf's own tab header, stock "New tab" + close glyph
+    const d = document.createElement("div");
+    d.className = "tab workspace-tab-header active is-active etab";
+    const ttl = document.createElement("span");
+    ttl.className = "t workspace-tab-header-inner-title";
+    ttl.textContent = I18N.m("New tab");
+    const x = document.createElement("span");
+    x.className = "x workspace-tab-header-inner-close-button";
+    x.innerHTML = '<svg viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" ' +
+      'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></svg>';
+    x.onclick = e => { e.stopPropagation(); closeEmptyLeaf(g, "close-glyph"); };
+    d.append(ttl, x);
+    d.onclick = () => focusGroup(g);
+    g.tabsEl.appendChild(d);
+  }
   if (ren) {
     if (exRen === ren && ren.inp.isConnected) {
       const a = ren.inp.selectionStart, b = ren.inp.selectionEnd;
@@ -5611,8 +5724,9 @@ function renderTabs(g) {
    activates (switchTab). The editor is the explorer row editor of #101/#105 (exRenStart, hosted in the tab's
    label): Return and blur commit, Escape reverts, an illegal or taken name raises the notice and Return keeps
    the editor open. A note tab commits through renameThenAsk -> applyRename (tabs, history, MRU, bookmarks and
-   links follow; the Update links question); a canvas tab through cvRetarget. Every other view kind (graph,
-   pdf, audio, a plugin view) has no rename path, so its double click does nothing.
+   links follow; the Update links question); a canvas tab through cvRetarget; a plugin view backed by a vault
+   note (issue #239: an Excalidraw board) as that note. Every other view kind (graph, pdf, audio, a plugin view
+   with no note behind it) has no rename path, so its double click does nothing.
    [tabren:<vault path>|sel=<selected text>] is published while the editor is open. */
 async function tabRenStart(g, tab) {
   if (g.swP) { try { await g.swP; } catch (_) {} }   // the dblclick's first click may still be switching to this tab
@@ -5621,10 +5735,14 @@ async function tabRenStart(g, tab) {
   let kind = null, path = null;
   if (!tab.kind && tab.name) { kind = "note"; path = tab.name; }
   else { const cp = cvTabPath(tab); if (cp) { kind = "canvas"; path = cp; } }
+  // issue #239: a plugin view backed by a vault note (an Excalidraw board is its Drawing.excalidraw.md) renames as
+  // that note; the name keeps its inner suffix and only the stem is selected (Drawing|.excalidraw)
+  let pv = false;
+  if (!kind) { const pn = pvNoteName(tab); if (pn) { kind = "note"; path = pn; pv = true; } }
   if (!kind) return false;
   const d = g.tabsEl.children[i], tn = d && d.querySelector(".t");
   if (!tn) return false;
-  return exRenStart(kind, path, { row: d, tn, tab });
+  return exRenStart(kind, path, { row: d, tn, tab, stem: pv });
 }
 function tabDblClick(e, g) {
   if (e.button !== 0) return;
@@ -6021,7 +6139,7 @@ function openTitleEdit(g, host, x, y) {
   }
   el.addEventListener("keydown", onTitleKey);
   el.addEventListener("input", onTitleInput);   // R34.12/R34.13: refuse WHILE typing, as Obsidian does
-  el.addEventListener("blur", () => closeTitleEdit());
+  el.addEventListener("blur", onTitleBlur);   // #159: leaving the title COMMITS (stock 1.13.7); only Escape reverts
   host.addEventListener("scroll", onTitleScroll);
   updateTitle();
   return true;
@@ -6056,6 +6174,17 @@ function onTitleKey(e) {
     return;
   }
   e.stopPropagation();                       // a filename contains characters the R14 keymap binds
+}
+
+/* #159: stock 1.13.7 COMMITS the inline title when it loses focus (a click into the body renamed
+   "Blur.md" -> "Blur X.md", twice); only Escape reverts. closeTitleEdit() clears `titling` before
+   el.remove(), so the blur that removal fires (Escape / Enter / scroll / reopen) lands here as a no-op.
+   A refused name (illegal characters, taken) cannot keep a box open that no longer has the focus:
+   the notice titleCheck() raised stays up and the edit reverts. */
+function onTitleBlur() {
+  if (!titling) return;
+  if (!titleCheck()) { closeTitleEdit(); return; }
+  commitTitleEdit();
 }
 
 /* R34.1 — ENTER RENAMES THE FILE. The order is Obsidian's, measured, and it is
@@ -6417,6 +6546,7 @@ async function loadActive(g) {
      and the markdown toggle from the DOM: [hdra:1:gg:mode-edit@..]. */
   updateModeBtn(g);
   if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
+  if (g.emptyEl) g.emptyEl.hidden = true;   // #242: shown again below only while this group is the empty leaf
   if (PVHOST) PVHOST.hide(g, t);   // plugin-views: another tab shows -> this pane's plugin views hide
   if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
     showEditor(g);                  // stops a graph sim this pane may have been running
@@ -6504,10 +6634,49 @@ async function loadActive(g) {
       if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
   } else if (isLp(m) && v.snap && Ed.cm(g)) Ed.land(Ed.cm(g), v.snap);   // #125/#137: the retained edit position, as a CM6 effect
+  if (!t && emptyLeaf(g)) showEmptyLeaf(g);   // #242: no tab = stock's empty "New tab" leaf, not a blank editor
   renderTabs(g);
   treeHighlight();
   updateStatus(g);                   // word/char count sync, backlinks async (not awaited: outside the action span)
   await lgFollow(g);                 // R7.3: linked localgraphs track this group
+}
+
+/* #242: the empty leaf's view — stock 1.13.7's empty state, three actions, centred (measured shot
+   notabs/stock-1137-2: Create new note (Ctrl + N), Go to file (Ctrl + O), Close). The note views are
+   hidden; the next loadActive of a real tab (applyMode) shows them again and hides this one. */
+function showEmptyLeaf(g) {
+  g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
+  if (!g.emptyEl) {
+    g.emptyEl = document.createElement("div");
+    g.emptyEl.className = "empty-state";
+    const acts = [
+      [I18N.m("Create new note (Ctrl + N)"), "new", () => cmdNewNote()],
+      [I18N.m("Go to file (Ctrl + O)"), "goto", () => cmdQuickSwitch()],
+      [I18N.m("Close"), "close", () => closeEmptyLeaf(g, "empty-state")],
+    ];
+    const box = document.createElement("div");
+    box.className = "empty-state-container";
+    for (const [label, id, fn] of acts) {
+      const a = document.createElement("div");
+      a.className = "empty-state-action";
+      a.dataset.act = id;
+      a.textContent = label;
+      a.onclick = e => { e.stopPropagation(); focusGroup(g); fn(); };
+      box.append(a);
+    }
+    g.emptyEl.append(box);
+    g.content.append(g.emptyEl);
+  }
+  g.emptyEl.hidden = false;
+}
+/* #242: closing the empty leaf (its close glyph, Ctrl+W, the empty state's Close). Stock leaves the
+   main area with an empty leaf again, so the lone pane stays exactly as it is; a pane of a split
+   (never empty here — R6.5 removes it with its last tab) would leave the tree like any closed pane. */
+async function closeEmptyLeaf(g, via) {
+  if (!emptyLeaf(g)) return;
+  if (groups().length > 1) return collapseGroup(g, via || "closeEmptyLeaf");
+  focusGroup(g);
+  await loadActive(g);
 }
 
 // R7.3: any localgraph tab linked to `src` re-centers on src's active note
@@ -6952,6 +7121,18 @@ function tcxTok() {
   }
   return " [tcx:" + panes.join("|") + "]";
 }
+/* #242: the empty "New tab" leaf, measured — [etab:<header title>] + [esa:<act>@cx,cy|...] (the painted
+   centres of its empty-state actions, in DOM order), so a driver asserts and clicks what is on screen. */
+function esaTok() {
+  const g = fg();
+  if (!emptyLeaf(g)) return "";
+  const h = g.tabsEl && g.tabsEl.querySelector(".etab > .t");
+  let s = " [etab:" + (h ? h.textContent.replace(/[[\]|]/g, "") : "-") + "]";
+  const as = g.emptyEl && !g.emptyEl.hidden ? [...g.emptyEl.querySelectorAll(".empty-state-action")] : [];
+  s += " [esa:" + (as.length ? as.map(a => { const r = a.getBoundingClientRect();
+    return a.dataset.act + "@" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2); }).join("|") : "-") + "]";
+  return s;
+}
 
 /* `noFlush` exists for exactly ONE caller: afterDelete. The user said delete;
    writing a 400 ms-old keystroke back would recreate the file they just
@@ -7230,7 +7411,10 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p); };   // CVR-A-090: the click a drag ends with is not an open; a board row is a range anchor, never a shift target
+  /* #169: a PLAIN click opens the board in the ACTIVE tab (stock 1.13.7: cfA*,cfB -> canvas:cfBoard,cfB; a 2nd click adds
+     nothing); Ctrl/Cmd+click = a new tab right of the active one. CVR-A-090: the click a drag ends with is not an open; a
+     board row is a range anchor, never a shift target. */
+  row.onclick = e => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p, e && (e.ctrlKey || e.metaKey) ? "tab" : "here"); };
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
   row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
@@ -7251,21 +7435,44 @@ function exRenTok() {
   if (!exRen || !exRen.inp.isConnected) return "";
   const i = exRen.inp, sel = i.value.slice(i.selectionStart || 0, i.selectionEnd || 0);
   const c = s => String(s).replace(/[|\]]/g, "");
-  // issue #142: the TAB-hosted editor publishes [tabren:] (same shape), so a tab rename is never read as a row rename
-  return " [" + (exRen.tab ? "tabren" : "exren") + ":" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+  // issue #142: the TAB-hosted editor publishes [tabren:] (same shape), so a tab rename is never read as a row rename;
+  // issue #239: the plugin-view HEADER title editor publishes [hdrren:]
+  return " [" + (exRen.tab ? "tabren" : exRen.hdr ? "hdrren" : "exren") + ":" + c(exRen.kind === "note" ? exRen.path + ".md" : exRen.path) + "|sel=" + c(sel) + "]";
+}
+/* issue #239 census [pvhdr:<i>:<title>@x,y|...] — per pane (document order) whose active plugin view shows a
+   header title (views.js FileView): its painted text and client centre, so a driver clicks what it measured.
+   Absent when no pane shows one. */
+function pvHdrTok() {
+  const out = [];
+  let i = 0;
+  for (const p of document.querySelectorAll("#main .pane")) {
+    i++;
+    for (const el of p.querySelectorAll(".os-pv:not([hidden]) > .view-header:not([hidden]) > .os-pvtitle")) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      const inp = el.querySelector(".exren"), s = (inp ? inp.value : el.textContent).replace(/[|\]@]/g, "");
+      // the TEXT's centre (the title box spans the header): a click there lands on the name
+      let cx = r.left + r.width / 2;
+      try { if (!inp && el.firstChild) { const rg = document.createRange(); rg.selectNodeContents(el); const q = rg.getBoundingClientRect(); if (q.width > 0) cx = q.left + q.width / 2; } } catch (_) {}
+      out.push(i + ":" + s + "@" + Math.round(cx) + "," + Math.round(r.top + r.height / 2));
+    }
+  }
+  return out.length ? " [pvhdr:" + out.join("|") + "]" : "";
 }
 function exRenRow(kind, path) {
   if (kind === "note") return treeRows.get(path) || [...document.querySelectorAll("#tree .trow.note")].find(r => r.dataset.note === path) || null;
   return [...document.querySelectorAll("#tree .trow.cvfile")].find(r => r.dataset.canvas === path) || null;
 }
-function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g} = host the editor in a TAB header, not the explorer row
+function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g} = host the editor in a TAB header, not the explorer row;
+                                           // #239: at.hdr = a plugin view's header title, at.stem = select the name
+                                           // before its last ".", at.caret = a caret offset (the click's place)
   exRenClose();
   const row = at ? at.row : exRenRow(kind, path), tn = at ? at.tn : row && row.querySelector(".tn");
   if (!tn) return false;
   const label = tn.textContent;            // what the host painted before the editor (restored on revert)
   const orig = kind === "note" ? path.split("/").pop() : path.split("/").pop().replace(/\.canvas$/i, "");
   const inp = document.createElement("input");
-  inp.id = at ? "tabren" : "exren"; inp.className = at ? "exren tabren" : "exren"; inp.value = orig;
+  inp.id = at ? (at.hdr ? "hdrren" : "tabren") : "exren"; inp.className = at ? (at.hdr ? "exren hdrren" : "exren tabren") : "exren"; inp.value = orig;
   inp.spellcheck = false; inp.autocomplete = "off";
   const stop = e => e.stopPropagation();   // the row's click opens, its mousedown drags: neither belongs to the editor
   inp.onclick = stop; inp.onmousedown = stop; inp.onauxclick = stop; inp.ondblclick = stop; inp.oncontextmenu = stop;
@@ -7281,9 +7488,12 @@ function exRenStart(kind, path, at) {      // at (issue #142): {row, tn, tab, g}
   tn.textContent = "";
   tn.appendChild(inp);
   row.classList.add("renaming");
-  exRen = { path, kind, inp, tn, row, orig, label, tab: at ? at.tab : null, moving: false };
+  exRen = { path, kind, inp, tn, row, orig, label, tab: at ? at.tab || null : null, hdr: !!(at && at.hdr), moving: false };
   inp.focus();
-  inp.select();
+  const dot = orig.lastIndexOf("."), cc = at && typeof at.caret === "number" ? Math.max(0, Math.min(at.caret, orig.length)) : -1;
+  if (cc >= 0) inp.setSelectionRange(cc, cc);
+  else if (at && at.stem && dot > 0) inp.setSelectionRange(0, dot);
+  else inp.select();
   updateTitle();
   return true;
 }
@@ -7292,7 +7502,7 @@ function exRenClose() {                    // revert the row to its label; nothi
   if (!r) return;
   exRen = null;                            // FIRST: removing a focused input may fire blur, which must find no editor
   r.row.classList.remove("renaming");
-  if (r.inp.isConnected) r.tn.textContent = r.tab ? r.label : r.orig;
+  if (r.inp.isConnected) r.tn.textContent = r.tab || r.hdr ? r.label : r.orig;
   if (noticeSrc === "exren") say("", "exren");
   updateTitle();
 }
@@ -7319,8 +7529,35 @@ async function exRenCommit(blur) {
   for (const h of groups()) {              // every pane showing the note lands its pending bytes before the move
     const at = h.active >= 0 ? h.tabs[h.active] : null;
     if (at && !at.kind && at.name === r.path) await flushSave(h);
+    for (const tb of h.tabs) if (tb.kind === "unk" && pvNoteName(tb) === r.path) {   // #239: a board on the note lands its bytes too
+      const v = pvViewOf(tb);
+      if (v && typeof v.save === "function") try { await v.save(); } catch (e) { console.error("[plugin] save before rename:", e); }
+    }
   }
   await renameThenAsk(r.path, dir + t);   // NAMES CARRY NO EXTENSION (R34.1 note)
+}
+/* the live plugin view of a plugin-view tab, or null */
+function pvViewOf(t) {
+  if (!t || t.kind !== "unk" || !PLG) return null;
+  try { const l = PLG.app.workspace.getLeavesOfType(t.utype).find(x => x && x._t === t); return (l && l.view) || null; } catch (_) { return null; }
+}
+/* issue #239 — THE VIEW-HEADER TITLE RENAMES THE FILE (stock 1.13.7, black-box: a single click on an Excalidraw
+   board's header title "Drawing.excalidraw" makes it an editable name, as on a note). views.js FileView paints
+   the title and calls this on a click; the editor is the #101/#142 inline editor hosted in the title, the caret
+   at the clicked character (stock places a caret, it selects nothing). A note-backed view commits as the note
+   (renameThenAsk -> applyRename: disk, tabs, explorer, bookmarks, the Update links question); the refusals
+   are the tab editor's. [hdrren:<vault path>|sel=<selected text>] is published while it is open. */
+function pvTitleRename(view, e) {
+  const t = view && view.leaf && view.leaf._t, f = view && view.file, el = view && view.titleEl;
+  if (!t || !f || !el || !el.isConnected || el.querySelector(".exren")) return false;
+  const p = String(f.path || "");
+  if (!/\.md$/i.test(p)) return false;     // only a note-backed view renames through the note tail
+  let caret = p.slice(0, -3).split("/").pop().length;   // no hit on the text (a click beside it): the caret at the end
+  try {
+    const cr = e && document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+    if (cr && cr.startContainer && el.contains(cr.startContainer)) caret = cr.startOffset;
+  } catch (_) {}
+  return exRenStart("note", p.slice(0, -3), { row: el, tn: el, tab: null, hdr: true, caret });
 }
 
 /* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
@@ -7474,6 +7711,17 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       zones = [...document.querySelectorAll("#tree .trow.folder")]
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
+      // issue #157: a NOTE / file row is its PARENT folder's zone (stock 1.13.7): over a sibling row of the
+      // same folder there is no destination (nothing moves), over a root-level row it is the vault root.
+      // Before, only the #tree box matched there, so a drop on a sibling moved the note to the ROOT.
+      const fz = new Map(zones.map(z => [z.f, z.el]));
+      for (const el of document.querySelectorAll("#tree .trow:not(.folder)")) {
+        const p = el.dataset.note ?? el.dataset.canvas ?? el.dataset.file;
+        const r = p == null ? null : el.getBoundingClientRect();
+        if (!r || !(r.height > 0)) continue;
+        const f = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+        zones.push({ el: fz.get(f) || $("tree"), f, r });
+      }
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
       if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
       if (!dir && !multi && !/\.canvas$/i.test(nm)) pz = nDropZones();   // issue #40: a note row can open on a pane
@@ -7525,7 +7773,9 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
     if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
-    if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
+    // issue #157: a drag released with no destination (its own row, a sibling row) must not ALSO click
+    // the row it ends on — stock's HTML5 drag never clicks. A real timestamp: treeClickEaten() is 400 ms
+    if (!ghost || !t) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
     if (/\.canvas$/i.test(nm)) await cvMoveTo(nm, t.f);   // CVR-A-090: a canvas row moves through canvas_io
     else await moveNoteTo(nm, t.f);
@@ -7661,10 +7911,13 @@ async function wikiClick(e, a) {
   const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
-  if (e.ctrlKey) {                            // R6.4: new tab, same group
+  if (modKey(e)) {                            // R6.4: new tab, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
+    // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -7693,6 +7946,13 @@ function extClick(e, a) {   // `a` unused: kept for the Ed.extClick(e, a) signat
 // Only a style attribute on #preview ITSELF is ignored; any other record (a child,
 // a text, data-title, a class) still marks it dirty.
 const pvTouched = (P, recs) => recs.some(r => r.target !== P || r.type !== "attributes" || (r.attributeName !== "style" && r.attributeName !== "class"));   // opt6: + the vkeep class flip
+// #185 / #186: a write of ours into the reading DOM that must not mark it dirty (async math typesetting, async code highlighting):
+// records pending from before (anyone else's) still count, the write's own are dropped
+const pvQuiet = (P, fn) => {
+  if (!P._pvObs) return fn();
+  if (pvTouched(P, P._pvObs.takeRecords())) P._pvDirty = true;
+  try { return fn(); } finally { P._pvObs.takeRecords(); }
+};
 async function preview(g, sw) {   // sw: called by setMode (the edit -> reading switch)
   const src = g.editor.value, P = g.preview;
   // modeswitch opt2: the reading DOM is RETAINED while the pane shows the edit
@@ -7747,6 +8007,9 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   for (const s of g.preview.querySelectorAll("span.pdf-embed")) Ed.pdfFill(s);
   for (const s of g.preview.querySelectorAll("span.audio-embed")) Ed.audioFill(s);   // #116: main.rs audio_html -> one <audio> (editor.js Ed.audioFill)
   cvEmbedFill(g.preview);                    // cv-vault CV-139: ![[X.canvas]] -> span.cv-embed (before the a.wiki wiring below)
+  // #187: mermaid fences -> trust guard / diagram (ui/mermaid.js). A plugin that registered
+  // its own "mermaid" code-block processor keeps them (PPOST below).
+  if (window.Merm && !(Ed.cbHook && Ed.cbHook.has("mermaid"))) try { Merm.reading(g.preview); } catch (e) { console.error("[mermaid]", e); }
   mswpMark("html");
   // #119: the Properties block, read-only, above the body (visible mode); it maps to line 1
   { const pb = window.Props && Props.readingBlock(src); if (pb) { g.preview.insertBefore(pb, g.preview.firstChild); pvL = [1].concat(pvL); } }
@@ -7768,6 +8031,14 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
   if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  // #186: fenced code coloured by Prism (ui/codehl.js). After the processors (a fence they own is skipped).
+  // Its synchronous part (pre.language-L, code.is-loaded) lands before the observer below; the token spans
+  // come after Prism loads, written through pvQuiet so they do not count as a touch of the retained DOM.
+  if (window.CodeHL) try { CodeHL.reading(P, fn => pvQuiet(P, fn)).catch(e => console.error("[codehl]", e)); } catch (e) { console.error(e); }
+  // #185: $..$ / $$..$$ typeset by MathJax (ui/mathview.js). Its synchronous part (a $$ span becomes
+  // div.math.math-block) lands before the observer below; the typeset output comes after MathJax loads,
+  // written through pvQuiet so it does not count as a touch of the retained DOM.
+  if (window.MathView) try { MathView.reading(P, fn => pvQuiet(P, fn)).catch(e => console.error("[math]", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
@@ -7801,10 +8072,13 @@ async function pvWikiClick(a, e) {
   if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
   if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
     await createNote(n);
-  if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
+  if (modKey(e)) {                               // R6.4: open in NEW TAB, same group
     await flushSave(g);
-    g.tabs.push(mkTab(n));
-    g.active = g.tabs.length - 1;
+    // #171: the new tab goes DIRECTLY RIGHT of the active one (openNewTab's contract; stock 1.13.7 cfA*,cfB,cfC +
+    // Ctrl+click [[cfD]] -> cfA,cfD*,cfB,cfC), not at the far end. No splice: the tabclose census counts those.
+    const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+    g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt;
+    g.active = at;
     await loadActive(g);
     if (an) await navAnchor(g, an);
   } else navigate(g, n, an);
@@ -8035,6 +8309,7 @@ async function cmdSave() {                   // force save, no debounce
 }
 async function cmdCloseTab() {
   if (state && fg().active >= 0) await closeTab(fg(), fg().active, "user-close", "cmdCloseTab");
+  else if (state && emptyLeaf(fg())) await closeEmptyLeaf(fg(), "cmdCloseTab");   // #242: Ctrl+W on the empty leaf
 }
 async function cmdNewTab() {       // R5.3 ctrl+t — v1: new tab on the current note
   if (!state) return;              // (no empty-tab state yet; graph tabs no-op)
@@ -8075,9 +8350,11 @@ function qsItems() {                 // switcher source: MRU first, rest a-z, th
   return [...mruList.filter(n => notesCache.includes(n)), ...rest].map(n => ({
     label: n, hint: "",
     run: async ev => {               // Enter = focused group; Ctrl+Enter = new tab
-      if (ev && ev.ctrlKey) {
+      if (modKey(ev)) {
         const g = fg();
-        g.tabs.push(mkTab(n)); g.active = g.tabs.length - 1;
+        // #171: right of the active tab, like Ctrl+click on a link (stock 1.13.7 cfA,cfD*,cfB,cfC)
+        const at = g.active >= 0 ? g.active + 1 : g.tabs.length, nt = mkTab(n);
+        g.tabs.push(nt); g.tabs.copyWithin(at + 1, at); g.tabs[at] = nt; g.active = at;
         await loadActive(g);
       } else await openInTab(n);
     },
@@ -8300,7 +8577,7 @@ function renderModal() {
       const l = document.createElement("span"); l.textContent = qsCreateOff ? 'Create "' + mdNew + '"' : mdNew;
       const h = document.createElement("span"); h.className = "mhint mcreate"; h.textContent = qsCreateOff ? "Shift+Enter" : "Enter to create";
       d.append(l, h);
-      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n, e.ctrlKey ? (e.altKey ? "right" : "tab") : "cur"); };
+      d.onmousedown = async e => { e.preventDefault(); const n = mdNew; closeModal(); await qsCreateNote(n, modKey(e) ? (e.altKey ? "right" : "tab") : "cur"); };
     } else { d.className = "mempty"; d.textContent = "No matches"; }
     box.appendChild(d);
     return mdTitleSoon();
@@ -8332,17 +8609,23 @@ $("minput").onkeydown = async e => {
        it); a plain Enter creates only when nothing matches; Ctrl = new tab, Ctrl+Alt
        = split right; Alt+Enter on the create row does nothing but dismiss. */
     e.preventDefault();
-    const how = e.ctrlKey ? (e.altKey ? "right" : "tab") : "cur";
+    const how = modKey(e) ? (e.altKey ? "right" : "tab") : "cur";
     const q = $("minput").value.trim();
     const it = mdItems[mdSel];
     if (e.shiftKey && q) { closeModal(); return await qsCreateNote(q, how); }
     if (it) {
-      if (how === "right") { closeModal(); await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd(); }
+      if (how === "right") {
+        closeModal();
+        // #168: a .canvas row opens the BOARD in the new right split (openCanvas "split", as the explorer's "Open to the
+        // right"), never a note tab named "X.canvas" — stock 1.13.7: canvas:cfBoard in a 2nd tab group, focused.
+        if (it.canvas) { await openCanvas(it.label, "split"); return; }
+        await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd();
+      }
       return await mdRun(it, e);
     }
     if (!mdNew) return;
     const n = mdNew; closeModal();
-    if (e.altKey && !e.ctrlKey) return;   // stock c08: no file, nothing opened
+    if (e.altKey && !modKey(e)) return;   // stock c08: no file, nothing opened
     return await qsCreateNote(n, how);
   } else if (e.key === "Enter") {
     e.preventDefault();
@@ -8506,11 +8789,13 @@ if (CANVAS) {
    commands audio-recorder:start / :stop, Recording YYYYMMDDHHmmss in the attachment folder, embed at the cursor).
    ON by default (#139, operator 2026-11-16: absent core-plugins.json key => on, an explicit false is respected); exposed in app.internalPlugins (config["audio-recorder"]); the on/off persists
    app-wide (localStorage) and per vault (core-plugins.json, settings.js). Works in restricted mode: app code.
-   THE MIC GATE (security, issue risk 4): the native hook (src-tauri/src/audiorec.rs) grants a capture request
-   only if it is audio-only AND the window was armed by audio_arm(token) a moment before; the token is handed
+   THE MIC GATE (security, issue risk 4; #136 exclusive): this page never captures. The native gate
+   (src-tauri/src/audiorec.rs) denies EVERY capture request of the app window; a recording runs in a hidden
+   recorder webview of its own (ui/recorder.html, no plugin loader) that Rust creates per recording on
+   audio_rec_start(token) and arms for ONE audio-only request. The token is handed
    out ONCE per page load, to the first caller — this block, at main.js load, before loader.js's seal and before
-   any plugin script is requested. The token, the page's own getUserMedia and MediaRecorder are kept in THIS
-   closure (never a global binding); navigator.mediaDevices.getUserMedia is then replaced, for every later
+   any plugin script is requested — and kept in THIS closure (never a global binding);
+   navigator.mediaDevices.getUserMedia is then replaced, for every later
    caller, by a rejector (NotAllowedError) — defence in depth over the native deny. Plugins share this realm
    (loader.js), so this is not a sandbox: see security.md. While the mic is open the ribbon button is active
    and a "Recording" status item is on screen (the issue's visible indicator).
@@ -8558,65 +8843,44 @@ let AREC = null;
     updateTitle();
   };
   const tmNow = () => { const d = new Date(); return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() }; };
+  // #136: the capture runs in the hidden recorder webview (ui/recorder.html, audio_rec_start), never in this page:
+  // its gate denies every capture request, so a plugin's getUserMedia here never receives a stream
+  const errName = m => (/^([A-Za-z]+Error): /.exec(m) || [])[1] || "";
   async function start() {
     if (!st.on || st.rec || st.busy) return;
-    if (!gum || !MR) return note("Audio recording is not available: this window has no media capture.");
+    if (!IV || !MR) return note("Audio recording is not available: this window has no media capture.");
     if (!(typeof MR.isTypeSupported === "function" && MR.isTypeSupported(MIME)))
       return note("Audio recording is not available: GStreamer opusenc/webmmux missing.");
     st.busy = true; st.err = "";
+    let msg = "";   // a failed start's notice shows AFTER busy is cleared: the notice never appears with the recorder still busy
     try {
       const token = await tokP;
-      if (!token) return note("Audio recording is not available in this window.");
-      let stream;
-      try {
-        await call("audio_arm", { token });
-        stream = await gum({ audio: true, video: false });
-      } catch (e) {
-        // our own request failed after arming: if another script of the page took the one-shot grant,
-        // audio_end stops its stream now (native mic_off); harmless otherwise (codeant C1, #124)
-        await call("audio_end", { token }).catch(() => {});
-        const n = e && e.name;
-        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") return note("No microphone is connected.");
-        if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; return note("Microphone access was denied."); }
-        return note("Audio recorder: " + errStr(e));
+      if (!token) { msg = "Audio recording is not available in this window."; return; }
+      try { await call("audio_rec_start", { token }); }
+      catch (e) {
+        const m = errStr(e), n = errName(m);
+        if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") msg = "No microphone is connected.";
+        else if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; msg = "Microphone access was denied."; }
+        else if (n === "NotSupportedError") msg = "Audio recording is not available: " + m.slice(n.length + 2);
+        else msg = "Audio recorder: " + m;
+        return;
       }
-      call("audio_disarm", { token }).catch(() => {});
-      if (!stream.getAudioTracks().length || stream.getVideoTracks().length) {   // never anything but a mic
-        for (const t of stream.getTracks()) t.stop();
-        await call("audio_end", { token }).catch(() => {});
-        return note("No microphone is connected.");
-      }
-      let r;
-      try { r = new MR(stream, { mimeType: MIME }); }
-      catch (e) { for (const t of stream.getTracks()) t.stop(); await call("audio_end", { token }).catch(() => {}); return note("Audio recording is not available: " + errStr(e)); }
-      st.chunks = []; st.stream = stream; st.rec = r; st.t0 = Date.now();
-      r.addEventListener("dataavailable", ev => { if (ev.data && ev.data.size) st.chunks.push(ev.data); });
-      r.start(1000);
-    } finally { st.busy = false; paint(); }
+      st.rec = { t0: Date.now() }; st.t0 = st.rec.t0;
+    } finally { st.busy = false; if (msg) note(msg); paint(); }
   }
   async function stop() {
-    const r = st.rec;
-    if (!r || st.busy) return;
+    if (!st.rec || st.busy) return;
     st.busy = true;
     try {
-      // an already-stopped recorder (a track ended) fired its stop before: do not wait for it; 5 s cap either way
-      const done = r.state === "inactive" ? Promise.resolve() : new Promise(res => { r.addEventListener("stop", res, { once: true }); setTimeout(res, 5000); });
-      try { if (r.state !== "inactive") r.stop(); } catch (_) {}
-      await done;
-      for (const t of st.stream ? st.stream.getTracks() : []) t.stop();
-      st.rec = null; st.stream = null;
-      paint();
       const token = await tokP;
-      // the recording is over: no mic track of this page may outlive it (native mic_off)
-      if (token) await call("audio_end", { token }).catch(() => {});
-      const blob = new Blob(st.chunks, { type: "audio/webm" });
-      st.chunks = [];
-      if (!blob.size) return note("Nothing was recorded: the microphone sent no audio.");
       const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
       const nm = t && !t.kind ? t.name : "";
+      // the recorder webview stops, hands its recording over and is closed (its microphone with it); Rust saves
       let a;
-      try { a = await call("audio_save", { token, note: nm, data: b64Bytes(new Uint8Array(await blob.arrayBuffer())), tm: tmNow() }); }
+      try { a = await call("audio_rec_stop", { token, note: nm, tm: tmNow() }); }
       catch (e) { return note("Recording not saved — " + errStr(e)); }
+      finally { st.rec = null; paint(); }
+      if (!a) return note("Nothing was recorded: the microphone sent no audio.");
       st.saved++; st.last = a.path;
       await refreshTree();
       // stock: the active markdown view gets "\n" + embed + "\n" in place of its selection; otherwise only the file
@@ -8902,9 +9166,10 @@ function cvNewCanvasFolder() {
   return cvActiveFolder();   // "current" (stock name; settings.js maps an older "same" to it)
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
-async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
+async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right), "here" -> the active tab (#169)
   if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
-  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf("tab");
+  // #169: "here" = the active tab (an explorer PLAIN click, like openPdf's plain click); anything else but "split" = a new tab
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf(how === "here" ? false : "tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
@@ -8925,6 +9190,12 @@ const PDFV = (() => {
       if (!p || p === this.path || !Ed.isPdf(p)) return;
       this.path = p;
       try { const f = PLG.app.vault.getAbstractFileByPath(p); this.file = f || null; } catch (_) { this.file = null; }
+      if (!Ed.mediaOn()) {                      // #144 toggle 4 off: the placeholder, no frame, no pdf_info
+        this.frame = null;
+        this.contentEl.replaceChildren(Ed.mediaOffEl(p));
+        updateTitle();
+        return;
+      }
       const s = this.frame = document.createElement("span");
       s.className = "internal-embed pdf-embed";
       s.dataset.pdf = Ed.pctEnc(p); s.dataset.page = "1"; s.dataset.height = ""; s.dataset.alt = ""; s.dataset.full = "1";
@@ -8989,6 +9260,8 @@ const IMGV = (() => {
         const s = document.createElement("span");
         s.className = "imgmiss"; s.dataset.miss = p;
         box.appendChild(s); this.img = null;
+      } else if (!Ed.mediaOn()) {               // #144 toggle 4 off: the placeholder, no URL
+        box.appendChild(Ed.mediaOffEl(p)); this.img = null;
       } else {
         const im = this.img = document.createElement("img");
         im.alt = base(p); im.draggable = false;
@@ -9147,11 +9420,11 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
   const here = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
-  item("Open in new tab",    () => openCanvas(p));
-  item("Open to the right",  () => openCanvas(p, "split"));
-  item("Open in new window", null, "Single-window app: there is no second window to open into");
+  item(I18N.m("Open in new tab"),    () => openCanvas(p));
+  item(I18N.m("Open to the right"),  () => openCanvas(p, "split"));
+  item(I18N.m("Open in new window"), null, "Single-window app: there is no second window to open into");
   sep();
-  item("Make a copy", () => cvCopy(p));
+  item(I18N.m("Make a copy"), () => cvCopy(p));
   const mv = document.createElement("div");
   mv.textContent = "Move file to...";
   m.appendChild(mv);
@@ -9160,24 +9433,24 @@ function canvasFileMenu(e, p) {             // right-click a .canvas row in the 
     let fl = [];
     try { fl = await inv("list_folders"); } catch (_) { fl = []; }
     m.innerHTML = "";
-    if (here) item("(vault root)", () => cvMoveTo(p, ""));
+    if (here) item(I18N.m("(vault root)"), () => cvMoveTo(p, ""));
     for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
-    if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
+    if (!m.children.length) item(I18N.m("(no other folder)"), null, "The vault has no other folder");
     clampMenu(m);                        // re-clamp NOW: updateTitle() below must publish [mg:]/[mgy:] of the PLACED list
     setTimeout(() => { clampMenu(m); updateTitle(); }, 0);   // late layout (fonts/async rows) re-clamps AND re-publishes
     updateTitle();
   };
   item(bmHasPath(p) ? "Remove bookmark" : "Bookmark", () => toggleBmPath(p));   // issue #31 (D3): stock's {type:"file",path} item
   sep();
-  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  item(I18N.m("Copy path"), null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
   sep();
-  item("Open version history", null, "Missing subsystem: file history — no revisions are kept");
+  item(I18N.m("Open version history"), null, "Missing subsystem: file history — no revisions are kept");
   sep();
-  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
-  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
+  item(I18N.m("Open in default app"), null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item(I18N.m("Show in system explorer"), null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
-  item("Delete", () => cvDelete(p));       // cv-vault CV-148
+  item(I18N.m("Rename..."), () => { if (!exRenStart("canvas", p)) cvRename(p); });   // issue #101 / CVR-A-085: inline in the row (cv-vault CV-147's prompt only if the row is not painted)
+  item(I18N.m("Delete"), () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
@@ -9467,7 +9740,9 @@ async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to r
   let p = null, doc = null;
   try {
     const all = await inv("canvas_io", { op: "list", path: "" });
-    p = all.includes(want) ? want : all.find(x => x.split("/").pop() === want.split("/").pop()) || null;
+    // issue #180: an embed resolves exactly like a [[x.canvas]] link (stock 1.13.7): case-insensitive, and a
+    // path whose folder does not exist is unresolved — never a same-named canvas in another folder
+    p = cvRefCanvas(want, all);
     if (p) doc = JSON.parse(await inv("canvas_io", { op: "read", path: p }));
   } catch (_) { doc = null; }
   if (!s.isConnected) return;
@@ -9685,7 +9960,7 @@ function canvasTok() {
 const CV_FOLDERMENU_FULL = true;
 function folderMenuFull(item, sep, f) {
   const dir = String(f || "").replace(/^\/+|\/+$/g, "");
-  item("New note", async () => {
+  item(I18N.m("New note"), async () => {
     if (!state) return;
     const g = fg();
     await flushSave(g);
@@ -9697,21 +9972,21 @@ function folderMenuFull(item, sep, f) {
     g.active = g.tabs.length - 1;
     await loadActive(g);
   });
-  item("New folder", () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
-  item("New canvas", () => cmdNewCanvas(f));
-  item("New base", null, "Missing subsystem: bases (.base files) are not implemented");
+  item(I18N.m("New folder"), () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
+  item(I18N.m("New canvas"), () => cmdNewCanvas(f));
+  item(I18N.m("New base"), null, "Missing subsystem: bases (.base files) are not implemented");
   sep();
-  item("Make a copy", null, "Missing subsystem: no folder copy command in the backend");
-  item("Move folder to...", null, "Missing subsystem: no folder move command in the backend");
-  item("Search in folder", null, "Missing subsystem: the search pane has no path: scope from a menu");
+  item(I18N.m("Make a copy"), null, "Missing subsystem: no folder copy command in the backend");
+  item(I18N.m("Move folder to..."), null, "Missing subsystem: no folder move command in the backend");
+  item(I18N.m("Search in folder"), null, "Missing subsystem: the search pane has no path: scope from a menu");
   sep();
-  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a folder is not a note");
-  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  item(I18N.m("Bookmark"), null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a folder is not a note");
+  item(I18N.m("Copy path"), null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
   sep();
-  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
+  item(I18N.m("Show in system explorer"), null, "Missing subsystem: a file-manager handler");
   sep();
-  item("Rename...", null, "Missing subsystem: no folder rename command in the backend");
-  item("Delete", null, "Missing subsystem: no folder delete command in the backend");
+  item(I18N.m("Rename..."), null, "Missing subsystem: no folder rename command in the backend");
+  item(I18N.m("Delete"), null, "Missing subsystem: no folder delete command in the backend");
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
   if (!CANVAS || !CANVAS.isRegistered()) return;   // no row to offer -> the browser's own (suppressed) menu stays as before
@@ -9722,7 +9997,7 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
   if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
-  else item("New canvas", () => cmdNewCanvas(f));
+  else item(I18N.m("New canvas"), () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
   if (PMENU && PMENU.folderMenu) PMENU.folderMenu(m, f);   // plug-val: workspace "file-menu" rows for the TFolder, after a rule
   placeMenu(m, e.clientX, e.clientY);
@@ -9756,8 +10031,23 @@ const edLine = fn => edEdit((v, a, b) => {  // fn(line) -> line | null (= delete
   const l0 = v.lastIndexOf("\n", a - 1) + 1;
   let l1 = v.indexOf("\n", b); if (l1 < 0) l1 = v.length;
   const nl = fn(v.slice(l0, l1));
+  // #152 stock 1.13.7: on the LAST line the line break IN FRONT goes too ('a\nb' -> 'a', never 'a\n');
+  // the caret lands on the line above at min(its column, that line's length) ('x\ny\nlast' 2:2 -> 1:1)
+  if (nl == null && l1 >= v.length && l0 > 0) {
+    const p0 = l0 < 2 ? 0 : v.lastIndexOf("\n", l0 - 2) + 1, c = p0 + Math.min(a - l0, l0 - 1 - p0);
+    return [v.slice(0, l0 - 1), c, c];
+  }
   if (nl == null) { const cut = l1 < v.length ? l1 + 1 : Math.max(0, l0 - 1); return [v.slice(0, l0) + v.slice(l1 + 1), Math.min(l0, cut), Math.min(l0, cut)]; }
-  return [v.slice(0, l0) + nl + v.slice(l1), l0 + Math.min(nl.length, a - l0 + nl.length - (l1 - l0)), l0 + Math.min(nl.length, b - l0 + nl.length - (l1 - l0))];
+  // map a/b by the change on THEIR OWN line (per-line ops keep the line count), so a multi-line
+  // heading/quote/task keeps the selection on the same text now that the range survives (#160)
+  const ol = v.slice(l0, l1).split("\n"), ns = nl.split("\n");
+  const map = p => {
+    if (ol.length !== ns.length) return l0 + Math.max(0, Math.min(nl.length, p - l0 + nl.length - (l1 - l0)));
+    let i = 0, o = l0, n = l0;
+    while (i < ol.length - 1 && p > o + ol[i].length) { o += ol[i].length + 1; n += ns[i].length + 1; i++; }
+    return n + Math.max(0, Math.min(ns[i].length, p - o + ns[i].length - ol[i].length));
+  };
+  return [v.slice(0, l0) + nl + v.slice(l1), map(a), map(b)];
 });
 // R17.4 M46-M51 "Toggle checkbox status": a MODEL op (one row patched, Obsidian
 // caret rule), not a whole-document rewrite through the textarea shim.
@@ -9880,7 +10170,7 @@ async function attachDrop(paths, at) {
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return dropSay("open a note first");
-  if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (Ctrl+E) to attach a file"); return updateTitle(); }
+  if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (" + MODNAME + "+E) to attach a file"); return updateTitle(); }
   let a;
   try { a = await inv("attach_files", { note: t.name, paths }); }
   catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
@@ -10859,6 +11149,18 @@ async function undoCloseTab() {
    palette while the Canvas core plugin is off. Until the go, false keeps the row present and refusing (old phase
    canvasui step 5); the follow-up goal flips only this flag. Ribbon + explorer hiding do not depend on it. */
 const CV_PALETTE_HIDE_OFF = true;
+/* #220 item 5: a registry row keeps its English name as `en`; `name` is a GETTER that
+   reads "cmd-<slug(id)>" in the active language (English literal as the fallback), so
+   the palette, Settings > Hotkeys and the fuzzy filter all follow a live language
+   switch with no rebuild. Assigning name rewrites the English source (plugin code
+   may do that). i18n.rs's commands_are_extracted test pins every en message to the
+   literal below. */
+function cmdRow(id, name, def, run, when) {
+  const k = "cmd-" + I18N.slug(id);
+  return { id, en: name, def, run, when,
+    get name() { return I18N.tk(k, this.en); },
+    set name(v) { this.en = v; } };
+}
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
   // R14: the theme switch is a registry entry like any other — no bespoke
@@ -10890,10 +11192,6 @@ const CMDS = [
   ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
   ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
-  // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
-  // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
-  ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
-    () => !!(CANVAS && CANVAS.isRegistered()) && groups().every(g => !g.tabs.length)],
   // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on
   // (when = the palette; coreOff below = Hotkeys and app.commands), as stock registers / unregisters them
   ["daily-notes",              "Daily notes: Open today's daily note", [],                      () => dnOpenToday("cmd"), dnOn],
@@ -10911,7 +11209,8 @@ const CMDS = [
     () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
-  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(b), a + 1, a + 1])],
+  // #156 stock 1.13.7: '#' goes in FRONT of the selection, the selected text is kept, caret right after the '#'
+  ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a) => [v.slice(0, a) + "#" + v.slice(a), a + 1, a + 1])],
   ["app:go-back",              "Navigate back",                       ["ctrl+alt+arrowleft", "alt+arrowleft"],   () => histGo(-1)],
   ["app:go-forward",           "Navigate forward",                    ["ctrl+alt+arrowright", "alt+arrowright"], () => histGo(1)],
   ["workspace:new-tab",        "New tab",                             ["ctrl+t"],               cmdNewTab],
@@ -10968,8 +11267,8 @@ const CMDS = [
   ["window:zoom-in",           "Zoom in",                             ["ctrl+="],               () => cmdZoom("in")],
   ["window:zoom-out",          "Zoom out",                            ["ctrl+-"],               () => cmdZoom("out")],
   ["window:reset-zoom",        "Reset zoom",                          ["ctrl+0"],               () => cmdZoom("reset")],
-].map(([id, name, def, run, when]) => ({ id, name, def, run, when }))
- .sort((a, b) => a.name.localeCompare(b.name));
+].map(([id, name, def, run, when]) => cmdRow(id, name, def, run, when))
+ .sort((a, b) => a.en.localeCompare(b.en));   // English order in every language: the registry order is not a translation
 // issue #115: a core plugin's command is not registered while the plugin is off (Hotkeys, app.commands, a bound chord)
 for (const c of CMDS) if (c.id === "daily-notes" || c.id.startsWith("daily-notes:")) c.coreOff = () => !dnOn();
 let hkUser = {};                            // id -> [chords] overrides ([] = removed default)
@@ -10989,8 +11288,15 @@ hkRebuild();
 const KEYNAMES = { arrowleft: "ArrowLeft", arrowright: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown",
   pageup: "PageUp", pagedown: "PageDown", tab: "Tab", enter: "Enter", escape: "Escape", backspace: "Backspace",
   delete: "Delete", home: "Home", end: "End", insert: "Insert", " ": "Space" };
+// #163: a chord string is "<mods>+<key>" and the KEY may itself be "+" (numpad plus, a hand-edited file):
+// split the known modifier prefixes off the front instead of splitting on "+", so "ctrl+shift++" keeps key "+".
+function chordSplit(ch) {
+  const mods = []; let k = String(ch || "");
+  for (let m; (m = /^(ctrl|alt|shift)\+(?=.)/.exec(k)); k = k.slice(m[0].length)) mods.push(m[1]);
+  return { mods, k };
+}
 function chordToFile(ch) {
-  const p = ch.split("+"); const k = p.pop();
+  const { mods: p, k } = chordSplit(ch);
   const mods = p.map(m => ({ ctrl: "Mod", alt: "Alt", shift: "Shift" }[m])).filter(Boolean);
   return { modifiers: mods, key: k.length === 1 || /^f\d+$/.test(k) ? k.toUpperCase() : KEYNAMES[k] || k };
 }
@@ -11016,16 +11322,26 @@ function hkSet(c, chords) {                 // set + collapse to "default" when 
   if (same) delete hkUser[c.id]; else hkUser[c.id] = chords;
   hkSave();
 }
-const chordLabel = ch => ch.split("+").map(k => k === "ctrl" ? "Ctrl" : k === "alt" ? "Alt" : k === "shift" ? "Shift"
-  : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + ");
+// #163: Space is named ("Ctrl + Space", stock), not printed as a blank one-character key; the key part comes
+// from chordSplit, so a "+" key is labelled, not lost to the separator
+const chordLabel = ch => { const { mods, k } = chordSplit(ch);
+  return mods.map(m => m === "ctrl" ? MODNAME : m === "alt" ? (OS_MAC ? "Option" : "Alt") : "Shift").concat(
+    k === " " ? "Space" : k.length === 1 ? k.toUpperCase() : (KEYNAMES[k] || k).replace(/^Arrow/, "").replace(/^./, x => x.toUpperCase())).join(" + "); };
+// #163: stock 1.13.7 records a SHIFTED symbol by its physical key: Ctrl+Shift+= (e.key "+" on a US layout) is
+// saved as {"modifiers":["Mod","Shift"],"key":"="} and labelled "Ctrl + Shift + =". e.code names that key.
+const SHIFT_BASE = { Equal: "=", Minus: "-", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";",
+  Quote: "'", Comma: ",", Period: ".", Slash: "/", Backquote: "`", Digit0: "0", Digit1: "1", Digit2: "2", Digit3: "3",
+  Digit4: "4", Digit5: "5", Digit6: "6", Digit7: "7", Digit8: "8", Digit9: "9" };
 function chordOf(e) {                       // keydown -> normalised chord (null for bare modifiers)
   if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return null;
+  if (OS_MAC && e.ctrlKey) return null;   // macOS: Ctrl is not Mod; Ctrl+A/E/K stay the text editing keys
   let k = e.key.toLowerCase();
   if (e.code === "Tab") k = "tab";   // X11 shift+tab arrives as ISO_Left_Tab
+  if (e.shiftKey && SHIFT_BASE[e.code] && k.length === 1) k = SHIFT_BASE[e.code];   // #163: the physical key, as stock
   // Xvfb/xdotool synthesize every F-key with a spurious Mod1 latch (alt:true
   // on F1..F12, clean on letters) — drop alt for function keys so F2 binds.
   const alt = e.altKey && !/^F\d+$/.test(e.code);
-  return (e.ctrlKey ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
+  return (modKey(e) ? "ctrl+" : "") + (alt ? "alt+" : "") + (e.shiftKey ? "shift+" : "") + k;
 }
 /* palette source: the registry w/ current hotkey hints, PLUS one "Use theme:
    <name>" item per theme this vault actually offers (themeone item 7).
@@ -11697,8 +12013,8 @@ function gfTok(g, pre = "gf") {
     return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
   });
   if (ss.length) t += " [" + pre + "s:" + ss.join("|") + "]";
-  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []| stripped)
-  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
+  // graphctx Filters state [<p>q:search=<query>,showTags=0,...] (query with []|, stripped; #164: the "]" inside the class must be escaped)
+  t += " [" + pre + "q:search=" + s.st.f.search.replace(/[[\]|,]/g, "") + "," + GC_FTOG.map(([k]) => k + "=" + (s.st.f[k] ? 1 : 0)).join(",") + "]";
   // graphctx Groups [<p>g:<i>=<query>#rrggbb|...] in row order (query with []|,# stripped), empty = no group
   t += " [" + pre + "g:" + s.st.groups.map((r, i) => i + "=" + r.query.replace(/[[\]|,#]/g, "") + gcHex(r.rgb)).join("|") + "]";
   // graphctx Display [<p>d:arrow=0,fade=0.00,size=1.00,line=1.00,anim=<drawn>/<n>,lab=<1 labels drawn|0>] — the stored values, what the
@@ -11720,7 +12036,7 @@ function gfnTok() {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || (t.kind !== "gg" && t.kind !== "lg") || !h.graphOn || !h.graphNodes) continue;
     const L = h.graphNodes();
-    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
+    const names = L.length > 60 ? "" : ":" + L.map(p => p.n.replace(/[[\]|,^]/g, "") + "^" + p.kind + (p.col >= 0 ? "c" + p.col : "")).sort().join(",");
     out.push(t.kind + "@" + h.id + "=" + L.length + names);
     if (h.graphEdges) eo.push(t.kind + "@" + h.id + "=" + h.graphEdges());
   }
@@ -11775,17 +12091,29 @@ const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
 let graphPrefP = null;
 const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
-  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace) };
+  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace), security: (p && p.security) || null };
 }));
+// #144 toggle 5 (Settings › Security › WebGL): the "security-webgl" event (security_set) calls this when the effective value
+// moves. The backend already flipped the webview's enable-webgl; every open graph re-opens at once
+// from its kept layout (loadActive = the tab-switch path) on the new draw path, and a cached GL
+// renderer is dropped so an off graph holds no context. Plugins see the change after a reload.
+window.opensidianGraphGl = () => {
+  graphPrefP = null;
+  for (const g of groups()) {
+    if (g.glr) { g.glr = null; if (g.glcv) { g.glcv.remove(); g.glcv = null; } }
+    if (g.graphOn) loadActive(g);
+  }
+};
 function showEditor(g) {
-  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
+  g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null; g.graphGlWhy = null;
   // retire the sim (startGraph's gen starts at 1): a physics batch still in the Worker lands nowhere and
   // posts no next one, so the kept layout stays the frame the user left, as when the loop was only a rAF
   g.simGen = 0; if (g.gwRelease) g.gwRelease();
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
   if (g.attrObs) { g.attrObs.disconnect(); g.attrObs = null; }
+  if (g.dprOff) g.dprOff();        // #166: the dpr media-query listener holds the sim closure
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
-  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
+  g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true; if (g.cvOffEl) g.cvOffEl.hidden = true;   // #144 toggle 6 placeholder
   gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
   applyMode(g);
 }
@@ -11842,6 +12170,16 @@ async function startGraph(g, cfg) {
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
+  if (!ctx) {   // #144 toggle 6: HTML canvas off -> getContext is null in this realm; the graph names the switch instead of drawing
+    cv.hidden = true; if (g.glcv) g.glcv.hidden = true;
+    let ph = g.cvOffEl;
+    if (!ph) { ph = g.cvOffEl = document.createElement("div"); ph.className = "graph-secoff"; ph.dataset.sec = "canvas"; cv.parentNode.insertBefore(ph, cv.nextSibling); }
+    ph.textContent = "Graph view needs HTML canvas — " + (window.opensidianCanvasOff || "HTML canvas is off (Settings › Security › HTML canvas)");
+    ph.hidden = false;
+    g.graphRenderer = null; g.graphGlWhy = "canvas-off";   // census [gl:none] [glsec:canvas-off]
+    console.warn("[sec] graph not drawn: " + ph.textContent);
+    return;
+  }
   // graph-webgl: DEFAULT draw path is WebGL (ui/graph-gl.js) on a .graphgl canvas BEHIND cv
   // (nodes + edges); cv stays on top for events, labels (Canvas 2D text) and the 2D fallback.
   // Fallback to the full 2D path when: forced (env/setting), no webgl context, or the
@@ -11952,7 +12290,7 @@ async function startGraph(g, cfg) {
     return p;
   };
   let glr = null, reason = "default";
-  if (pref.renderer === "2d") reason = "forced:2d";
+  if (pref.renderer === "2d") reason = pref.security ? "security:webgl-off" : "forced:2d";   // #144 toggle 5: graph_renderer_pref says 2d while WebGL is off
   else if (!window.GraphGL) reason = "no-module";
   else {
     if (!g.glr || g.glr.lost) {
@@ -11968,6 +12306,7 @@ async function startGraph(g, cfg) {
   const gpu = glr ? { gpu_vendor: glr.info.vendor, gpu_renderer: glr.info.renderer } : { gpu_vendor: "", gpu_renderer: "" };
   cv.classList.toggle("gl-on", !!glr); if (g.glcv) g.glcv.hidden = !glr;
   g.graphRenderer = glr ? "gl" : "2d";   // census [gl:] — which draw path painted the shot
+  g.graphGlWhy = !glr && pref.security ? "webgl-off" : null;   // #144 toggle 5: census [glsec:] (only while WebGL is off)
   perf.mark("graph_renderer", rT0, { renderer: glr ? "gl" : "2d", reason, webgl: glr ? glr.info.webgl : 0, ...gpu });
   const gr = await fetchP;
   // R16 GRAPH FIT (Obsidian-faithful, docs/requirements.md R16): the sim runs in
@@ -12676,11 +13015,16 @@ async function startGraph(g, cfg) {
   }
   // gh-graphdpr: a dpr change with no CSS resize (window moved to another monitor, GDK scale)
   // fires no ResizeObserver — watch the resolution media query, re-fit, redraw
+  // #166: torn down with the sim, the way g.ro is — the predecessor's listener (and the retired sim its
+  // closure holds) is removed here and in showEditor/collapseGroup, not only on the next dpr change.
+  if (g.dprOff) g.dprOff();
   if (window.matchMedia) {
     const dprWatch = () => {
       const mq = matchMedia("(resolution: " + dpr + "dppx)");
-      const on = () => { mq.removeEventListener("change", on); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
+      const off = () => { mq.removeEventListener("change", on); if (g.dprOff === off) g.dprOff = null; };
+      const on = () => { off(); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
       mq.addEventListener("change", on);
+      g.dprOff = off;
     };
     dprWatch();
   }
@@ -12718,6 +13062,23 @@ async function startGraph(g, cfg) {
       redraw();
       return;
     }
+    // macOS port: a trackpad TWO-FINGER SCROLL is a stream of small pixel deltas (dozens per gesture,
+    // then momentum), not notches — one notch per event zoomed a gentle 75 px scroll out 14x. It now
+    // zooms in proportion to the distance scrolled, like the pinch above but gentler (exp(-dy/400):
+    // a gentle 75 px swipe is ~2 notches). A mouse notch (|deltaY| >= 30) keeps the lattice below.
+    if (OS_MAC && !e.ctrlKey && e.deltaMode === 0 && e.deltaY && Math.abs(e.deltaY) < 30) {
+      const s = Math.min(GZ_MAX, Math.max(GZ_MIN, view.scale * Math.exp(-e.deltaY / 400)));
+      view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
+      view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(s) / Math.log(0.9))));
+      if (gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }
+      updateTitle();
+      redraw();
+      return;
+    }
+    // #172: a wheel event with no vertical part (touchpad sideways swipe, tilt wheel, shift+wheel
+    // reaching us as deltaX only) is not a zoom step — stock 1.13.7 keeps the scale (1 -> 1).
+    // Without this guard deltaY == 0 fell into the "+1" branch below and zoomed OUT per event.
+    if (!e.deltaY) return;
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
@@ -13124,10 +13485,14 @@ async function enterVault() {
   // R28.7 / R28.13: the restore, or — if there is no file, it is corrupt, or
   // nothing in it survived the degrade rule — the ordinary first-launch path.
   // Both land on a usable window; that is the whole point of R28.13.
-  if (!await wsApply(wdoc, names)) {
+  if (!await wsApply(wdoc, names, true)) {
     if (names.length) await openInTab(names[0], "boot");
     else renderTabs(g);
   }
+  // #242: the layout is in — from here a group without tabs is stock's empty "New tab" leaf (an empty
+  // vault, or a restored empty leaf), painted with its empty state
+  leafBoot = true;
+  for (const h of groups()) if (!h.tabs.length) await loadActive(h);
   wsmRefresh();                      // #94: the saved layouts of THIS vault, for the census and the manager (unawaited)
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
@@ -13296,6 +13661,8 @@ async function onVaultChanged(c) {
 }
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
+TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
+TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
 TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
@@ -13559,8 +13926,9 @@ function setTok() {
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() +
+         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() + langTok() +
          (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
+         (window.__osSecurity ? __osSecurity.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -13608,6 +13976,18 @@ function closeSettings() {
    ui/plugins/settings.js, plugin-loader) — built ONCE from the model, never re-created on a tab
    switch: selection is a class toggle, so clicking a nav entry costs one pane
    build and nothing else. */
+/* #220 item 5: the settings table stays English DATA (settings.rs); what is PAINTED goes
+   through I18N.tk with an id derived from it, the English literal as the fallback:
+     nav entry  snav-<pane id>          nav heading  snavh-<slug>
+     section    ssec-<slug>             row label    set-<tab>-<slug>   (+ "-desc")
+   A label ending in a version number ("Version 0.9.6") drops it from the id and
+   passes it as $v, so a release bump is not a new message. i18n.rs's
+   settings_strings_are_extracted test pins every derived en message to the model. */
+const sRowId = r => "set-" + r.tab + "-" + I18N.slug(String(r.label).replace(/ [0-9][0-9.]*$/, ""));
+const sVerArg = r => { const v = / ([0-9][0-9.]*)$/.exec(String(r.label)); return v ? { v: v[1] } : null; };
+const sLabelT = r => I18N.tk(sRowId(r), r.label, sVerArg(r));
+const sDescT = r => I18N.tk(sRowId(r) + "-desc", r.desc);
+const sSecT = s => I18N.tk("ssec-" + I18N.slug(s), s);
 function buildSettingsNav() {
   const nav = $("snav");
   if (nav.dataset.built === "1") return;
@@ -13616,11 +13996,11 @@ function buildSettingsNav() {
   for (const e of SMODEL.nav) {
     if (e.group !== group) {
       group = e.group;
-      const h = document.createElement("div"); h.className = "snavh"; h.textContent = group;
+      const h = document.createElement("div"); h.className = "snavh"; h.textContent = I18N.tk("snavh-" + I18N.slug(group), group);
       nav.appendChild(h);
     }
     const d = document.createElement("div");
-    d.className = "snavi"; d.textContent = e.entry;
+    d.className = "snavi"; d.textContent = I18N.tk("snav-" + e.id, e.entry);
     d.dataset.pane = e.id; d.tabIndex = 0;
     d.onclick = () => showSettingsPage(e.id);
     d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
@@ -13938,6 +14318,90 @@ function propsModeCtl() {
   d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
   return d;
 }
+/* ---- General ▸ Language (#220). ~/.opensidian.json "language" = "auto" | a locales/ code
+   (main.rs i18n_set). The list is Auto (system) followed by every language in ITS OWN name
+   (English, 中文, 한국어, Русский, Español, 日本語 — never translated, so a user who cannot
+   read the current language still finds theirs), the active entry accented with a trailing
+   ✓ like the issue's mock-up. Same app .ctxmenu as the other live dropdowns, so the census
+   publishes the list and a phase can click it. The pick switches LIVE: I18N.set swaps the
+   bundle and fires onChange, whose subscriber below rebuilds the open settings modal. */
+const langCtlLabel = () => {
+  const s = window.I18N ? I18N.setting() : "auto";
+  if (s === "auto" || !window.I18N) return window.I18N ? I18N.t("language-auto") : "Auto (system)";
+  const l = I18N.langs().find(x => x[0] === s);
+  return l ? l[1] : s;
+};
+function langCtl() {
+  const d = document.createElement("div");
+  d.className = "sctl dropdown live";
+  d.id = "slang";
+  d.tabIndex = 0;
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-haspopup", "menu");
+  d.textContent = langCtlLabel();
+  const open = ev => { ev.preventDefault(); ev.stopPropagation(); openLangMenu(d); };
+  d.onmousedown = ev => ev.stopPropagation();
+  d.onclick = open;
+  d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+  return d;
+}
+function openLangMenu(anchor) {
+  closeMenu();
+  if (!window.I18N) return;
+  const m = document.createElement("div");
+  m.className = "ctxmenu"; m.dataset.menu = "language";
+  const cur = I18N.setting();
+  const items = [["auto", I18N.t("language-auto")]].concat(I18N.langs());
+  for (const [code, name] of items) {
+    const it = document.createElement("div");
+    it.dataset.lang = code;
+    it.textContent = name;
+    if (code === cur) {                           // an svg check, not a ✓ glyph: the ghicons census counts U+2713 as an emoji icon
+      it.className = "langon";
+      const k = document.createElement("span"); k.className = "langchk"; k.innerHTML = GI_SVG('<path d="M3.5 8.5l3 3 6-7"/>');
+      it.appendChild(k);
+    }
+    if (code !== "auto") it.lang = code;          // the right CJK glyphs for each name, whatever the page language
+    it.onmousedown = ev => ev.stopPropagation();
+    it.onclick = async ev => {
+      ev.stopPropagation(); closeMenu();
+      try { await I18N.set(code); } catch (err) { say("Language: " + String(err && err.message || err)); return; }
+      const c = document.getElementById("slang");
+      if (c) c.textContent = langCtlLabel();
+      updateTitle();
+    };
+    m.appendChild(it);
+  }
+  const b = anchor.getBoundingClientRect();
+  placeMenu(m, Math.round(b.left), Math.round(b.bottom + 4));
+}
+/* [lang:<setting>/<active>] — the Language setting and the language the UI renders in;
+   [slangxy:<cx>,<cy>] the General > Language control's measured centre (a phase clicks it
+   in any UI language, no OCR); while the language list is open, [langchk:<code>] = the
+   row that carries the check mark (read off the DOM: the row holding .langchk) */
+function langTok() {
+  if (!window.I18N) return "";
+  const c = document.getElementById("slang");
+  let s = " [lang:" + I18N.setting() + "/" + I18N.lang() + "]";
+  if (c && c.isConnected) {
+    const b = c.getBoundingClientRect();
+    s += " [slangxy:" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) + "]";
+  }
+  if (menuEl && menuEl.dataset.menu === "language") {
+    const k = menuEl.querySelector(".langchk");
+    const row = k && k.closest("[data-lang]");
+    s += " [langchk:" + (row ? row.dataset.lang : "-") + "]";
+  }
+  return s;
+}
+/* live switch: the settings modal is built once per open, so a language change rebuilds its
+   nav and the pane on screen (the menus, the palette and other modals build on open) */
+if (window.I18N) I18N.onChange(() => {
+  const nav = $("snav");
+  if (nav) nav.dataset.built = "0";
+  if (settingsOpen && SMODEL) { buildSettingsNav(); showSettingsPage(sPane); }
+  updateTitle();
+});
 function themeCtl() {
   const d = document.createElement("div");
   d.className = "sctl dropdown live";
@@ -14020,6 +14484,7 @@ function sctl(r) {                            // the control cell for one row, o
   if (r.key === "enabledCssSnippets") return snipCtl();   // themefs R3, same live-control rule
   if (r.key === "strictLineBreaks") return slbCtl();      // goal/linebreak REQ-1: Obsidian's Editor toggle
   if (r.key === "propertiesInDocument") return propsModeCtl();   // #119: Obsidian's Editor dropdown, app.json propertiesInDocument
+  if (r.key === "language") return langCtl();             // #220: General > Language, live switch (ui/i18n.js)
   if (FONT_BY_KEY[r.key]) {                               // fontset REQ-1/2: chevron + live row value
     const d = document.createElement("div"); d.className = "sctl nav live";
     const v = fontRowValue(FONT_BY_KEY[r.key][0]);
@@ -14115,20 +14580,20 @@ function buildSettingsRows(pg, rows, pane) {
     const sec = r.section || "";
     if (sec !== section) {                    // a new section = its own heading + card, like Obsidian
       section = sec;
-      if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sec; pg.appendChild(h); }
+      if (sec) { const h = document.createElement("div"); h.className = "ssec"; h.textContent = sSecT(sec); pg.appendChild(h); }
       card = document.createElement("div"); card.className = "scard"; pg.appendChild(card);
     }
     const row = document.createElement("div");
     row.className = "srow" + (r.enabled ? "" : " dis");
     if (!r.enabled) { row.setAttribute("aria-disabled", "true"); row.title = SDIS_TITLE; }
     const info = document.createElement("div"); info.className = "sinfo";
-    const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = r.label;
+    const lb = document.createElement("div"); lb.className = "slabel"; lb.textContent = sLabelT(r);
     const link = r.desc === "(external link row)";   // Obsidian's bare link line, no description
     if (link) { lb.classList.add("slink"); row.classList.add("linkrow"); }
     info.appendChild(lb);
     if (!link && r.desc && r.desc !== "-") {
       const ds = document.createElement("div"); ds.className = "sdesc";
-      r.desc.split(" | ").forEach((p, i) => {   // " | " marks Obsidian's inline link tail
+      sDescT(r).split(" | ").forEach((p, i) => {   // " | " marks Obsidian's inline link tail (kept in every translation)
         const s = document.createElement("span");
         if (i) s.className = "slink";
         s.textContent = (i ? " " : "") + p;
@@ -14331,6 +14796,7 @@ function wfDragRegion(t) {    // is this event target part of the drag region?
   // like the middle tab row). The header element ONLY — its .stab buttons and #rtoggle
   // are their own targets, so a press on an icon still switches and never drags.
   if (t.id === "wframe" || t.id === "stabs" || t.id === "rtabs") return true;
+  if (OS_MAC && t.id === "ribbon") return true;   // macOS port: the ribbon's empty space under the traffic lights drags too
   // R37: ANY pane's tab-bar background, not just the top row's (see the block above)
   return t.classList.contains("tabbar") || t.classList.contains("tabs");
 }
@@ -14895,10 +15361,10 @@ function fPaint(g) {
     !st.q ? "" : fRead(g) ? String(st.hits.length)
                           : st.hits.length ? (st.idx + 1) + " / " + st.hits.length : "0 / 0";
 }
-function fSync(g, reset) {             // recompute hits against the current text
+function fSync(g, reset, from) {       // recompute hits against the current text; from = {l, c} to resume at
   const st = fState(g);
   if (!st.open) return;
-  const was = st.hits[st.idx];
+  const was = from || st.hits[st.idx];
   st.hits = fScan(g);
   /* Reading view has no place to keep: there is no current match to hold and
      no edits to hold it across (R26.24). */
@@ -14916,6 +15382,11 @@ function fSync(g, reset) {             // recompute hits against the current tex
    never scroll at all. */
 function fReveal(g, done) {   // done(): called once the reveal has finished (sync, or after CM6 drew the line)
   const fin = () => { if (done) done(); };
+  // #165: ONE reveal in flight. A newer one (Enter key repeat) ends the older one first, so its
+  // diagnostic hooks are off the prototypes before the newer one saves "the originals" — else the
+  // newer saved the older's wrapper and put it back, and focus()/Selection stayed hooked for good
+  // (the shared "osFindReveal" measure key also dropped the older one's last step, so it never unhooked).
+  if (fRvEnd) fRvEnd();
   /* Nothing to reveal in reading view: no .fcur is ever painted there, so this
      returns without touching g.preview.scrollTop — R26.24's "does not
      navigate" includes not moving the page under the reader. */
@@ -14979,9 +15450,13 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   const dv = cm.docView, dvU = dv && dv.update;
   if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
     const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
-  const unhook = () => { sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  let live = true;                     // #165: unhook runs once; a superseded reveal schedules nothing more
+  const unhook = () => { if (!live) return; live = false; if (fRvEnd === stop) fRvEnd = null; sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
   let n = 0, lastTop = -1;
-  const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+  const stop = () => { if (live) { unhook(); fin(); } };   // superseded: end it AND still call done (fGo's census release)
+  fRvEnd = stop;
+  const step = () => live && cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+    if (!live) return;
     const tp = Math.round(sc.scrollTop);
     if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight) + "," + ae() + "," + anc(); lastTop = tp; }
     const ok = Ed.cm(g) === cm && go();
@@ -14992,13 +15467,14 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
     }
     // drawn but not centred (CM6 measured real heights after the estimate it scrolled on): re-ask CM6
     // in the NEXT frame — a dispatch inside this measure write would throw (#125)
-    requestAnimationFrame(() => { if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
+    requestAnimationFrame(() => { if (!live) return; if (Ed.cm(g) === cm && sc.querySelector("span." + F_MARK + "." + F_CUR)) Ed.revealAt(g, h.l, h.c); step(); });
   } });
   requestAnimationFrame(step);
 }
 /* [frv:] the last lp find reveal: l<line>|s<scrollTop after the line was brought in>
    |n<frames waited>|f<mark found 0/1>|t<final scrollTop> (diagnostic, no phase asserts it) */
 var fRv = "-";
+var fRvEnd = null;                    // #165: unhook of the reveal in flight (null = none)
 /* fGo holds the census while a reveal is in flight: CM6 draws an off-screen line a
    frame or more after the counter changed, and a title published in between would
    carry [fc:i / n] beside the pre-scroll [fsc:]/[fvis:] — R17 revealed inside the
@@ -15024,9 +15500,11 @@ function fGo(g, d) {                   // R26.11 + R26.13
 function fRepOne(g) {
   const st = fState(g);
   if (!st.open || !st.rep || !st.q || !st.hits.length) return 0;
-  const h = st.hits[st.idx], qlen = st.q.length;
-  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, fRepText(g), "replace");
-  fSync(g, false);                     // keep the place: the next hit at/after where this one was
+  const h = st.hits[st.idx], qlen = st.q.length, rt = fRepText(g);
+  Ed.replace(g, { a: { l: h.l, c: h.c }, b: { l: h.l, c: h.c + qlen } }, rt, "replace");
+  // #170: resume AFTER the inserted text, like stock 1.13.7 — resuming at its start re-selected the
+  // replacement itself whenever it still matches the query ('foo' -> 'Foo'), so Replace never moved on
+  fSync(g, false, { l: h.l, c: h.c + rt.length });
   fReveal(g);
   fRFocus(g);
   updateTitle();

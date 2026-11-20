@@ -12,6 +12,10 @@
 //! posts it to the main loop and waits for the callback off the main thread —
 //! never a nested `wait_for_text` loop inside the IPC handler. A WRITE is a
 //! sync command, which Tauri runs on the main thread.
+//!
+//! #144 toggles 8 + 9: every command asks `crate::clip_allowed` FIRST (security::clip_check:
+//! app clipboard off refuses all, plugin clipboard off refuses once community code entered
+//! the page realm) — before any GTK call.
 
 /// the largest text a menu Paste takes (a paste is one editor transaction)
 pub const MAX_CLIP_TEXT: usize = 8 << 20;
@@ -46,7 +50,22 @@ async fn read(window: tauri::Window) -> Option<String> {
         .flatten()
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS: NSPasteboard's plain text, read on the main thread (AppKit), same verdict (accept)
+#[cfg(target_os = "macos")]
+async fn read(window: tauri::Window) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(accept(crate::macos::clipboard_text().as_deref()));
+        })
+        .ok()?;
+    tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(std::time::Duration::from_secs(2)).ok().flatten())
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 async fn read(_window: tauri::Window) -> Option<String> {
     None
 }
@@ -54,6 +73,7 @@ async fn read(_window: tauri::Window) -> Option<String> {
 /// the clipboard's text (None = no text: the menu's Paste rows are disabled)
 #[tauri::command]
 pub async fn clip_text(window: tauri::Window) -> Result<Option<String>, String> {
+    crate::clip_allowed("clip_text")?;
     Ok(read(window).await)
 }
 
@@ -61,18 +81,25 @@ pub async fn clip_text(window: tauri::Window) -> Result<Option<String>, String> 
 /// content itself only crosses to the webview when the user picks Paste.
 #[tauri::command]
 pub async fn clip_has_text(window: tauri::Window) -> Result<bool, String> {
+    crate::clip_allowed("clip_has_text")?;
     Ok(read(window).await.is_some())
 }
 
 /// Copy / Cut: put `text` on the clipboard (sync = Tauri's main thread)
 #[tauri::command]
 pub fn clip_set_text(text: String) -> Result<(), String> {
+    crate::clip_allowed("clip_set_text")?;
     if text.len() > MAX_CLIP_TEXT {
         return Err("clip_set_text: text over the 8 MiB menu cap".into());
     }
     #[cfg(target_os = "linux")]
     {
         board().set_text(&text);
+    }
+    // macOS: the general NSPasteboard (menu Copy / Cut; CodeAnt #248: Cut deleted without copying)
+    #[cfg(target_os = "macos")]
+    if !crate::macos::clipboard_set_text(&text) {
+        return Err("clip_set_text: the pasteboard refused the text".into());
     }
     Ok(())
 }
