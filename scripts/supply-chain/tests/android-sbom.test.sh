@@ -201,7 +201,7 @@ expect_fail "root license other than GPL-3.0-or-later refused" "license 'MIT'" \
 expect_fail "no SOURCE_DATE_EPOCH outside git refused" "not be deterministic" \
   env -u SOURCE_DATE_EPOCH "$S" -C "$C" -t aarch64-linux-android -m "$t/meta.json" -j "$t/vendor.cdx.json" -o "$t/x"
 echo '{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"component":{"bom-ref":"v"}},"components":[]}' >"$t/vendor-empty.json"
-expect_fail "vendor SBOM without npm refused" "no pkg:npm" \
+expect_fail "vendor SBOM lacking pkg:npm components refused" "no pkg:npm" \
   "$S" -C "$C" -t aarch64-linux-android -m "$t/meta.json" -j "$t/vendor-empty.json" -o "$t/x"
 expect_fail "missing checkout refused" "not a directory" "$S" -C "$t/nope" -t aarch64-linux-android -o "$t/x"
 [ ! -e "$t/x" ] || [ -z "$(ls -A "$t/x")" ] && ok "failed runs wrote no SBOM" || bad "a failed run left output in $t/x"
