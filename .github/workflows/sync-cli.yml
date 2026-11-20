@@ -117,6 +117,8 @@ jobs:
           done
       - name: cargo test --locked (sync-proto, sync-crypto, sync-core, syncd, sync-server)
         working-directory: src-tauri
+        env:
+          CARGO_TERM_COLOR: never   # the checks below grep plain cargo output
         run: |
           cargo test --locked -p sync-proto -p sync-crypto -p sync-core -p syncd -p sync-server 2>&1 | tee "$RUNNER_TEMP/test.log"
           grep -E '^test result:' "$RUNNER_TEMP/test.log" | awk '{p+=$4; f+=$6} END {print "total passed", p, "failed", f}'
@@ -124,7 +126,7 @@ jobs:
           for t in openssl_fips_provider_in_approved_mode refuses_without_fips_module; do
             grep -Eq "^test $t \.\.\. ok$" "$RUNNER_TEMP/test.log" || { echo "::error::$t did not pass"; exit 1; }
           done
-          grep -Eq '^     Running tests/fips_kat\.rs' "$RUNNER_TEMP/test.log" || { echo "::error::fips_kat did not run"; exit 1; }
+          grep -Eq '^ *Running tests/fips_kat\.rs' "$RUNNER_TEMP/test.log" || { echo "::error::fips_kat did not run"; exit 1; }
       - name: package opensidian-sync-${{ steps.ver.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
         env:
           V: ${{ steps.ver.outputs.version }}
