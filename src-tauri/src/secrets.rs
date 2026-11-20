@@ -306,8 +306,20 @@ mod bus {
 #[cfg(target_os = "linux")]
 pub use bus::run;
 
-/// no freedesktop Secret Service off Linux: unsupported, never a fallback store
-#[cfg(not(target_os = "linux"))]
+/// macOS: the login Keychain (macos::keychain), same ops, same shapes as the Secret Service store
+#[cfg(target_os = "macos")]
+pub fn run(_addr: Option<&str>, vault: &str, op: Op) -> Result<serde_json::Value, String> {
+    use crate::macos::keychain as kc;
+    match op {
+        Op::Load => Ok(serde_json::json!({ "secrets": kc::load(vault)? })),
+        Op::Ids => Ok(serde_json::json!({ "ids": kc::ids(vault)? })),
+        Op::Set(k, v) => kc::set(vault, k, v).map(|_| serde_json::Value::Null),
+        Op::Delete(k) => kc::delete(vault, k).map(|_| serde_json::Value::Null),
+    }
+}
+
+/// no OS keyring we speak elsewhere: unsupported, never a fallback store
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn run(_addr: Option<&str>, _vault: &str, _op: Op) -> Result<serde_json::Value, String> {
     Err(unsupported("this platform has no freedesktop Secret Service"))
 }
@@ -331,15 +343,28 @@ pub(crate) async fn secrets_op(
     otel: Option<crate::perf::Ctx>,
 ) -> Result<serde_json::Value, String> {
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
-    let trusted = crate::plugins::is_trusted(&crate::cfg_value(), &root);
-    admit(trusted, &op, id.as_deref(), value.as_deref())?;
-    let vault = crate::plugins::trust_key(&root);
+    // #127 (review #129): ONE key (canonical path + identity) for both the trust check and the
+    // keyring namespace — a root symlink retargeted in between cannot get the check of the old target
+    let key = crate::plugins::trust_key(&root);
+    let trusted = crate::plugins::is_trusted_key(&crate::cfg_value(), &key);
+    if let Err(e) = admit(trusted, &op, id.as_deref(), value.as_deref()) {
+        eprintln!("[secrets] {op}: {e}");
+        return Err(e);
+    }
+    let vault = key.path;
+    let what = op.clone();
     let r = crate::span_timed!(otel => "secrets_op", tauri::async_runtime::spawn_blocking(move || {
         let op = parse(&op, id.as_deref(), value.as_deref())?;
         run(None, &vault, op)
     })
     .await);
-    r.map_err(|e| e.to_string())?
+    let r = r.map_err(|e| e.to_string())?;
+    // the op and its error only — never an id's value
+    match &r {
+        Ok(_) => eprintln!("[secrets] {what}: ok"),
+        Err(e) => eprintln!("[secrets] {what}: {e}"),
+    }
+    r
 }
 
 #[cfg(test)]
@@ -390,6 +415,7 @@ mod tests {
     /// no Secret Service reachable: every op is an `unsupported:` error that
     /// names the cause, and nothing is stored anywhere (no fallback exists).
     #[test]
+    #[cfg(target_os = "linux")] // a Secret Service bus address; macOS uses the Keychain
     fn no_service_is_unsupported_not_a_fake_success() {
         let dir = std::env::temp_dir().join(format!("ossec-nobus-{}", std::process::id()));
         let addr = format!("unix:path={}/no-such-bus", dir.display());

@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "packages": [
+    {
+      "name": "glib",
+      "version": "0.18.5",
+      "id": "path+file:///w/src-tauri#glib@0.18.5",
+      "license": "MIT",
+      "license_file": null,
+      "source": null
+    },
+    {
+      "name": "libc",
+      "version": "0.2.170",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.170",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source": null
+    },
+    {
+      "name": "opensidian",
+      "version": "0.9.4",
+      "id": "path+file:///w/src-tauri#opensidian@0.9.4",
+      "license": "GPL-3.0-or-later",
+      "license_file": null,
+      "source": null
+    },
+    {
+      "name": "serde",
+      "version": "1.0.219",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219",
+      "license": "MIT/Apache-2.0",
+      "license_file": null,
+      "source": null
+    },
+    {
+      "name": "serde_derive",
+      "version": "1.0.219",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.219",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source": null
+    },
+    {
+      "name": "sha2",
+      "version": "0.10.9",
+      "id": "registry+https://github.com/rust-lang/crates.io-index#sha2@0.10.9",
+      "license": "MIT OR Apache-2.0",
+      "license_file": null,
+      "source": null
+    }
+  ],
+  "resolve": {
+    "root": "path+file:///w/src-tauri#opensidian@0.9.4",
+    "nodes": [
+      {
+        "id": "path+file:///w/src-tauri#opensidian@0.9.4",
+        "deps": [
+          {
+            "name": "x",
+            "pkg": "path+file:///w/src-tauri#glib@0.18.5",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "x",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "name": "x",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#sha2@0.10.9",
+            "dep_kinds": [
+              {
+                "kind": "dev",
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219",
+        "deps": [
+          {
+            "name": "x",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#serde_derive@1.0.219",
+            "dep_kinds": [
+              {
+                "kind": "build",
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "path+file:///w/src-tauri#glib@0.18.5",
+        "deps": [
+          {
+            "name": "x",
+            "pkg": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.170",
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "workspace_members": [
+    "path+file:///w/src-tauri#opensidian@0.9.4"
+  ]
+}

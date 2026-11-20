@@ -1,12 +1,26 @@
+# Semgrep (semgrep ci, Semgrep AppSec Platform).
+#
+# Supply chain — SCANNERS = CUTTING EDGE, PINNED (operator decision 2026-11-19 15:49Z, supersedes
+#   the 2026-11-15 "scanners float, :latest not digest-pinned" exception):
+#   the container is the NEWEST stable semgrep image (exception to the 6-week rule for scanners
+#   only) pinned by tag AND manifest-list digest: 1.185.0 = Docker Hub :latest (stable channel)
+#   on 2026-11-19, digest sha256:67518c17... checked against the registry (HEAD manifests/latest
+#   == hub tags 1.185.0 == latest). 1.186.0 exists only as :canary, not promoted to stable.
+#   The weekly snapshot-bump.yml PR proposes the next stable digest; never auto-merged.
+#   The version actually used is printed first ("semgrep --version").
+#   Blast radius = this job: contents: read + SEMGREP_APP_TOKEN.
+#   RESIDUAL RISK (accepted by the operator 2026-11-15): this job holds
+#   SEMGREP_APP_TOKEN; the image is digest-pinned, so only a reviewed bump PR changes what sees it.
+#   No GitHub write token and no other secret is exposed (checkout without credentials).
+#   Actions remain pinned by full 40-hex commit SHA.
 on:
   workflow_dispatch: {}
-  pull_request: {}
+  # NO pull_request trigger (operator 2026-11-15): only develop, main, v* branches + schedule + dispatch
   push:
     branches:
     - main
-    - master
-    paths:
-    - .github/workflows/semgrep.yml
+    - develop
+    - 'v*'  # release branches / drafts (v<ver>-release, see release.yml); no paths filter, so every push scans
   schedule:
   # random HH:MM to avoid a load spike on GitHub Actions at 00:00
   - cron: 13 0 * * *
@@ -14,14 +28,16 @@ name: Semgrep
 jobs:
   semgrep:
     name: semgrep/ci
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04  # pinned label (= the -latest image on 2026-11-14)
     permissions:
       contents: read
     env:
+      # residual risk: the image below sees this token (digest-pinned, see header)
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.185.0@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d  # newest stable (= :latest on 2026-11-19), digest-pinned (header)
     steps:
+    - run: semgrep --version
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       with:
         persist-credentials: false

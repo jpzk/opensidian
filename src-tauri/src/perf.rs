@@ -1091,6 +1091,7 @@ mod tests {
        /srv/out/<goal>. On a kernel with no landlock the test SKIPS LOUDLY —
        it prints what the kernel lacks, it never passes vacuously. */
     #[test]
+    #[cfg(target_os = "linux")] // uses landlock::RulesetStatus directly
     fn otel_sink_survives_the_sandbox_that_kills_a_path_open() {
         use crate::sandbox;
         use std::io::Write as _;

@@ -60,30 +60,27 @@ pub fn canvas_rel(op: &str, path: &str) -> Result<PathBuf, String> {
     Ok(rel)
 }
 
-fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize, keep: fn(&str) -> bool) {
-    if depth >= vaultfs::MAX_WALK_DEPTH {
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name();
-        let Some(n) = name.to_str() else { continue };
+fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, keep: fn(&str) -> bool) {
+    // iterative (vaultfs::walk_tree): a deep vault cannot exhaust the stack
+    vaultfs::walk_tree(dir, vaultfs::MAX_WALK_DEPTH, |e, _| {
+        let Some(n) = e.name.to_str() else { return false };
         if n.starts_with('.') {
-            continue;
+            return false;
         }
         // DirEntry::file_type does not follow symlinks: a link is neither
-        let Ok(t) = e.file_type() else { continue };
-        let p = e.path();
+        let Some(t) = e.ft else { return false };
         if t.is_dir() {
-            walk(&p, base, out, depth + 1, keep);
-        } else if t.is_file() && keep(n) {
-            if let Ok(rel) = p.strip_prefix(base) {
+            return true;
+        }
+        if t.is_file() && keep(n) {
+            if let Ok(rel) = e.path.strip_prefix(base) {
                 if let Some(s) = rel.to_str() {
                     out.push(s.to_string());
                 }
             }
         }
-    }
+        false
+    })
 }
 
 fn is_canvas(n: &str) -> bool {
@@ -101,7 +98,7 @@ fn is_media(n: &str) -> bool {
 fn list_by(root: &Path, keep: fn(&str) -> bool) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(c) = root.canonicalize() {
-        walk(&c, &c, &mut out, 0, keep);
+        walk(&c, &c, &mut out, keep);
     }
     out.sort();
     out

@@ -175,7 +175,7 @@ fn cstr(s: &OsStr) -> io::Result<CString> {
     CString::new(s.as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))
 }
 
-/// renameat2(dfd, from, dfd, to, RENAME_NOREPLACE) through libc on every target: Android's
+/// renameat2(dfd, from, dfd, to, RENAME_NOREPLACE) through libc on Linux and Android: Android's
 /// minSdk is 30, and bionic exports renameat2() from API 30 (PR #38 F2: no raw syscall, which the
 /// app seccomp filter of API 26-29 could answer with SIGSYS). The caller's linkat fallback stays
 /// for filesystems that refuse the flag with EINVAL/ENOSYS/EOPNOTSUPP on any API level (FUSE
@@ -183,6 +183,7 @@ fn cstr(s: &OsStr) -> io::Result<CString> {
 /// desktop kernels).
 /// SAFETY: dfd is a valid directory fd, from/to are NUL-terminated.
 #[allow(clippy::unnecessary_cast)] // RENAME_NOREPLACE is c_uint on glibc, c_int on bionic
+#[cfg(any(target_os = "linux", target_os = "android"))] // macOS has no renameat2 (develop macOS port)
 unsafe fn renameat_noreplace(dfd: libc::c_int, from: *const libc::c_char, to: *const libc::c_char) -> libc::c_int {
     libc::renameat2(dfd, from, dfd, to, libc::RENAME_NOREPLACE as libc::c_uint)
 }
@@ -431,12 +432,35 @@ impl Vault {
     /// that zero-byte claim. Parents of `to` are created.
     pub fn move_file(&self, from: &Path, to: &Path) -> io::Result<()> {
         let (fd_from, lf) = self.parent(from, false)?;
-        match stat_at(fd_from.fd.as_raw_fd(), &lf) {
-            Ok(st) if is_reg(&st) => {}
+        let src = match stat_at(fd_from.fd.as_raw_fd(), &lf) {
+            Ok(st) if is_reg(&st) => st,
             Ok(_) => return Err(refused(from, "source is not a regular file")),
             Err(e) => return Err(e),
-        }
+        };
         let (fd_to, lt) = self.parent(to, true)?;
+        // macOS port: on a case-insensitive filesystem (APFS's default) `Note.md` -> `note.md` names
+        // the SAME directory entry, so the O_EXCL claim below says "exists". A case-only rename of
+        // that very file has nothing to claim or clobber: renameat just stores the new case. Taken
+        // ONLY when the volume itself says it is case-insensitive (_PC_CASE_SENSITIVE == 0): there
+        // both spellings are one entry, so a concurrent writer replacing `to` replaced `from` — the
+        // rename can never overwrite a different file, and it is never a silent no-op between two
+        // hard links (on a case-SENSITIVE volume those are two entries; the claim below refuses).
+        // SAFETY: valid fd
+        #[cfg(target_os = "macos")]
+        let case_insensitive = unsafe { libc::fpathconf(fd_to.fd.as_raw_fd(), libc::_PC_CASE_SENSITIVE) } == 0;
+        #[cfg(target_os = "macos")]
+        if case_insensitive {
+          if let Ok(t) = stat_at(fd_to.fd.as_raw_fd(), &lt) {
+            let same_name = lf.to_string_lossy().to_lowercase() == lt.to_string_lossy().to_lowercase();
+            let same_dir = stat_at(fd_from.fd.as_raw_fd(), &CString::new(".").expect("no NUL"))
+                .and_then(|a| stat_at(fd_to.fd.as_raw_fd(), &CString::new(".").expect("no NUL")).map(|b| (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)))
+                .unwrap_or(false);
+            if same_name && same_dir && (t.st_dev, t.st_ino) == (src.st_dev, src.st_ino) && lf != lt {
+                // SAFETY: valid fds + NUL-terminated names
+                return cvt(unsafe { libc::renameat(fd_from.fd.as_raw_fd(), lf.as_ptr(), fd_to.fd.as_raw_fd(), lt.as_ptr()) }).map(|_| ());
+            }
+          }
+        }
         drop(self.create_new_at(&fd_to, &lt)?);
         hook("move_file:claimed");
         // SAFETY: valid fds + NUL-terminated names
@@ -619,7 +643,12 @@ impl Vault {
                 Err(_) => continue,
             };
             // SAFETY: valid fd + NUL-terminated names
+            // Linux + Android (bionic, API >= 30 = minSdk; PR #38 F2): renameat2 through libc
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             let r = cvt(unsafe { renameat_noreplace(dfd, tmp.as_ptr(), cn.as_ptr()) });
+            // no renameat2 elsewhere (macOS): take the link(2) path below, which refuses an existing name too
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            let r: io::Result<libc::c_int> = Err(io::Error::from_raw_os_error(libc::ENOSYS));
             let r = match r {
                 Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EOPNOTSUPP)) => {
                     // no NOREPLACE here: link(2) refuses an existing name too
@@ -919,6 +948,7 @@ impl Vault {
     /// directory is changed, through /proc/self/fd/<fd>, which names exactly the
     /// inode we hold (fchmod on an O_PATH fd is EBADF), so a swap after the open
     /// cannot redirect it. setuid/setgid/sticky never get through: mode & 0o777.
+    #[cfg(target_os = "linux")]
     pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
         let (d, leaf) = self.parent(rel, false)?;
         // SAFETY: valid fd + NUL-terminated name; the fd is owned below
@@ -929,6 +959,22 @@ impl Vault {
         let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
         // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
         cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+    }
+
+    /// Non-Linux p_chmod: no O_PATH and no /proc. The leaf is checked with fstatat(NOFOLLOW) and
+    /// changed with fchmodat(AT_SYMLINK_NOFOLLOW) relative to its held parent: a symlink is refused
+    /// by the check, and if one is swapped in afterwards the chmod lands on the LINK, never its
+    /// target. Needs no read access, so a file a plugin set to 000 can be set back. O_NONBLOCK (a FIFO
+    /// cannot hang the open) and O_NOCTTY; fstat refuses anything but a regular file
+    /// or directory, and fchmod acts on the held fd, so a swap after the open cannot
+    /// redirect it. A file without read permission cannot be opened and is refused.
+    #[cfg(not(target_os = "linux"))]
+    pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        let (d, leaf) = self.parent(rel, false)?;
+        pstat_of(rel, &stat_at(d.fd.as_raw_fd(), &leaf)?)?; // symlink, FIFO, device, socket -> refused
+        hook("p_chmod:opened");
+        // SAFETY: valid fd + NUL-terminated name
+        cvt(unsafe { libc::fchmodat(d.fd.as_raw_fd(), leaf.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t, libc::AT_SYMLINK_NOFOLLOW) }).map(|_| ())
     }
 }
 
@@ -1083,38 +1129,78 @@ pub fn mkdir_p(root: &Path, rel: &Path) -> io::Result<()> {
     Vault::open(root)?.mkdir_p(rel)
 }
 
+/// one entry of a directory listed by `walk_tree`: its path, file name and
+/// DirEntry::file_type (which does NOT follow symlinks; None if unknown)
+pub struct WalkEntry {
+    pub path: PathBuf,
+    pub name: std::ffi::OsString,
+    pub ft: Option<std::fs::FileType>,
+}
+
+/// pre-order directory walk with constant stack use. `visit(entry, depth)` is
+/// called for every entry of every opened directory, in read_dir order and
+/// depth first, exactly as a recursive walk would; returning true descends
+/// into that entry (the caller owns the dir / symlink / hidden policy). The
+/// root is depth 0 and a directory at depth d is opened only while
+/// d < max_depth. Unreadable directories are skipped.
+///
+/// Iterative on purpose: the recursive walks kept one stack frame AND one
+/// open directory handle per level. On macOS a 256-deep vault overflowed the
+/// thread stack (SIGABRT, which kills the whole app); 256 open handles also
+/// sit right at macOS's default 256-descriptor soft limit. Here the pending
+/// work lives on the heap and a directory's entries are collected (its
+/// handle closed) before any child is opened, so one handle is open at a
+/// time whatever the depth.
+pub fn walk_tree(root: &Path, max_depth: usize, mut visit: impl FnMut(&WalkEntry, usize) -> bool) {
+    // each level: the not-yet-visited entries of one directory, and the
+    // depth of the entries themselves
+    let mut stack: Vec<(std::vec::IntoIter<WalkEntry>, usize)> = Vec::new();
+    if max_depth > 0 {
+        stack.push((list_dir(root).into_iter(), 1));
+    }
+    while let Some((it, depth)) = stack.last_mut() {
+        let depth = *depth;
+        let Some(e) = it.next() else {
+            stack.pop();
+            continue;
+        };
+        // checked BEFORE opening: the entry at `depth` is opened only while
+        // depth < max_depth, the old early `return` at the top of the callee
+        if visit(&e, depth) && depth < max_depth {
+            stack.push((list_dir(&e.path).into_iter(), depth + 1));
+        }
+    }
+}
+
+/// the entries of `dir` in read_dir order; the handle is closed on return
+fn list_dir(dir: &Path) -> Vec<WalkEntry> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    rd.flatten().map(|e| WalkEntry { path: e.path(), name: e.file_name(), ft: e.file_type().ok() }).collect()
+}
+
 /// tree walk that never descends a symlinked directory (audit #9) — the same
 /// boundary the note index draws with symlink_metadata. `out` gets every
 /// non-hidden real directory's vault-relative path, depth first. Real dirs
-/// cannot cycle; MAX_WALK_DEPTH still bounds the recursion (stack) against
-/// a deliberately deep tree.
+/// cannot cycle; MAX_WALK_DEPTH still bounds the walk against a deliberately
+/// deep tree (iterative, see walk_tree: no stack growth with depth).
 pub fn walk_real_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
-    walk_real_dirs_at(dir, base, out, 0)
-}
-
-pub const MAX_WALK_DEPTH: usize = 256;
-
-fn walk_real_dirs_at(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
-    if depth >= MAX_WALK_DEPTH {
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        if e.file_name().as_bytes().first() == Some(&b'.') {
-            continue;
+    walk_tree(dir, MAX_WALK_DEPTH, |e, _| {
+        if e.name.as_bytes().first() == Some(&b'.') {
+            return false;
         }
         // DirEntry::file_type does NOT follow symlinks: a symlinked dir is
         // a symlink here, and is skipped
-        if !e.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
+        if !e.ft.is_some_and(|t| t.is_dir()) {
+            return false;
         }
-        let p = e.path();
-        if let Ok(rel) = p.strip_prefix(base) {
+        if let Ok(rel) = e.path.strip_prefix(base) {
             out.push(rel.display().to_string());
         }
-        walk_real_dirs_at(&p, base, out, depth + 1);
-    }
+        true
+    })
 }
+
+pub const MAX_WALK_DEPTH: usize = 256;
 
 #[cfg(test)]
 mod tests {
@@ -1226,6 +1312,38 @@ mod tests {
         let mut v = Vec::new();
         walk_real_dirs(&root, &root, &mut v);
         assert_eq!(v.len(), MAX_WALK_DEPTH, "one entry per level, capped");
+    }
+
+    #[test]
+    fn vaultfs_walk_tree_is_preorder_and_depth_bounded() {
+        let (root, _out) = fresh("walktree");
+        fs::create_dir_all(root.join("a/b/c/d")).unwrap();
+        fs::write(root.join("a/n.md"), "n").unwrap();
+        fs::write(root.join("a/b/c/deep.md"), "x").unwrap();
+        let rel = |p: &Path| p.strip_prefix(&root).unwrap().display().to_string();
+        let mut seen = Vec::new();
+        walk_tree(&root, 3, |e, depth| {
+            seen.push((rel(&e.path), depth));
+            e.ft.is_some_and(|t| t.is_dir())
+        });
+        // depth 3 entries are listed (their parent at depth 2 < 3 was opened),
+        // but a/b/c itself (depth 3) is not opened
+        let mut sorted = seen.clone();
+        sorted.sort();
+        let want = [("a", 1), ("a/b", 2), ("a/b/c", 3), ("a/n.md", 2)];
+        assert_eq!(sorted, want.map(|(p, d)| (p.to_string(), d)).to_vec());
+        // pre-order: every entry comes after its parent directory
+        for (i, (p, _)) in seen.iter().enumerate() {
+            if let Some((parent, _)) = p.rsplit_once('/') {
+                assert!(seen[..i].iter().any(|(q, _)| q == parent), "{p} before {parent}: {seen:?}");
+            }
+        }
+        let mut none = 0;
+        walk_tree(&root, 0, |_, _| {
+            none += 1;
+            true
+        });
+        assert_eq!(none, 0, "max_depth 0 opens nothing");
     }
 
     #[test]
@@ -1456,6 +1574,17 @@ mod tests {
         }
         assert_eq!(mode_of(&out.join("secret")), 0o600, "outside target mode unchanged");
         assert!(fs::symlink_metadata(root.join("a/leak")).unwrap().file_type().is_symlink());
+    }
+
+    /// CodeAnt #248: a plugin that set a file to 000 can set it back (no read access is needed)
+    #[test]
+    fn pchmod_mode_000_can_be_restored() {
+        let (root, _out) = fresh("pchmod-000");
+        fs::write(root.join("x.sh"), b"#!/bin/sh\n").unwrap();
+        plugin_chmod(&root, true, "x.sh", 0o000).expect("to 000");
+        plugin_chmod(&root, true, "x.sh", 0o755).expect("back from 000");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(root.join("x.sh")).unwrap().permissions().mode() & 0o777, 0o755);
     }
 
     #[test]

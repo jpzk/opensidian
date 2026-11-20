@@ -223,6 +223,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // the holder is flock(1) from util-linux
     fn vaultlock_contention_across_processes() {
         // a real second PROCESS holds the lock: flock(1) from util-linux on the
         // same file, sleeping while we try.

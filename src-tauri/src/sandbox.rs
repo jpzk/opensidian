@@ -22,6 +22,7 @@
    the vault, with one exception: create_vault makes the new folder and its
    Welcome.md seed before the restart. That is the folder the user asked for.
    boot_pick_must_restart() is that decision as a pure function. */
+#[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
@@ -195,6 +196,21 @@ pub fn ruleset_plan(disabled: bool, home: &Path, vault: &Path) -> Option<Ruleset
     })
 }
 
+/// Non-Linux targets have no Landlock: the stand-in status type keeps callers and
+/// tests compiling, and `enforce` always reports unsupported, which main() logs as
+/// "landlock: off (...)" and the tests treat as "skipped".
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, PartialEq, Eq)]
+pub enum RulesetStatus {
+    NotEnforced,
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn enforce(_vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
+    Err("Landlock is Linux-only; not available on this OS".into())
+}
+
+#[cfg(target_os = "linux")]
 pub fn enforce(vault: &Path) -> Result<RulesetStatus, Box<dyn std::error::Error>> {
     let off = no_landlock_requested();
     if off {
@@ -594,6 +610,7 @@ mod tests {
     /// true when the running kernel knows REFER (ABI v2, Linux 5.19). Asked as
     /// a HardRequirement ruleset that is BUILT AND DROPPED — nothing is
     /// restricted by it, so the caller is as unconfined afterwards as before.
+    #[cfg(target_os = "linux")] // landlock types: Linux only
     fn kernel_has_refer() -> bool {
         Ruleset::default()
             .set_compatibility(CompatLevel::HardRequirement)
@@ -615,6 +632,7 @@ mod tests {
     /// landlock with REFER -> the move must succeed, and an EXDEV here is the
     /// grant having been dropped from enforce().
     #[test]
+    #[cfg(target_os = "linux")] // uses kernel_has_refer (landlock)
     fn a_move_into_the_vault_trash_survives_our_own_sandbox() {
         if reexec_alone("sandbox::tests::a_move_into_the_vault_trash_survives_our_own_sandbox") {
             return;

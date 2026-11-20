@@ -69,6 +69,10 @@ pub enum Op {
     SpawnAllowAdd(crate::spawn_allow::Grant),
     /// #74: forget the grant for (vault, plugin, program) — Settings' Revoke
     SpawnAllowRevoke { vault: String, plugin: String, program: String },
+    /// #144: one Settings › Security field (security.rs). Sent ONLY by security_set after
+    /// security::validate (and, for a change that lowers protection, the native confirm);
+    /// applied here only for a known field, so even a forged Op cannot write anything else.
+    SecuritySet(String, bool),
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -87,11 +91,20 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
         match op {
             // #74: the grants are written by their own Ops only — a generic write naming the
             // key (Set / SetIn / MergeIn / InsertIn) can neither add nor wipe one
-            Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::spawn_allow::KEY => {
+            Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::spawn_allow::KEY || k == crate::security::KEY => {
                 eprintln!("[cfg] refused a generic write of {k}");
             }
             Op::SpawnAllowAdd(g) => crate::spawn_allow::apply_add(v, g),
             Op::SpawnAllowRevoke { vault, plugin, program } => crate::spawn_allow::apply_revoke(v, vault, plugin, program),
+            Op::SecuritySet(f, on) => match crate::security::validate(f, *on) {
+                Ok((f, on)) => {
+                    if !v[crate::security::KEY].is_object() {
+                        v[crate::security::KEY] = serde_json::json!({});
+                    }
+                    v[crate::security::KEY][f] = serde_json::json!(on);
+                }
+                Err(e) => eprintln!("[cfg] refused: {e}"),
+            },
             Op::Set(k, x) => v[k.as_str()] = x.clone(),
             Op::PushRecent(p) => {
                 let list = v["list"]
@@ -345,6 +358,7 @@ mod tests {
     /// cross-PROCESS: an outside process holds the cfg lock; our update must
     /// wait for it (not write around it) and then merge onto ITS write.
     #[test]
+    #[cfg(target_os = "linux")] // the holder is flock(1) from util-linux
     fn cfgstore_update_waits_for_another_process_holding_the_lock() {
         let d = tmp("proc");
         let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
@@ -462,5 +476,29 @@ mod tests {
         apply(&mut v, &[Op::SpawnAllowAdd(grant74("/usr/bin/git"))]);
         apply(&mut v, &[Op::Set(key.into(), serde_json::json!([])), Op::MergeIn(key.into(), "x".into(), serde_json::json!({}))]);
         assert_eq!(crate::spawn_allow::grants(&v), vec![grant74("/usr/bin/git")], "a generic op wiped a grant: {v}");
+    }
+
+    /// #144: the "security" key is written by Op::SecuritySet only, one known boolean
+    /// field at a time, merged; a generic op naming the key and an unknown field change nothing
+    #[test]
+    fn security_key_is_written_only_by_its_own_op() {
+        let k = crate::security::KEY;
+        let mut v = serde_json::json!({"theme": "x", k: {"webgl": false}});
+        apply(&mut v, &[Op::SecuritySet("offline".into(), true)]);
+        assert_eq!(v[k], serde_json::json!({"webgl": false, "offline": true}), "merge, other fields kept");
+        assert_eq!(v["theme"], "x");
+        let before = v.clone();
+        apply(&mut v, &[
+            Op::Set(k.into(), serde_json::json!({})),
+            Op::SetIn(k.into(), "offline".into(), serde_json::json!(false)),
+            Op::MergeIn(k.into(), "offline".into(), serde_json::json!({})),
+            Op::InsertIn(k.into(), "lockdown".into(), serde_json::json!(true)),
+            Op::SecuritySet("__proto__".into(), true),
+            Op::SecuritySet("plugins_trusted".into(), true),
+        ]);
+        assert_eq!(v, before, "a generic op or an unknown field changed the security key");
+        let mut w = serde_json::json!({k: 3});
+        apply(&mut w, &[Op::SecuritySet("jit".into(), false)]);
+        assert_eq!(w[k], serde_json::json!({"jit": false}), "a malformed key is replaced by an object");
     }
 }

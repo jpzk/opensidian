@@ -49,6 +49,10 @@ use crate::desk_proc::Spec;
 /// stable window titles: what the harness finds the dialogs by (xdotool --name)
 pub const TRUST_TITLE: &str = "opensidian: trust vault?";
 pub const SPAWN_TITLE: &str = "opensidian: run program?";
+/// #144: the confirm before a Settings › Security change that lowers a protection
+pub const SECURITY_TITLE: &str = "opensidian: lower protection?";
+/// #144 toggle 3: the confirm before a link opens in the browser while offline
+pub const OFFLINE_OPEN_TITLE: &str = "opensidian: open in browser while offline?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -56,6 +60,10 @@ pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 pub enum Kind {
     Trust,
     Spawn,
+    /// #144: security_set lowering a protection (security::weakens)
+    Security,
+    /// #144 toggle 3: open_external while offline mode is on
+    OfflineOpen,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -307,6 +315,8 @@ pub struct Question {
 const TRUST_HEAD: &str = "Turn on community plugins for this vault?";
 const SPAWN_HEAD: &str = "A plugin wants to run a program. Read all of it (scroll) before you answer.";
 const OPEN_HEAD: &str = "Open this with the default application? It may run it. Read all of it (scroll) before you answer.";
+const SECURITY_HEAD: &str = "Lower a protection in Settings › Security?";
+const OFFLINE_OPEN_HEAD: &str = "Offline mode is on. Open this link in your browser?";
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
@@ -335,6 +345,19 @@ pub fn spawn_question_always(sp: &Spec, plugin: &str, version: &str, remember: R
         remember: Some(remember),
         always: false,
     }
+}
+
+/// #144: the confirm for a security_set that lowers a protection (security::weakens). The body
+/// is security::weaken_text: the field is one security::validate accepted, never page text.
+pub fn security_question(field: &str, on: bool) -> Question {
+    let text = crate::security::weaken_text(field, on);
+    Question { head: SECURITY_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
+/// #144 toggle 3: `url` passed main.rs check_external; the body Debug-quotes it
+pub fn offline_open_question(url: &str) -> Question {
+    let text = crate::security::offline_open_text(url);
+    Question { head: OFFLINE_OPEN_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
@@ -445,6 +468,8 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
     let what = match kind {
         Kind::Trust => "trust",
         Kind::Spawn => "spawn",
+        Kind::Security => "security",
+        Kind::OfflineOpen => "offline-open",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -470,6 +495,8 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     let (title, no, yes) = match kind {
         Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
+        Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
+        Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
@@ -535,8 +562,40 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     d.present();
 }
 
+/// macOS: the same question as an NSAlert sheet on the window (macos::consent_alert): head as the
+/// message, the body in a read-only scrolling text view, the any-arguments note only where Always
+/// is offered. The refusing button comes FIRST, so Return answers it, as Enter does on Linux.
+#[cfg(target_os = "macos")]
+fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
+    let (_title, no, yes) = match kind {
+        Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
+        Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
+        Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
+        Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+    };
+    // GTK mnemonics ("_Trust") have no meaning in AppKit
+    let plain = |s: &str| s.replace('_', "");
+    let mut buttons = vec![plain(no), plain(yes)];
+    if q.always {
+        buttons.push(plain(ALWAYS_LABEL));
+    }
+    eprintln!("[consent] dialog text: {:?}", q.log);
+    let tx = std::cell::RefCell::new(Some(tx));
+    let refs: Vec<&str> = buttons.iter().map(String::as_str).collect();
+    let nsw = win.ns_window().unwrap_or(std::ptr::null_mut());
+    crate::macos::consent_alert(nsw, &q.head, &q.text, q.always.then_some(ALWAYS_NOTE), &refs, move |i| {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.send(match i {
+                1 => Answer::Once,
+                2 => Answer::Always,
+                _ => Answer::No,
+            });
+        }
+    });
+}
+
 /// no native prompt on this platform = NO (nothing is trusted or started)
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     let _ = tx.send(Answer::No);
 }

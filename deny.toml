@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# cargo-deny policy for src-tauri/Cargo.lock (CI: .github/workflows/supply-chain.yml).
+# Run locally:  cargo deny --manifest-path src-tauri/Cargo.toml --config deny.toml --locked check
+# See docs/supply-chain.md.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# vulnerabilities are always denied in v2; also deny unmaintained / unsound crates and yanked versions
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# Every ignore carries a reason and an EXPIRY. Source of truth: supply-chain/vex.cdx.json; this list and
+# src-tauri/.cargo/audit.toml must hold the same ids (scripts/supply-chain/vex-check.sh fails CI otherwise).
+ignore = [
+  # pulldown-cmark 0.13.4: both advisories need Options::ENABLE_WIKILINKS, which opensidian removes at
+  # every parser site (src-tauri/src/main.rs:2925, :3198). Fixed in 0.13.5/0.13.6, both < 6 weeks old
+  # on 2026-11-15 (dependency age policy). EXPIRES 2027-01-15: bump the lockfile.
+  { id = "RUSTSEC-2026-0433", reason = "ENABLE_WIKILINKS is disabled (main.rs:2925, :3198); bump to >=0.13.6 by 2027-01-15" },
+  { id = "RUSTSEC-2026-0414", reason = "ENABLE_WIKILINKS is disabled (main.rs:2925, :3198); bump to >=0.13.5 by 2027-01-15" },
+  # tokio 1.53.1 AsyncFd::new I/O-safety unsoundness; opensidian never calls AsyncFd. EXPIRES 2027-01-15.
+  { id = "RUSTSEC-2026-0386", reason = "AsyncFd unused by opensidian; bump tokio by 2027-01-15" },
+  # unmaintained, pulled in transitively by the tauri/gtk3 stack; no maintained drop-in upstream. EXPIRES 2027-05-15.
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error: transitive via gtk3-rs macros; revisit 2027-05-15" },
+  { id = "RUSTSEC-2025-0075", reason = "unic-char-range: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2025-0080", reason = "unic-common: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2025-0081", reason = "unic-char-property: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: transitive via urlpattern (tauri); revisit 2027-05-15" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained: transitive via serde_with (tauri-utils); revisit 2027-05-15" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Cargo.lock has no git sources today; any git dependency must be added here explicitly, by URL.
+allow-git = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# path dependencies (the vendored glib [patch], the app crate) are not wildcards
+allow-wildcard-paths = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+# minimal allow-list derived from `cargo deny list --layout license` on 2026-11-15
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+# the app crate itself is GPL-3.0-or-later; allow that for opensidian only, not for dependencies
+exceptions = [
+  { crate = "opensidian", allow = ["GPL-3.0-or-later"] },
+]
+# the vendored glib [patch] (path crate) is checked like any other crate; only unpublished crates are skipped
+[licenses.private]
+ignore = true

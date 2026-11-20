@@ -582,20 +582,24 @@
   /* the free variable `process` an owner's bundle reads (Electron-renderer code: module-scope
      process.umask(), semver checks on process.version, process.platform, process.env.NODE_DEBUG).
      plugins.rs wrap_cjs_ctx binds it as the owners' 4th factory parameter and loader.js fills
-     it from view.process. I/O-free: constants and no-ops only. No exit/kill/stdout/stdin/
+     it from view.process. I/O-free: constants and no-ops only. No exit/kill/stdin/
      binding/getuid/chdir, no electron version, an empty env. chdir is absent, not a throwing
      member: graceful-fs (zotero, slides) wraps a present chdir and setPrototypeOf(wrapper, chdir)s it;
      on this frozen shim the wrap assignment is dropped, so that became setPrototypeOf(chdir, chdir)
      ("Cyclic __proto__ value") and failed the load. execa / which check chdir !== undefined first. */
+  /* stdout / stderr as stock 1.13.7 shows them to a plugin (black box, devtools values only):
+     not a terminal stream, so NO isTTY / columns / rows property at all ("isTTY" in stdout is
+     false) and no tty.WriteStream methods; fd 1 / 2, writable, write() returns true and calls
+     its callback once. tests/procstdio.rs runs this shim in JavaScriptCore against those values. */
   function stdioShim(fd) {
     const s = Object.create(null);
     const noop = () => s;
-    return Object.freeze(Object.assign(s, { fd, isTTY: false, columns: 80, rows: 24, writable: true,
+    return Object.freeze(Object.assign(s, { fd, writable: true,
       write: (c, e, cb) => { const f = typeof e === "function" ? e : cb; if (typeof f === "function") queueMicrotask(() => f()); return true; },
       end: noop, on: noop, once: noop, off: noop, addListener: noop, removeListener: noop, emit: () => false }));
   }
-  function processShim() {
-    const self = Object.create(null);
+  function processShim(proto = null) {
+    const self = Object.create(proto);
     const noop = () => self;
     return Object.freeze(Object.assign(self, {
       platform: "linux", arch: "x64", browser: false, pid: 0,
@@ -607,8 +611,8 @@
       umask: () => 0o022,
       nextTick: (fn, ...a) => { queueMicrotask(() => fn(...a)); },
       emitWarning: () => {},   // deprecation warnings: dropped (no stderr)
-      // stdout/stderr: no terminal (isTTY false, as in a GUI renderer); writes are dropped, like
-      // emitWarning: the page has no stdio. realclaudian's SDK reads process.stdout.isTTY on send.
+      // stdout/stderr: no terminal (no isTTY, as stock); writes are dropped, like emitWarning:
+      // the page has no stdio. realclaudian's SDK reads process.stdout.isTTY on send.
       stdout: stdioShim(1), stderr: stdioShim(2),
       on: noop, once: noop, off: noop, addListener: noop, removeListener: noop, removeAllListeners: noop, emit: () => false,
     }));
@@ -915,7 +919,7 @@
       if (cb) this.once("listening", cb);
       const fail = e => { const x = netErr(e, { syscall: "listen", address: host, port }); if (this.listenerCount("error")) this.emit("error", x); else console.error("[desktop] server listen " + (host || "") + ":" + port + ": " + x.message); };
       if (this._tls) { later(() => fail(new Error("ENOTSUP: TLS servers are not available in opensidian (https.createServer)"))); return this; }
-      (desk ? desk("desk_net_listen", { host: host == null ? null : String(host), port }) : Promise.reject(new Error("EPERM: no desktop backend")))
+      (desk ? desk("desk_net_listen", { host: host == null ? null : String(host), port, plugin: this._plugin == null ? null : String(this._plugin) }) : Promise.reject(new Error("EPERM: no desktop backend")))
         .then(r => { this._id = r.id; this._addr = { address: r.address, family: "IPv4", port: r.port }; this.listening = true; this.emit("listening"); this._loop(); }, fail);
       return this;
     }
@@ -1173,7 +1177,7 @@
     if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
     return new TextEncoder().encode(String(b));
   };
-  function httpSend(p) {
+  function httpSend(p, plugin) {
     const o = typeof p === "string" ? { url: p } : (p && typeof p === "object" ? p : {});
     const headers = [];
     if (o.headers && typeof o.headers === "object") for (const k of Object.keys(o.headers)) if (o.headers[k] != null) headers.push([String(k), String(o.headers[k])]);
@@ -1182,7 +1186,7 @@
     const req = { url: String(o.url || ""), method: String(o.method || "GET").toUpperCase(), headers };
     if (bytes) req.body = latin1Str(bytes, 0);
     if (!desk) return Promise.reject(new Error("request: no desktop bridge"));
-    return desk("desk_http_request", { req }).then(r => {
+    return desk("desk_http_request", { req, plugin: plugin == null ? null : String(plugin) }).then(r => {
       const body = latin1Bytes(r.body || "");
       const hs = {};
       for (const [k, v] of r.headers || []) hs[k] = Object.prototype.hasOwnProperty.call(hs, k) ? hs[k] + ", " + v : v;
@@ -1190,9 +1194,9 @@
     }, e => { throw new Error("net::" + String(e && e.message || e)); });
   }
   const httpFail = r => Object.assign(new Error("Request failed, status " + r.status), { status: r.status, headers: r.headers });
-  function requestUrl(p) {
+  function requestUrl(p, plugin) {
     const thr = !(p && typeof p === "object" && p.throw === false);
-    const pr = httpSend(p).then(r => {
+    const pr = httpSend(p, plugin).then(r => {
       if (thr && r.status >= 400) throw httpFail(r);
       let text = null, json;
       const buf = r.body.buffer.slice(r.body.byteOffset, r.body.byteOffset + r.body.byteLength);
@@ -1211,19 +1215,24 @@
     }
     return pr;
   }
-  const request = p => httpSend(p).then(r => { if (r.status >= 400) throw httpFail(r); return new TextDecoder("utf-8").decode(r.body); });
-  // the plugin's "obsidian": the shared API with stock's request / requestUrl laid over
-  const apis = new WeakMap();
-  function obsidianApi(base) {
+  const request = (p, plugin) => httpSend(p, plugin).then(r => { if (r.status >= 400) throw httpFail(r); return new TextDecoder("utf-8").decode(r.body); });
+  // the plugin's "obsidian": the shared API with stock's request / requestUrl laid over.
+  // #144 toggle 2: one object per (base, plugin id) — its request / requestUrl carry the id as the
+  // refusal's LABEL (a claim, never an authority: desk_http_request refuses on the toggle alone)
+  const apis = new Map();   // plugin id -> WeakMap(base -> api)
+  function obsidianApi(base, plugin) {
     if (!base || typeof base !== "object" || !desk) return base;
-    let a = apis.get(base);
+    const id = plugin == null ? "" : String(plugin);
+    if (!apis.has(id)) apis.set(id, new WeakMap());
+    const per = apis.get(id);
+    let a = per.get(base);
     if (!a) {
       const d = Object.getOwnPropertyDescriptors(base);
-      d.request = { value: request, enumerable: true, writable: false, configurable: false };
-      d.requestUrl = { value: requestUrl, enumerable: true, writable: false, configurable: false };
+      d.request = { value: p => request(p, id || null), enumerable: true, writable: false, configurable: false };
+      d.requestUrl = { value: p => requestUrl(p, id || null), enumerable: true, writable: false, configurable: false };
       a = Object.defineProperties(Object.create(Object.getPrototypeOf(base)), d);
       if (Object.isFrozen(base)) Object.freeze(a);
-      apis.set(base, a);
+      per.set(base, a);
     }
     return a;
   }
@@ -2027,10 +2036,34 @@
   };
 
   const PLUGIN_DIR = id => "/vault/.obsidian/plugins/" + id;
+  /* #144 toggle 2: a view's net / http / https module whose createServer labels the server with the
+     plugin id, so a listener refused while "Allow network for community plugins" is off names it.
+     A label only (desk_net_listen refuses on the toggle alone); new net.Server() stays unlabelled. */
+  function labelled(m, id) {
+    return Object.assign({}, m, { createServer: (o, f) => { const s = m.createServer(o, f); s._plugin = id; return s; } });
+  }
+  /* the page-global `process` (copilot-tty). In stock a plugin's process IS window.process, so
+     bundled code that reaches the global object (globalThis.process / window.process) finds the
+     same Node process the factory variable is. Ours had none: copilot reads the global process
+     (box t1 with a read-logging getter) and failed to start with "undefined is not an object
+     (evaluating 'process.stdout.isTTY')"; with this global it starts. Installed when the first plugin view is made
+     (plugins only run in a trusted vault), so a vault without plugins keeps a page with no
+     process. One shared shim, the same constants and no-ops as a plugin's own; its prototype is
+     Object.prototype so String(process) is "[object Object]", never a throw, and page code that
+     sniffs for Node (pdf.js checks process+"" === "[object process]") still sees a browser.
+     Writable and configurable like a plain global, so a plugin's own polyfill assignment works. */
+  let pageProcess = false;
+  function installPageProcess() {
+    if (pageProcess) return;
+    pageProcess = true;
+    if (Object.prototype.hasOwnProperty.call(window, "process")) return;
+    Object.defineProperty(window, "process", { value: processShim(Object.prototype), writable: true, configurable: true, enumerable: false });
+  }
   const views = new Map();   // id -> view (one per plugin id for the page's life)
   function view(id) {
     id = String(id);
     if (views.has(id)) return views.get(id);
+    installPageProcess();
     const made = new Map();   // one module object per builtin name (require twice -> same object)
     let boundReq = null;      // the loader's require for this plugin, for module.createRequire
     const ownRequire = function require(n) {
@@ -2057,9 +2090,9 @@
       ["crypto", (deny, n) => mod(n, deny, cryptoAll)],
       ["tty", (deny, n) => mod(n, deny, { isatty: () => false })],
       ["child_process", (deny, n) => mod(n, deny, cpFor(id))],
-      ["net", (deny, n) => mod(n, deny, netOwn)],
-      ["http", (deny, n) => mod(n, deny, httpOwn)],
-      ["https", (deny, n) => mod(n, deny, httpsOwn)],
+      ["net", (deny, n) => mod(n, deny, labelled(netOwn, id))],
+      ["http", (deny, n) => mod(n, deny, labelled(httpOwn, id))],
+      ["https", (deny, n) => mod(n, deny, labelled(httpsOwn, id))],
       ["electron", (deny, n) => mod(n, deny, electronOwn)],
       ["stream", (deny, n) => mod(n, deny, streamOwn)],
       ["stream/promises", () => streamPromises],
@@ -2096,7 +2129,7 @@
       // a builtin this view answers; deny is the loader's message for the stub members
       resolve(name, deny) { const b = bare(name), f = mods.get(b); if (!f) return undefined; if (!made.has(b)) made.set(b, f(String(deny), b)); return made.get(b); },
       bindRequire(r) { if (typeof r === "function" && !boundReq) boundReq = r; },
-      api: obsidianApi,
+      api: base => obsidianApi(base, id),
       process: proc,
       global: ownGlobal(proc),
       Buffer,

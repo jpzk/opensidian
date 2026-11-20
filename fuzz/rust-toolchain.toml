@@ -1,7 +1,0 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
-# cargo-fuzz needs nightly (-Zsanitizer). Dated, never floating: dist
-# 2026-09-01 = rustc 1.100.0-nightly (0dfb098f3 2026-08-31), before the
-# 2026-09-13 cutoff. See harness docs/fuzz/PINS.md.
-[toolchain]
-channel = "nightly-2026-09-01"
-profile = "minimal"

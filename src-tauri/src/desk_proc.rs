@@ -308,6 +308,45 @@ pub fn prepare(mut sp: Spec, inherited: Option<OsString>) -> Spec {
 pub struct Pinned {
     fd: std::os::fd::OwnedFd,
     ident: Ident,
+    /// macOS: the canonical path that was pinned. There is no exec-by-fd (no fexecve, and
+    /// execve of /dev/fd/N is EACCES), so the child re-checks this path against `ident` and
+    /// execs it by name (build)
+    #[cfg(target_os = "macos")]
+    path: std::ffi::CString,
+}
+
+/// macOS: the kernel's own name for an open fd (F_GETPATH) — the stand-in for Linux's
+/// readlink(/proc/self/fd/N) in pin / pin_dir / ident_of
+#[cfg(target_os = "macos")]
+fn fd_path(fd: std::os::fd::RawFd) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = [0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes a NUL-terminated path of at most MAXPATHLEN bytes into buf
+    if unsafe { libc::fcntl(fd, libc::F_GETPATH, buf.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    Ok(std::path::PathBuf::from(OsStr::from_bytes(&buf[..n])))
+}
+
+/// macOS: lstat of a path as an Ident (async-signal-safe: lstat, no allocation) — the child's
+/// last look at the program's NAME before execve (build)
+#[cfg(target_os = "macos")]
+fn path_ident(p: *const libc::c_char) -> Option<Ident> {
+    let mut st = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: lstat writes a struct stat into st; read only on success
+    if unsafe { libc::lstat(p, st.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let st = unsafe { st.assume_init() };
+    Some(Ident {
+        dev: st.st_dev as u64,
+        ino: st.st_ino as u64,
+        mode: st.st_mode as u32,
+        size: st.st_size as u64,
+        mtime: (st.st_mtime as i64, st.st_mtime_nsec as i64),
+        ctime: (st.st_ctime as i64, st.st_ctime_nsec as i64),
+    })
 }
 
 /// Y1: fstat of an open fd as an Ident. Async-signal-safe (fstat, no allocation): pre_exec uses it
@@ -331,6 +370,36 @@ fn fd_ident(fd: std::os::fd::RawFd) -> Option<Ident> {
 /// Y1: hold `file` (an absolute canonical path, as consent::resolve found it) open from now
 /// until the exec. Refused: not openable, not a regular file with an x bit, or the open file
 /// is not at exactly `file` (a directory on the way was swapped after canonicalize).
+/// macOS Y1: no O_PATH, so the program is held open O_RDONLY|O_NOFOLLOW (a program you may run
+/// but not read is refused — rare, and refusing is the safe side); the kernel's name for it comes
+/// from F_GETPATH instead of /proc. Same refusals, same messages.
+#[cfg(target_os = "macos")]
+pub fn pin(file: &str) -> Result<Pinned, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(file).map_err(|_| format!("EINVAL: spawn {file}: NUL in the path"))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()))?;
+    if ident.mode & (libc::S_IFMT as u32) != (libc::S_IFREG as u32) || ident.mode & 0o111 == 0 {
+        return Err(format!("EACCES: spawn {file}: not a regular executable file"));
+    }
+    let at = fd_path(fd.as_raw_fd()).map_err(|e| format!("ENOENT: spawn {file}: {e}"))?;
+    if at.as_os_str() != OsStr::new(file) {
+        return Err(format!("EAGAIN: spawn {file}: the file opened is {} (moved while it was opened); nothing asked", at.display()));
+    }
+    Ok(Pinned { fd, ident, path: c })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+pub fn pin(_file: &str) -> Result<Pinned, String> {
+    Err("ENOSYS: running external programs is not supported on this OS".into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn pin(file: &str) -> Result<Pinned, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let c = std::ffi::CString::new(file).map_err(|_| format!("EINVAL: spawn {file}: NUL in the path"))?;
@@ -341,7 +410,7 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn {file}: {}", std::io::Error::last_os_error()))?;
-    if ident.mode & libc::S_IFMT != libc::S_IFREG || ident.mode & 0o111 == 0 {
+    if ident.mode & (libc::S_IFMT as u32) != (libc::S_IFREG as u32) || ident.mode & 0o111 == 0 {
         return Err(format!("EACCES: spawn {file}: not a regular executable file"));
     }
     let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn {file}: {e}"))?;
@@ -368,6 +437,34 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
      program does not inherit it. */
 /// AA2: hold the canonical cwd `dir` open from now until the exec. Refused: not openable,
 /// not a directory, or the open object is not at exactly `dir`
+/// macOS AA2: the cwd held O_RDONLY|O_DIRECTORY|O_NOFOLLOW, its name checked with F_GETPATH
+#[cfg(target_os = "macos")]
+pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: spawn: cwd {}: NUL in the path", dir.display()))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()))?;
+    if ident.mode & (libc::S_IFMT as u32) != (libc::S_IFDIR as u32) {
+        return Err(format!("ENOTDIR: spawn: cwd {} is not a directory", dir.display()));
+    }
+    let at = fd_path(fd.as_raw_fd()).map_err(|e| format!("ENOENT: spawn: cwd {}: {e}", dir.display()))?;
+    if at.as_os_str() != dir.as_os_str() {
+        return Err(format!("EAGAIN: spawn: cwd {}: the directory opened is {} (moved while it was opened); nothing asked", dir.display(), at.display()));
+    }
+    Ok(Pinned { fd, ident, path: c })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+pub fn pin_dir(_dir: &Path) -> Result<Pinned, String> {
+    Err("ENOSYS: running external programs is not supported on this OS".into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: spawn: cwd {}: NUL in the path", dir.display()))?;
@@ -378,7 +475,7 @@ pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let ident = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: spawn: cwd {}: {}", dir.display(), std::io::Error::last_os_error()))?;
-    if ident.mode & libc::S_IFMT != libc::S_IFDIR {
+    if ident.mode & (libc::S_IFMT as u32) != (libc::S_IFDIR as u32) {
         return Err(format!("ENOTDIR: spawn: cwd {} is not a directory", dir.display()));
     }
     let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: spawn: cwd {}: {e}", dir.display()))?;
@@ -409,8 +506,18 @@ impl Pinned {
 
     /// #74: the pinned file opened for reading through /proc/self/fd/N — the very inode that
     /// was pinned (and that the exec runs), never the pathname again
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn open_read(&self) -> std::io::Result<std::fs::File> {
         std::fs::File::open(format!("/proc/self/fd/{}", self.raw()))
+    }
+
+    /// macOS: the pinned fd is O_RDONLY (no O_PATH), so a dup of it reads that very inode
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    pub fn open_read(&self) -> std::io::Result<std::fs::File> {
+        use std::io::Seek;
+        let mut f = std::fs::File::from(self.fd.try_clone()?);
+        f.rewind()?;
+        Ok(f)
     }
 }
 
@@ -560,7 +667,12 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     let want = prog.ident.clone();
     let d = dir.raw();
     let dwant = dir.ident.clone();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let mut c = Command::new(format!("/proc/self/fd/{n}"));
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let mut c = Command::new(OsStr::from_bytes(prog.path.as_bytes()));
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let ppath = prog.path.clone();
     c.arg0(sp.argv0.as_deref().unwrap_or(&sp.file));
     c.args(&sp.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     for (k, v) in &sp.env {
@@ -572,19 +684,35 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
         c.pre_exec(move || {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
             if libc::getppid() == 1 {
                 return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
             }
             // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
             // pipe, which a plain close_range would cut (spawn would "succeed")
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
+            // macOS: no close_range; the same CLOEXEC sweep, one fcntl per descriptor
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            for fd in 3..libc::getdtablesize() {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
             // Y1: the program's fd survives the exec (a #! interpreter opens /proc/self/fd/N),
             // and the open file is still the one pinned before the question — else EPERM, no exec
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
             if fd_ident(n).as_ref() != Some(&want) {
+                return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+            }
+            // macOS Y1: execve takes a NAME, so the name must still be the pinned file: lstat of the
+            // canonical path == the identity pinned before the question (a replaced, renamed or
+            // symlinked-in file is EPERM, no exec). WEAKER than Linux's exec-by-fd: a swap in the
+            // instant between this lstat and execve is not caught (macOS has no fexecve).
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            if path_ident(ppath.as_ptr()).as_ref() != Some(&want) {
                 return Err(std::io::Error::from_raw_os_error(libc::EPERM));
             }
             // AA2: the held cwd is still the directory pinned before the question (ESTALE ->
@@ -951,6 +1079,36 @@ pub struct Ident {
    when the opened object is not at exactly p (/proc/self/fd/N: a directory on the way was
    swapped for a link after canonicalize — as Y1's pin does). The recheck runs this same
    function, so a symlink at the allowed path is refused there too. */
+/// macOS: O_SYMLINK opens a symlink ITSELF (its fstat is S_IFLNK, refused) — the twin of
+/// O_PATH|O_NOFOLLOW; O_NONBLOCK keeps a FIFO from hanging the open; F_GETPATH names the object
+#[cfg(target_os = "macos")]
+fn ident_of(p: &Path) -> Result<Ident, String> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: {}: NUL in the path", p.display()))?;
+    // SAFETY: c is a valid C string; the fd is owned from here on
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()));
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let id = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()))?;
+    if id.mode & (libc::S_IFMT as u32) == (libc::S_IFLNK as u32) {
+        return Err(format!("ELOOP: {} is a symlink (swapped in after it was resolved); not opened", p.display()));
+    }
+    let at = fd_path(fd.as_raw_fd()).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
+    if at.as_os_str() != p.as_os_str() {
+        return Err(format!("EAGAIN: {}: the object opened is {} (a directory on the way was swapped); not opened", p.display(), at.display()));
+    }
+    Ok(id)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+fn ident_of(_p: &Path) -> Result<Ident, String> {
+    Err("ENOSYS: running external programs is not supported on this OS".into())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn ident_of(p: &Path) -> Result<Ident, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
@@ -962,7 +1120,7 @@ fn ident_of(p: &Path) -> Result<Ident, String> {
     }
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let id = fd_ident(fd.as_raw_fd()).ok_or_else(|| format!("ENOENT: {}: {}", p.display(), std::io::Error::last_os_error()))?;
-    if id.mode & libc::S_IFMT == libc::S_IFLNK {
+    if id.mode & (libc::S_IFMT as u32) == (libc::S_IFLNK as u32) {
         return Err(format!("ELOOP: {} is a symlink (swapped in after it was resolved); not opened", p.display()));
     }
     let at = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(|e| format!("ENOENT: {}: {e}", p.display()))?;
@@ -1021,7 +1179,7 @@ impl Local {
 impl Ident {
     /// R1: a directory is compared on (dev, ino, mode) only; anything else on all of it
     fn same_as(&self, was: &Ident) -> bool {
-        if was.mode & libc::S_IFMT == libc::S_IFDIR {
+        if was.mode & (libc::S_IFMT as u32) == (libc::S_IFDIR as u32) {
             return (self.dev, self.ino, self.mode) == (was.dev, was.ino, was.mode);
         }
         self == was
@@ -1109,6 +1267,11 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    S1-S3 (PR #42 round 3): the same child_path as a spawn — bytes, /proc and /dev/fd and
    the vault (`root`) dropped, SAFE_PATH (each entry checked, W1) when nothing is left — and PATH is always set. */
 pub const OPENER_CWD: &str = "/";
+/// the OS opener the shell ops hand a target to: xdg-open, or macOS's /usr/bin/open (Launch Services)
+#[cfg(target_os = "macos")]
+pub const OPENER: &str = "open";
+#[cfg(not(target_os = "macos"))]
+pub const OPENER: &str = "xdg-open";
 
 /* AA1 (PR #42 round 10, CodeAnt): consent::resolve pinned the opener (xdg-open) before the
    question, as it pins every program (Y1) — and then desk_shell dropped that pin and exec'd
@@ -1133,8 +1296,15 @@ pub struct Launch<'a> {
 
 impl Launch<'_> {
     /// AA1: what the caller's opener Command is made from: the held opener's fd, never its name
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn program(&self) -> String {
         format!("/proc/self/fd/{}", self.prog.raw())
+    }
+
+    /// macOS: no exec-by-fd (see build): the pinned canonical path, re-checked in apply's pre_exec
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    pub fn program(&self) -> String {
+        String::from_utf8_lossy(self.prog.path.as_bytes()).into_owned()
     }
 
     /// the target, the cwd and the cleaned PATH, onto the caller's opener Command (made from
@@ -1143,14 +1313,22 @@ impl Launch<'_> {
     pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
         let n = self.prog.raw();
         let want = self.prog.ident.clone();
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let ppath = self.prog.path.clone();
         c.arg0(self.argv0).arg(self.arg).current_dir(self.cwd).env("PATH", &self.path);
-        // SAFETY: async-signal-safe syscalls only (fcntl, fstat), between fork and exec
+        // SAFETY: async-signal-safe syscalls only (fcntl, fstat, lstat), between fork and exec
         unsafe {
             c.pre_exec(move || {
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 if fd_ident(n).as_ref() != Some(&want) {
+                    return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+                }
+                // macOS: the NAME execve will take is still the pinned file (as build; same caveat)
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                if path_ident(ppath.as_ptr()).as_ref() != Some(&want) {
                     return Err(std::io::Error::from_raw_os_error(libc::EPERM));
                 }
                 Ok(())
@@ -1164,13 +1342,13 @@ pub fn opener_err(file: &str, e: &std::io::Error) -> String {
     if e.raw_os_error() == Some(libc::EPERM) {
         return format!("EPERM: open: the opener {file} changed after it was allowed; not run");
     }
-    format!("ENOENT: xdg-open: {e}")
+    format!("ENOENT: {OPENER}: {e}")
 }
 
 /// R4/Q4/Y2: the run an open is (asked: resolved, shown and run; a URL: run unasked) — xdg-open
 /// with the one target, in OPENER_CWD. Nothing resolved or pinned yet
 pub fn opener_spec(root: &Path, target: &str) -> Spec {
-    Spec { file: "xdg-open".into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+    Spec { file: OPENER.into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
 }
 
 /* BB1 (PR #42 round 11, CodeAnt): t.recheck() is a PATH walk of a vault path (open O_PATH,
@@ -1476,6 +1654,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))] // reads /proc/self/cmdline
     fn desk_argv0_is_the_asked_name_while_the_absolute_path_is_execd() {
         let mut sp = spec("/bin/cat", &["/proc/self/cmdline"], &std::env::temp_dir());
         sp.argv0 = Some("cat-as-asked".into());
@@ -2085,6 +2264,7 @@ mod tests {
        PATH is always set on the child. prepare takes the inherited value as a parameter, so
        this needs no process-wide env change. */
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))] // APFS refuses non-UTF-8 file names (EILSEQ), the setup cannot exist
     fn desk_s2_a_non_utf8_inherited_path_is_cleaned_not_passed_through_raw() {
         let (base, vault, _) = helper_vault("s2", "s2helper");
         // V1: an entry is kept only if it resolves, so the non-UTF-8 dir exists
@@ -2170,6 +2350,7 @@ mod tests {
        runs. The cwd comes out canonical too (a symlinked cwd is shown resolved), and a cwd
        that is still under /proc after canonicalizing is refused before anything is asked. */
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))] // /proc/self/cwd is Linux
     fn desk_x1_a_program_path_through_proc_self_cwd_runs_the_canonical_app_side_file() {
         use std::os::unix::fs::symlink;
         let base = std::env::temp_dir().join(format!("desk-x1-{}", std::process::id()));
@@ -2219,6 +2400,7 @@ mod tests {
        it never follows the link itself: its PATH does not hold the link, and the vault's
        helper is not reached. A missing entry is dropped. */
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))] // /proc/self/cwd is Linux
     fn desk_v1_a_path_symlink_to_proc_self_cwd_does_not_reach_the_childs_cwd() {
         let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         use std::os::unix::fs::symlink;
@@ -2259,7 +2441,7 @@ mod tests {
     fn desk_y2_an_oversized_url_is_refused_before_xdg_open() {
         use crate::consent::RUN_MAX_BYTES;
         let root = Path::new("/home/u/notes");
-        let fixed = "xdg-open".len() + 1 + 1 + OPENER_CWD.len() + 1; // program, the arg's +1, cwd
+        let fixed = OPENER.len() + 1 + 1 + OPENER_CWD.len() + 1; // program, the arg's +1, cwd
         for pre in ["https://example.org/", "http://example.org/?q=", "mailto:"] {
             let at = format!("{pre}{}", "a".repeat(RUN_MAX_BYTES - fixed - pre.len()));
             assert!(matches!(shell_target(root, "external", &at), Ok(ShellOpen::Url(ref u)) if *u == at), "{pre}: a URL at the cap was not opened");
@@ -2287,7 +2469,7 @@ mod tests {
         let base = base.canonicalize().unwrap();
         let vault = base.join("v");
         std::fs::write(vault.join("Welcome.md"), "# hi\n").unwrap();
-        let (opener, next) = (base.join("bin/xdg-open"), base.join("bin/.next"));
+        let (opener, next) = (base.join("bin").join(OPENER), base.join("bin/.next"));
         let (log, mark) = (base.join("opened.log"), base.join("REPLACEMENT-OPENER-RAN"));
         let replacement = format!("#!/bin/sh\ntouch '{}'\n", mark.display());
         for how in ["none", "rename", "rewrite"] {

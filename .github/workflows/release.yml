@@ -1,17 +1,33 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Release build — the EXISTING artifact set (README v0.9.2 download list), and
-# nothing else, on STANDARD GitHub-hosted runners only (ubuntu-latest):
-#   opensidian-<ver>-x86_64-slim.AppImage      packaging/ci/build-appimage.sh slim
-#   opensidian-<ver>-x86_64-portable.AppImage  packaging/ci/build-appimage.sh portable
-#   opensidian-<ver>-x86_64.flatpak            packaging/flatpak/build.sh
-#   opensidian-<ver>-x86_64.rpm                packaging/ci/rpm-build.sh (fedora:44 GA by digest)
-#   opensidian-<ver>-x86_64.deb                packaging/ci/deb-build.sh (debian:trixie by digest)
-#   SHA256SUMS                                 sha256sum of the five, as scripts/release.sh does
+# Release build — the EXISTING artifact set (README v0.9.2 download list), now for
+# BOTH Linux arches (#97), and nothing else, on STANDARD GitHub-hosted runners only,
+# pinned by label (never a moving *-latest label): x86_64 on ubuntu-26.04 (= the image
+# the -latest label resolved to for v0.9.4), aarch64 natively on ubuntu-26.04-arm (no cross-compile).
+# <arch> = x86_64 | aarch64; every job below is a matrix over it, same steps:
+#   opensidian-<ver>-<arch>-slim.AppImage      packaging/ci/build-appimage.sh slim
+#   opensidian-<ver>-<arch>-portable.AppImage  packaging/ci/build-appimage.sh portable
+#   opensidian-<ver>-<arch>.flatpak            packaging/flatpak/build.sh
+#   opensidian-<ver>-<arch>.rpm                packaging/ci/rpm-build.sh (fedora:44 GA by digest, per arch)
+#   opensidian-<ver>-<arch>.deb                packaging/ci/deb-build.sh (debian:trixie multi-arch index digest)
+#   SHA256SUMS                                 sha256sum of the ten, x86_64 five first (scripts/release.sh order),
+#                                              then the two macOS zips (x86_64, aarch64)
+#   opensidian-<ver>-<arch>.cdx.json (+ .sha256)  the SBOM, generated in the appimage job INSIDE the
+#                                              pinned build container (sbom-local.sh --release), attested
+# macOS, UNSIGNED (not code-signed, not notarized yet), from .github/workflows/macos.yml (workflow_call,
+# job `macos`: native macos-26 arm64 + macos-26-intel runners, cargo build + the full cargo test, then
+# the macOS SBOM + osv CVE scan against the VEX, fail closed). draft-release needs ALL of it green:
+#   opensidian-<ver>-macos-<arch>-unsigned.app.zip   Opensidian.app, <arch> = aarch64 | x86_64
+#   opensidian-<ver>-macos-<arch>.cdx.json (+ .sha256)  the macOS SBOM (Cargo graph for the apple
+#                                              triple + vendored JS + WKWebView as an OS component)
 # The recipe is the one releases are cut with today (harness scripts/release.sh +
-# bin/hz/release-build.sh): ONE cargo build, both AppImages from that binary,
+# bin/hz/release-build.sh): ONE cargo build PER ARCH, both AppImages from that binary,
 # rpm + deb wrap the SAME binary (each stage refuses unless its /usr/bin/opensidian
-# sha256 equals the slim AppImage's). The flatpak compiles inside its own sandbox.
+# sha256 equals the slim AppImage's of the same arch). The flatpak compiles inside its own sandbox.
+#
+# DRY RUN: workflow_dispatch with dry_run (default true) builds, attests and uploads
+# everything as workflow artifacts only; draft-release is skipped. It also never runs
+# for a ref that is not a v* tag or a v<ver>-release branch.
 #
 # Supply chain:
 #   - every third-party action pinned to a full commit SHA (# vX.Y.Z), releases
@@ -20,11 +36,16 @@
 #     id-token/attestations write (actions/attest-build-provenance).
 #   - checkout never persists the token; no secrets anywhere; no PR trigger.
 #   - tag builds do NOT restore the Rust cache (no cache poisoning of releases).
-#   - downloaded tools pinned by sha256 (appimagetool r13, brotli 1.2.1, fedora OCI).
+#   - downloaded tools pinned by sha256 per arch (appimagetool r13, fedora OCI) or arch-neutral (brotli 1.2.1).
 name: Release
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'build + attest + upload workflow artifacts only; never create/update a release'
+        type: boolean
+        default: true
   push:
     tags: ['v*']
     # release branch v<ver>-release: builds and stages the DRAFT for tag v<ver>.
@@ -41,24 +62,38 @@ concurrency:
 env:
   RUST_TOOLCHAIN: '1.98.0'     # = the build box (bin/hz/release-build.sh refuses anything else)
   CARGO_TERM_COLOR: always
-  APPIMAGETOOL_URL: https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool-x86_64.AppImage
-  APPIMAGETOOL_SHA256: df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb
+  # AppImageKit r13 (2020-12-31), one pinned file per arch; sha256 checked before use.
+  APPIMAGETOOL_URL_BASE: https://github.com/AppImage/AppImageKit/releases/download/13/obsolete-appimagetool
+  APPIMAGETOOL_SHA256_x86_64: df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb
+  APPIMAGETOOL_SHA256_aarch64: 334e77beb67fc1e71856c29d5f3f324ca77b0fde7a840fdd14bd3b88c25c341f
 
 jobs:
   appimage:
-    name: binary + AppImages (slim, portable)
-    runs-on: ubuntu-latest
+    name: binary + AppImages (slim, portable) ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64,  runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
     permissions:
       contents: read
       id-token: write
       attestations: write
     outputs:
       version: ${{ steps.ver.outputs.version }}
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: runner arch == matrix arch
+        run: |
+          echo "uname -m: $(uname -m)  matrix: $ARCH  image: ${ImageOS:-?} ${ImageVersion:-?}"; cat /etc/os-release | grep -E '^(PRETTY_NAME|VERSION_ID)='
+          [ "$(uname -m)" = "$ARCH" ] || { echo "runner is $(uname -m), matrix says $ARCH"; exit 1; }
       - id: ver
         name: version from tauri.conf.json
         run: |
@@ -67,124 +102,198 @@ jobs:
             refs/heads/v*-release) [ "v$V-release" = "$GITHUB_REF_NAME" ] || { echo "branch $GITHUB_REF_NAME != version $V"; exit 1; };;
           esac
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
-      - name: system packages (= bin/hz/cloud-init.yaml build set)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
-      - name: rust ${{ env.RUST_TOOLCHAIN }}
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-          rustc --version | grep -q "$RUST_TOOLCHAIN" || exit 1
+          # SBOM root purl pkg:github/jpzk/opensidian@<tag>: the tag itself, or the tag this build is for
+          case "$GITHUB_REF" in refs/tags/v*) TAG=$GITHUB_REF_NAME;; *) TAG=v$V;; esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"; echo "tag $TAG"
+      # The runner is only a HOST from here on (#189): ubuntu-26.04 floats by design, but nothing it
+      # ships is compiled in or bundled. The build environment is packaging/ci/appimage-build.sh's
+      # digest-pinned ubuntu:26.04 image + snapshot.ubuntu.com apt + pkg=version + sha256-checked Rust.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           workspaces: src-tauri
-      - name: cargo build --release --locked
-        working-directory: src-tauri
+          key: ${{ matrix.arch }}-pinned-env
+      - name: appimagetool r13 (sha256-pinned, ${{ matrix.arch }})
         run: |
-          # ui/ is not a cargo input (release.sh): force our crate to re-embed it.
-          cargo clean -p opensidian --release
-          cargo build --release --locked
-          ls -l target/release/opensidian; sha256sum target/release/opensidian
-      - name: appimagetool r13 (sha256-pinned)
-        run: |
-          curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL"
-          echo "$APPIMAGETOOL_SHA256  $RUNNER_TEMP/appimagetool" | sha256sum -c -
+          eval "SHA=\$APPIMAGETOOL_SHA256_$ARCH"
+          [ -n "$SHA" ] || { echo "no appimagetool pin for $ARCH"; exit 1; }
+          curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL_BASE-$ARCH.AppImage"
+          echo "$SHA  $RUNNER_TEMP/appimagetool" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/appimagetool"
-      - name: AppImages
+      # SBOM (G1): generated INSIDE the same pinned build container right after the build, from the
+      # built binary (appimage-build.sh SBOM_TAG -> scripts/supply-chain/sbom-local.sh --release:
+      # rust (cargo metadata licenses + $ARCH resolve scope) + ui/vendor + flatpak + the WebKit
+      # closure read from THAT dpkg database + the binary's own ldd closure). --release fails the
+      # job on a skipped part, a structural error (sbom-validate.sh) or a denied license
+      # (license-policy.sh, G7). Nothing about the SBOM comes from the runner host.
+      - name: binary + AppImages + SBOM in the pinned build env (resolved package set recorded)
         env:
           V: ${{ steps.ver.outputs.version }}
+          SBOM_TAG: ${{ steps.ver.outputs.tag }}
         run: |
-          export APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
-          for F in slim portable; do bash packaging/ci/build-appimage.sh "$F" "$V"; done
+          podman --version
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" bash packaging/ci/appimage-build.sh . "$V"
           mkdir -p out/bin
           cp src-tauri/target/release/opensidian out/bin/opensidian
-          ls -l dist/*.AppImage; sha256sum dist/*.AppImage
+          ls -l dist/*.AppImage; sha256sum dist/*.AppImage dist/pkgset-*.tsv dist/libset-*.tsv
+          ls dist/opensidian-$V-$ARCH-slim.AppImage dist/opensidian-$V-$ARCH-portable.AppImage
+          S=dist/sbom/opensidian-$V-$ARCH.cdx.json
+          (cd dist/sbom && sha256sum -c opensidian-$V-$ARCH.cdx.json.sha256)
+          jq -e --arg tag "$SBOM_TAG" '(.metadata.properties | map({key: .name, value: .value}) | from_entries) as $p
+            | $p["opensidian:sbom-local:skipped"] == "" and $p["opensidian:sbom-local:release"] == "true"
+            and .metadata.component.purl == "pkg:github/jpzk/opensidian@\($tag)"' "$S" >/dev/null
+          {
+            echo "### SBOM $ARCH (in the build container)"
+            echo "components $(jq '.components | length' "$S"), without licenses $(jq '[.components[] | select((.licenses // []) | length == 0)] | length' "$S"), sha256 $(cut -d' ' -f1 "$S.sha256")"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # WebKit bundle CVE gate (BLOCKING; moved here from supply-chain.yml webkit-bundle-cve, which
+      # installed the apt set on the runner HOST): scans the WebKit part generated above in the build
+      # container, i.e. exactly what this AppImage bundles, on BOTH arches. Fails on any CVE with a
+      # fixed Ubuntu version (osv-fixed-gate.sh); draft-release needs this job.
+      - name: osv-scanner (pinned version + per-arch sha256, osv-scanner.pins)
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh --pinned "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: WebKit bundle CVE gate on the in-container SBOM (fail only on CVEs with a fixed Ubuntu version)
+        run: |
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          W=dist/sbom/parts/webkit.cdx.json
+          echo "WebKit part: $(jq '.components | length' "$W") components"
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-webkit.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json -L "$W"
+          scripts/supply-chain/osv-fixed-gate.sh "$RUNNER_TEMP/osv-webkit.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/sbom/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.cdx.json
+            dist/sbom/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.cdx.json.sha256
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}   # also when a gate failed: the logs say why
+        with:
+          name: sbom-logs-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/sbom/logs/
+            dist/sbom/parts/
+          retention-days: 30
+          if-no-files-found: warn
+      # SBOM provenance (same mechanism as every release asset): NOT in a dispatch dry run
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        with:
+          subject-path: dist/sbom/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.cdx.json
+      # resolved package set + portable library set: SBOM input (#188) and the "same tag twice gives
+      # the same library set" check (#189). Not release assets.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage-pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
+            dist/libset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
+            dist/apt-${{ matrix.arch }}.log
+          retention-days: 90
+          if-no-files-found: error
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
-            dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+            dist/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}-slim.AppImage
+            dist/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}-portable.AppImage
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
-          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-slim.AppImage
+          name: opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}-slim.AppImage
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}-slim.AppImage
           retention-days: 7
           if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
-          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64-portable.AppImage
+          name: opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}-portable.AppImage
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}-portable.AppImage
           retention-days: 7
           if-no-files-found: error
-      # internal hand-off to the rpm/deb wrap jobs (same binary, no second compile)
+      # internal hand-off to the rpm/deb wrap jobs of the same arch (same binary, no second compile)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: internal-release-binary
+          name: internal-release-binary-${{ matrix.arch }}
           path: out/bin/opensidian
           retention-days: 1
           if-no-files-found: error
 
   wrap:
-    name: ${{ matrix.kind }} (wraps the AppImage binary)
+    name: ${{ matrix.kind }} ${{ matrix.arch }} (wraps the AppImage binary)
     needs: appimage
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         kind: [rpm, deb]
+        arch: [x86_64, aarch64]
+        include:
+          - { arch: x86_64,  runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
     permissions:
       contents: read
       id-token: write
       attestations: write
     env:
       V: ${{ needs.appimage.outputs.version }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: internal-release-binary
+          name: internal-release-binary-${{ matrix.arch }}
           path: src-tauri/target/release
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: opensidian-${{ env.V }}-x86_64-slim.AppImage
+          name: opensidian-${{ env.V }}-${{ matrix.arch }}-slim.AppImage
           path: dist
-      - name: ${{ matrix.kind }}-build.sh
+      - name: ${{ matrix.kind }}-build.sh (same-binary gate, ${{ matrix.arch }})
         run: |
-          chmod +x src-tauri/target/release/opensidian dist/opensidian-$V-x86_64-slim.AppImage
+          [ "$(uname -m)" = "$ARCH" ] || { echo "runner is $(uname -m), matrix says $ARCH"; exit 1; }
+          chmod +x src-tauri/target/release/opensidian dist/opensidian-$V-$ARCH-slim.AppImage
           podman --version
           export RPM_OCI_CACHE="$RUNNER_TEMP/fedora44"
-          bash packaging/ci/${{ matrix.kind }}-build.sh "$PWD" "$V" "dist/opensidian-$V-x86_64-slim.AppImage" dist
-          ls -l dist/opensidian-$V-x86_64.${{ matrix.kind }}; sha256sum dist/opensidian-$V-x86_64.${{ matrix.kind }}
+          bash packaging/ci/${{ matrix.kind }}-build.sh "$PWD" "$V" "dist/opensidian-$V-$ARCH-slim.AppImage" dist
+          ls -l dist/opensidian-$V-$ARCH.${{ matrix.kind }}; sha256sum dist/opensidian-$V-$ARCH.${{ matrix.kind }}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+          subject-path: dist/opensidian-${{ env.V }}-${{ matrix.arch }}.${{ matrix.kind }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
-          path: dist/opensidian-${{ env.V }}-x86_64.${{ matrix.kind }}
+          name: opensidian-${{ env.V }}-${{ matrix.arch }}.${{ matrix.kind }}
+          path: dist/opensidian-${{ env.V }}-${{ matrix.arch }}.${{ matrix.kind }}
           retention-days: 7
           if-no-files-found: error
 
   flatpak:
-    name: flatpak (packaging/flatpak)
-    runs-on: ubuntu-latest
+    name: flatpak ${{ matrix.arch }} (packaging/flatpak)
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64,  runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
     permissions:
       contents: read
       id-token: write
       attestations: write
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - id: ver
         run: |
+          [ "$(uname -m)" = "$ARCH" ] || { echo "runner is $(uname -m), matrix says $ARCH"; exit 1; }
           V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
           echo "version=$V" >> "$GITHUB_OUTPUT"
           # release gate (bin/hz/flatpak-build.sh): a TAG must carry its own metainfo <release>;
@@ -199,35 +308,44 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
-      - name: flatpak + flatpak-builder (noble versions, = bin/hz/cloud-init.yaml)
+      - name: flatpak build env (packaging/flatpak/runtimes.sh, pinned host tools + runtime commits)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder elfutils  # elfutils = eu-strip (a Recommends, dropped by --no-install-recommends)
-          dpkg-query -W flatpak flatpak-builder elfutils
-          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
+          bash packaging/flatpak/runtimes.sh host
+          bash packaging/flatpak/runtimes.sh remote
+          bash packaging/flatpak/runtimes.sh log
+          bash packaging/flatpak/runtimes.sh install
       - name: packaging/flatpak/build.sh
         shell: bash  # -eo pipefail: the grep filter must not mask a build failure
         env:
           V: ${{ steps.ver.outputs.version }}
+          FLATPAK_ARCH: ${{ matrix.arch }}
         run: |
           sh packaging/flatpak/build.sh 2>&1 | grep -v -E '^(Downloading|Fetching) |^\s*$'
-          cp dist/flatpak/opensidian.flatpak dist/opensidian-$V-x86_64.flatpak
-          ls -l dist/opensidian-$V-x86_64.flatpak; sha256sum dist/opensidian-$V-x86_64.flatpak
+          cp dist/flatpak/opensidian.flatpak dist/opensidian-$V-$ARCH.flatpak
+          ls -l dist/opensidian-$V-$ARCH.flatpak; sha256sum dist/opensidian-$V-$ARCH.flatpak
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+          subject-path: dist/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.flatpak
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
-          path: dist/opensidian-${{ steps.ver.outputs.version }}-x86_64.flatpak
+          name: opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.flatpak
+          path: dist/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.flatpak
           retention-days: 7
           if-no-files-found: error
 
+  # macOS (unsigned): build + full cargo test per arch, then the macOS SBOM + CVE scan (fail
+  # closed). Called, not copied; a failure of ANY of its jobs fails this job, and sums +
+  # draft-release need it, so no release is drafted without green mac builds, tests and scan.
+  macos:
+    name: macOS
+    uses: ./.github/workflows/macos.yml
+    permissions:
+      contents: read
+
   sums:
     name: SHA256SUMS
-    needs: [appimage, wrap, flatpak]
-    runs-on: ubuntu-latest
+    needs: [appimage, wrap, flatpak, macos]
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -241,12 +359,26 @@ jobs:
           pattern: opensidian-*
           path: dist
           merge-multiple: true
-      - name: SHA256SUMS (same file list and order as scripts/release.sh)
+      - name: SHA256SUMS (scripts/release.sh file order, x86_64 then aarch64; then the macOS zips)
         working-directory: dist
         run: |
-          sha256sum opensidian-$V-x86_64-slim.AppImage opensidian-$V-x86_64-portable.AppImage \
-            opensidian-$V-x86_64.flatpak opensidian-$V-x86_64.rpm opensidian-$V-x86_64.deb > SHA256SUMS
+          set -euo pipefail
+          # the macOS zips arrive with the .sha256 macos.yml wrote next to them: check, then drop
+          # it (SHA256SUMS is the one checksum file for every package)
+          for A in x86_64 aarch64; do
+            sha256sum -c "opensidian-$V-macos-$A-unsigned.app.zip.sha256"
+            rm "opensidian-$V-macos-$A-unsigned.app.zip.sha256"
+          done
+          F=()
+          for A in x86_64 aarch64; do
+            F+=(opensidian-$V-$A-slim.AppImage opensidian-$V-$A-portable.AppImage \
+                opensidian-$V-$A.flatpak opensidian-$V-$A.rpm opensidian-$V-$A.deb)
+          done
+          for A in x86_64 aarch64; do F+=(opensidian-$V-macos-$A-unsigned.app.zip); done
+          sha256sum "${F[@]}" > SHA256SUMS
           cat SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 12 ] || { echo "SHA256SUMS must list exactly 12 files"; exit 1; }
+          [ "$(ls -1 | wc -l)" -eq 13 ] || { ls -l; echo "expected exactly 12 artifacts + SHA256SUMS"; exit 1; }
           # TODO(signing, OFFLINE/manual — deliberately NOT in CI): the operator signs
           #   gpg --armor --detach-sign SHA256SUMS   -> SHA256SUMS.asc
           # on their own machine; the private key never touches GitHub. No signing
@@ -254,12 +386,38 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/SHA256SUMS
+      # the macOS files come from the called macos.yml (built in THIS run); attest them here,
+      # like every Linux file, so `gh attestation verify` works for each release asset
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-macos-*
+          path: sbom-macos
+          merge-multiple: true
+      - name: macOS SBOMs match their .sha256
+        working-directory: sbom-macos
+        run: for A in x86_64 aarch64; do sha256sum -c "opensidian-$V-macos-$A.cdx.json.sha256"; done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/opensidian-${{ env.V }}-macos-x86_64-unsigned.app.zip
+            dist/opensidian-${{ env.V }}-macos-aarch64-unsigned.app.zip
+            sbom-macos/opensidian-${{ env.V }}-macos-x86_64.cdx.json
+            sbom-macos/opensidian-${{ env.V }}-macos-aarch64.cdx.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: SHA256SUMS
           path: dist/SHA256SUMS
           retention-days: 7
           if-no-files-found: error
+
+  # CVE scan + dependency policy: the supply-chain workflow, called (not copied). It no
+  # longer builds an SBOM (the SBOM + WebKit CVE gate run in the appimage job above), so it needs no
+  # id-token/attestations. draft-release still needs EVERY remaining supply-chain job green.
+  supply-chain:
+    name: supply-chain
+    uses: ./.github/workflows/supply-chain.yml
+    permissions:
+      contents: read
 
   # DRAFT release only — CI never publishes. The operator signs SHA256SUMS
   # OFFLINE (gpg key never touches GitHub), uploads SHA256SUMS.asc, and only
@@ -268,11 +426,12 @@ jobs:
   # the runner's preinstalled first-party gh CLI with the job's github.token.
   draft-release:
     name: draft-release
-    needs: [appimage, sums]
+    needs: [appimage, sums, supply-chain, macos]
     # tags v* -> draft for that tag; branch v<ver>-release -> draft for tag v<ver>
     # targeting the branch commit (no tag is pushed; it appears on publish).
-    if: ${{ startsWith(github.ref, 'refs/tags/v') || (startsWith(github.ref, 'refs/heads/v') && endsWith(github.ref, '-release')) }}
-    runs-on: ubuntu-latest
+    # A workflow_dispatch dry run (the default) never gets here.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && (startsWith(github.ref, 'refs/tags/v') || (startsWith(github.ref, 'refs/heads/v') && endsWith(github.ref, '-release'))) }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: write
@@ -293,13 +452,32 @@ jobs:
         with:
           name: SHA256SUMS
           path: assets
-      - name: check the 6 assets against SHA256SUMS
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-${{ env.V }}-*
+          path: assets
+          merge-multiple: true
+      # the macOS SBOMs (macos.yml job sbom, scanned there, fail closed) + their .sha256
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-macos-*
+          path: assets
+          merge-multiple: true
+      # the per-arch SBOMs, generated in the appimage job's build container (+ their .sha256)
+      - name: check the 21 assets (12 + SHA256SUMS + 4 SBOMs + their .sha256)
         working-directory: assets
         run: |
+          set -euo pipefail
+          # macos.yml's per-zip .sha256 is covered by SHA256SUMS (checked in sums): not an asset
+          for A in x86_64 aarch64; do rm "opensidian-$V-macos-$A-unsigned.app.zip.sha256"; done
           ls -l
           sha256sum -c SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 5 ] || { echo "SHA256SUMS must list exactly 5 files"; exit 1; }
-          [ "$(ls -1 | wc -l)" -eq 6 ] || { echo "expected exactly 6 assets"; exit 1; }
+          [ "$(wc -l < SHA256SUMS)" -eq 12 ] || { echo "SHA256SUMS must list exactly 12 files"; exit 1; }
+          for A in x86_64 aarch64; do
+            sha256sum -c "opensidian-$V-$A.cdx.json.sha256"
+            sha256sum -c "opensidian-$V-macos-$A.cdx.json.sha256"
+          done
+          [ "$(ls -1 | wc -l)" -eq 21 ] || { echo "expected exactly 21 assets"; exit 1; }
       - name: create or update the DRAFT release (never publish)
         shell: bash
         run: |
@@ -313,9 +491,16 @@ jobs:
               EXTRA=(--target "$GITHUB_SHA") ;;
             *) echo "refusing: $GITHUB_REF is neither a v* tag nor a v<ver>-release branch"; exit 1 ;;
           esac
-          TITLE="opensidian $V"
-          A="assets/opensidian-$V-x86_64"
-          FILES=("$A-slim.AppImage" "$A-portable.AppImage" "$A.flatpak" "$A.rpm" "$A.deb" assets/SHA256SUMS)
+          TITLE="Opensidian $V"
+          FILES=()
+          for A in x86_64 aarch64; do
+            P="assets/opensidian-$V-$A"
+            FILES+=("$P-slim.AppImage" "$P-portable.AppImage" "$P.flatpak" "$P.rpm" "$P.deb")
+          done
+          for A in x86_64 aarch64; do FILES+=("assets/opensidian-$V-macos-$A-unsigned.app.zip"); done
+          FILES+=(assets/SHA256SUMS)
+          for A in x86_64 aarch64; do FILES+=("assets/opensidian-$V-$A.cdx.json" "assets/opensidian-$V-$A.cdx.json.sha256"); done
+          for A in x86_64 aarch64; do FILES+=("assets/opensidian-$V-macos-$A.cdx.json" "assets/opensidian-$V-macos-$A.cdx.json.sha256"); done
           {
             if [ -f ".github/release-notes/v$V.md" ]; then
               cat ".github/release-notes/v$V.md"
@@ -355,10 +540,12 @@ jobs:
             gh release create "$TAG" --draft --latest=false --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
           fi
 
-          # prove the result: exactly one release for TAG, still a draft, exactly 6 assets
+          # prove the result: exactly one release for TAG, still a draft, exactly 21 CI assets (10 Linux
+          # + 2 macOS zips + SHA256SUMS + opensidian-<ver>-<arch>.cdx.json and .sha256 and
+          # opensidian-<ver>-macos-<arch>.cdx.json and .sha256 for both arches).
           gh api --paginate "repos/$GH_REPO/releases" \
             --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) draft=\(.draft) assets=\(.assets | length) \(.html_url)\"" > after.txt
           cat after.txt
           [ "$(wc -l < after.txt)" -eq 1 ] || { echo "::error::expected exactly one release for $TAG"; exit 1; }
-          grep -q ' draft=true assets=6 ' after.txt || { echo "::error::release is not a draft with 6 assets"; exit 1; }
+          grep -q ' draft=true assets=21 ' after.txt || { echo "::error::release is not a draft with 21 CI assets"; exit 1; }
           gh api "repos/$GH_REPO/releases/$(cut -d' ' -f1 after.txt)" --jq '.assets[].name'

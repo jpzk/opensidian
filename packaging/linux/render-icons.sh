@@ -11,19 +11,28 @@
 # PINNED RENDERER: rsvg-convert from librsvg2-tools-2.62.0-1.fc44, installed from the
 # frozen Fedora 44 GA repo (dnf --repo=fedora) inside the Fedora 44 GA base image,
 # pinned by digest (released 2026-04-22):
-#   fedora:44@sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5
-#   from Fedora-Container-Base-Generic-44-1.7.x86_64.oci.tar.xz
-#   (file sha256 75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b)
+#   fedora:44@sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5 (x86_64)
+#   from Fedora-Container-Base-Generic-44-1.7.<arch>.oci.tar.xz (x86_64 or aarch64 = host;
+#   per-arch digest + file sha256 below)
+#   (x86_64 file sha256 75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b)
 # Same svg + same renderer = same bytes; a re-run must leave `git status` clean.
 # Needs podman. The image is loaded from the checksummed OCI archive if absent.
 set -euo pipefail
 R=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 SVG_SHA=a09ac826e7354805cfa8c02d50718a5366bffccd5edd1c86fb6e9005ca779736
 RSVG=librsvg2-tools-2.62.0-1.fc44
-DIGEST=sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5
+# the image of the HOST arch (same per-arch pins as packaging/ci/rpm-build.sh). The
+# committed PNGs were rendered on x86_64; re-run there to check `git status` stays clean.
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)  OCI_SHA=75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b
+           DIGEST=sha256:f1e66cdd6eff2c9ccad192f8865af9be6d69b46b3f13329d2975a2d61a1296c5 ;;
+  aarch64) OCI_SHA=eca19542a48a8e39b84e869713a1fa2408cbcc578de26c25ae72e3334ef968c1
+           DIGEST=sha256:bebe5bd9e882469b64cc950da834288bdebca8921ec4bb50646378d672da0ff5 ;;
+  *) echo "[render-icons] FAIL: unsupported arch $ARCH (x86_64|aarch64)"; exit 1 ;;
+esac
 IMG=localhost/fedora@$DIGEST
-OCI_URL=https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Container/x86_64/images/Fedora-Container-Base-Generic-44-1.7.x86_64.oci.tar.xz
-OCI_SHA=75200f5752a74a21a616ca9a75e25beb594e2e117a0195c54f87c0b3e3974d1b
+OCI_URL=https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Container/$ARCH/images/Fedora-Container-Base-Generic-44-1.7.$ARCH.oci.tar.xz
 say(){ echo "[render-icons] $*"; }
 S=$R/packaging/linux/opensidian.svg
 got=$(sha256sum "$S" | cut -d' ' -f1)

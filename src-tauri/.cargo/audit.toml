@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# cargo-audit config (read from src-tauri/.cargo/audit.toml when run in src-tauri/).
+# Every ignored id has a reason + EXPIRY. Source of truth: supply-chain/vex.cdx.json; must match
+# [advisories].ignore in /deny.toml (scripts/supply-chain/vex-check.sh fails CI otherwise).
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0433", # pulldown-cmark: needs ENABLE_WIKILINKS, removed at main.rs:2925/:3198. EXPIRES 2027-01-15 (bump >=0.13.6)
+  "RUSTSEC-2026-0414", # pulldown-cmark: same, fixed 0.13.5. EXPIRES 2027-01-15
+  "RUSTSEC-2026-0386", # tokio AsyncFd unsound; AsyncFd unused. EXPIRES 2027-01-15
+  "RUSTSEC-2024-0370", # proc-macro-error unmaintained (transitive, gtk3-rs). EXPIRES 2027-05-15
+  "RUSTSEC-2025-0075", # unic-char-range unmaintained (transitive). EXPIRES 2027-05-15
+  "RUSTSEC-2025-0080", # unic-common unmaintained (transitive). EXPIRES 2027-05-15
+  "RUSTSEC-2025-0081", # unic-char-property unmaintained (transitive). EXPIRES 2027-05-15
+  "RUSTSEC-2025-0098", # unic-ucd-version unmaintained (transitive). EXPIRES 2027-05-15
+  "RUSTSEC-2025-0100", # unic-ucd-ident unmaintained (transitive). EXPIRES 2027-05-15
+  "RUSTSEC-2026-0543", # chrono unmaintained (transitive via serde_with). EXPIRES 2027-05-15
+]
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+[yanked]
+enabled = true
+update_index = true

@@ -1,0 +1,6 @@
+# pin-check allowlist (#189). TAB-separated: rule path needle expires scanner reason
+# Empty since 2026-11-19: the scanner exception (operator 2026-11-17, "dont pin scanners") was
+# superseded by the 2026-11-19 15:49Z decision (scanners = newest release, but PINNED by version +
+# sha256): semgrep image digest-pinned, cargo-audit/deny/vet `--locked --version` + .crate sha256
+# (cargo-scanner-verify.sh), osv-scanner pinned only (osv-install.sh). Anything added here needs a
+# reason and an expiry, renewed by review.

@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Weekly pin bump PROPOSAL (operator decisions 2026-11-19: 15:46Z AppImage Ubuntu snapshot = cutting
+# edge, "add a scheduled bump (weekly)"; 15:49Z scanners = cutting edge, the weekly bump also
+# proposes scanner version + digest bumps).
+# scripts/supply-chain/snapshot-bump.sh rewrites the tree to the newest FIXED pins: snapshot.ubuntu.com
+# timestamp + re-resolved appimage-snapshot.lock.tsv (gpgv against the committed keyring), the
+# ubuntu resolute image digest, osv-scanner / cargo-audit / cargo-deny / cargo-vet version + sha256,
+# the semgrep image digest. This workflow turns that diff into a PULL REQUEST and nothing else:
+#   - PR only: pushes ONE new branch bot/pin-bump-<SNAP> and opens a PR against develop. It never
+#     pushes develop or main (the push refspec is that bot branch only, and the step refuses any
+#     other ref), never merges, never enables auto-merge, never touches tags or releases.
+#   - fail closed: set -euo pipefail everywhere; any resolve / signature / sha256 / digest failure
+#     fails the job and opens no PR. No continue-on-error, no `|| true`.
+#   - actions pinned by full commit SHA; no caches; checkout does not persist the token (the push
+#     uses an explicit one-shot http.extraheader, scoped to this job's contents/pull-requests write).
+#   - the PR is created with GITHUB_TOKEN, so it triggers no workflow by itself; a reviewer runs the
+#     release.yml dry run on the branch before merging.
+name: Pin bump (weekly PR)
+
+on:
+  schedule:
+    - cron: '41 5 * * 1'   # Monday 05:41 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pin-bump
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: propose snapshot + scanner bump PR
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: write        # push the bot/pin-bump-* branch (never develop/main, see step guard)
+      pull-requests: write   # open the PR (no merge, no auto-merge)
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: develop
+          persist-credentials: false
+      - name: resolve the newest pins (fail closed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/supply-chain/snapshot-bump.sh . > "$RUNNER_TEMP/pr-body.md"
+          cat "$RUNNER_TEMP/pr-body.md"
+      - name: self-tests on the bumped tree (a red test opens no PR)
+        run: |
+          set -euo pipefail
+          bash scripts/supply-chain/tests/osv-install.test.sh
+          bash scripts/supply-chain/tests/cargo-scanner-verify.test.sh
+          bash scripts/supply-chain/pin-check.sh
+      - name: open the PR (branch bot/pin-bump-<SNAP> only; never develop/main, never merge)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then echo "no pin changed: no PR"; exit 0; fi
+          snap=$(sed -n 's/^SNAP=\([0-9]\{8\}T[0-9]\{6\}Z\).*/\1/p' packaging/ci/appimage-build.sh | head -1)
+          br="bot/pin-bump-$snap"
+          [[ "$br" =~ ^bot/pin-bump-[0-9]{8}T[0-9]{6}Z$ ]] || { echo "::error::refusing branch '$br'"; exit 1; }
+          case "$br" in main|develop|refs/heads/main|refs/heads/develop) echo "::error::refusing to push $br"; exit 1 ;; esac
+          if gh api "repos/$REPO/branches/$br" >/dev/null 2>&1; then echo "::error::$br already exists: review/close the open bump PR first"; exit 1; fi
+          git switch -c "$br"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -am "pins: weekly bump to snapshot $snap + newest scanners (snapshot-bump.sh)"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/$br"
+          gh pr create --repo "$REPO" --base develop --head "$br" \
+            --title "pins: weekly snapshot + scanner bump ($snap)" --body-file "$RUNNER_TEMP/pr-body.md"

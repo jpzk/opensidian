@@ -901,7 +901,7 @@ SOFTWARE.
 **Used in:** `ui/vendor/codemirror/cm6.js` — one generated bundle of the packages below,
 the engine of the note editor (source mode and Live Preview).
 **Upstream:** https://codemirror.net, https://lezer.codemirror.net (npm registry tarballs;
-versions, publish dates and sha512 integrity in `ui/vendor/codemirror/VENDOR.md`)
+versions, publish dates and sha512 integrity in `ui/vendor/vendor.lock.json` + `ui/vendor/codemirror/build/package-lock.json`)
 **Licence:** MIT (every package). MIT is GPL-compatible; the bundle keeps its MIT header.
 
 ### @codemirror/state 6.7.2, @codemirror/view 6.43.10, @codemirror/language 6.12.4, @codemirror/commands 6.11.0, @codemirror/search 6.7.2, @codemirror/autocomplete 6.20.3, @codemirror/lint 6.9.7, @codemirror/lang-markdown 6.5.2, @codemirror/lang-html 6.4.12, @codemirror/lang-css 6.3.1, @codemirror/lang-javascript 6.2.5
@@ -1092,42 +1092,46 @@ THE SOFTWARE.
 
 These files are unmodified upstream bytes under `ui/vendor/`, served from 'self'
 under the app's CSP and loaded only when a community plugin asks for them
-(`moment`, `loadMathJax`, `loadPdfJs`, `loadPrism`). Versions, publish dates,
-npm integrity and sha256 sums live in each directory's `VENDOR.md` / `SHA256SUMS`.
+(`moment`, `loadMathJax`, `loadPdfJs`, `loadPrism`, `loadMermaid`; Mermaid also renders
+mermaid code blocks in notes). Versions, publish dates,
+npm integrity and sha256 sums live in `ui/vendor/vendor.lock.json` (+ `SHA256SUMS`).
 They carry no SPDX tag of ours: tagging them would modify them, and our GPL tag
 would mislabel them.
 
-### moment 2.30.1
+### moment 2.31.0
 
 **Used in:** `ui/vendor/moment.min.js` (`require("obsidian").moment`, `window.moment`)
-**Upstream:** https://momentjs.com (npm `moment@2.30.1`)
-**Licence:** MIT. GPL-compatible; the file keeps its upstream MIT header.
+**Upstream:** https://momentjs.com (npm `moment@2.31.0`)
+**Licence:** MIT. GPL-compatible; the file keeps its upstream MIT header; `package/LICENSE` ships unmodified as `ui/vendor/moment.LICENSE`.
 
 ```
-Copyright (c) JS Foundation and other contributors
+Copyright (c) OpenJS Foundation and other contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### Prism 1.30.0
 
-**Used in:** `ui/vendor/prism/prism.js` (`loadPrism`, manual mode)
+**Used in:** `ui/vendor/prism/prism.js` + `ui/vendor/prism/prism-components.js` (every language component of the same release, #186) (`loadPrism`, manual mode; the app's fenced-code highlighting `ui/codehl.js`)
 **Upstream:** https://prismjs.com (npm `prismjs@1.30.0`)
 **Licence:** MIT. GPL-compatible. Full text: `ui/vendor/prism/LICENSE`, reproduced here.
 
@@ -1155,9 +1159,100 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+### Mermaid 12.3.0
+
+**Used in:** `ui/vendor/mermaid/mermaid.min.js` (`loadMermaid`; mermaid code blocks in reading view and Live Preview)
+**Upstream:** https://mermaid.js.org (npm `mermaid@12.3.0`)
+**Licence:** MIT. GPL-compatible. Full text: `ui/vendor/mermaid/LICENSE`.
+
+The single bundled file also contains the third-party packages below (resolved
+versions as recorded in the bundle's module paths; the parser's own prebundle
+holds langium, chevrotain-allstar and the vscode-languageserver packages). All are
+GPL-3.0-compatible: MIT, ISC, BSD-3-Clause, Apache-2.0 (chevrotain), DOMPurify,
+dual-licensed MPL-2.0 OR Apache-2.0, used here under Apache-2.0, and elkjs
+(the ELK layout engine, bundled since mermaid 12), dual-licensed EPL-2.0 OR
+GPL-3.0-or-later, used here under GPL-3.0-or-later (the app's own licence). The
+full licence text of every package, taken from its own npm tarball, ships beside
+the bundle as `ui/vendor/mermaid/LICENSES-bundled.txt`.
+
+- `@braintree/sanitize-url@7.1.2` — MIT
+- `@chevrotain/cst-dts-gen@13.2.0` — Apache-2.0
+- `@chevrotain/gast@13.2.0` — Apache-2.0
+- `@chevrotain/regexp-to-ast@13.2.0` — Apache-2.0
+- `@chevrotain/utils@13.2.0` — Apache-2.0
+- `@iconify/utils@3.0.2` — MIT
+- `@mermaid-js/parser@2.0.1` — MIT
+- `@upsetjs/venn.js@2.0.0` — MIT
+- `chevrotain-allstar@0.5.0` — MIT
+- `chevrotain@13.2.0` — Apache-2.0
+- `cose-base@1.0.3` — MIT
+- `cose-base@2.2.0` — MIT
+- `cytoscape-cose-bilkent@4.1.0` — MIT
+- `cytoscape-fcose@2.2.0` — MIT
+- `cytoscape@3.34.0` — MIT
+- `d3-array@2.12.1` — BSD-3-Clause
+- `d3-array@3.2.4` — ISC
+- `d3-axis@3.0.0` — ISC
+- `d3-brush@3.0.0` — ISC
+- `d3-chord@3.0.1` — ISC
+- `d3-color@3.1.0` — ISC
+- `d3-contour@4.0.2` — ISC
+- `d3-delaunay@6.0.4` — ISC
+- `d3-dispatch@3.0.1` — ISC
+- `d3-drag@3.0.0` — ISC
+- `d3-dsv@3.0.1` — ISC
+- `d3-ease@3.0.1` — BSD-3-Clause
+- `d3-fetch@3.0.1` — ISC
+- `d3-force@3.0.0` — ISC
+- `d3-format@3.1.0` — ISC
+- `d3-geo@3.1.1` — ISC
+- `d3-hierarchy@3.1.2` — ISC
+- `d3-interpolate@3.0.1` — ISC
+- `d3-path@1.0.9` — BSD-3-Clause
+- `d3-path@3.1.0` — ISC
+- `d3-polygon@3.0.1` — ISC
+- `d3-quadtree@3.0.1` — ISC
+- `d3-random@3.0.1` — ISC
+- `d3-sankey@0.12.3` — BSD-3-Clause
+- `d3-scale-chromatic@3.1.0` — ISC
+- `d3-scale@4.0.2` — ISC
+- `d3-selection@3.0.0` — ISC
+- `d3-shape@1.3.7` — BSD-3-Clause
+- `d3-shape@3.2.0` — ISC
+- `d3-time-format@4.1.0` — ISC
+- `d3-time@3.1.0` — ISC
+- `d3-timer@3.0.1` — ISC
+- `d3-transition@3.0.1` — ISC
+- `d3-zoom@3.0.0` — ISC
+- `d3@7.9.0` — ISC
+- `dagre-d3-es@7.0.14` — MIT
+- `dayjs@1.11.21` — MIT
+- `dompurify@3.4.17` — (MPL-2.0 OR Apache-2.0)
+- `elkjs@0.12.0` — EPL-2.0 OR GPL-3.0-or-later
+- `es-toolkit@1.45.1` — MIT
+- `fastdom@1.0.12` — MIT
+- `internmap@2.0.3` — ISC
+- `js-yaml@4.3.2` — MIT
+- `katex@0.18.11` — MIT
+- `khroma@2.1.0` — MIT
+- `langium@4.4.0` — MIT
+- `layout-base@1.0.2` — MIT
+- `layout-base@2.0.1` — MIT
+- `lodash-es@4.18.1` — MIT
+- `marked@16.3.0` — MIT
+- `roughjs@4.6.6` — MIT
+- `stylis@4.3.6` — MIT
+- `ts-dedent@2.2.0` — MIT
+- `vscode-jsonrpc@9.0.3` — MIT
+- `vscode-languageserver-protocol@3.18.4` — MIT
+- `vscode-languageserver-textdocument@1.0.15` — MIT
+- `vscode-languageserver-types@3.18.4` — MIT
+- `vscode-languageserver@10.1.1` — MIT
+- `vscode-uri@3.1.0` — MIT
+
 ### MathJax 3.2.2
 
-**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`)
+**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`; the app's math rendering `ui/mathview.js`)
 **Upstream:** https://www.mathjax.org (npm `mathjax@3.2.2`)
 **Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/mathjax/LICENSE`.
 Apache-2.0 is compatible with GPL-3.0 (not with GPL-2.0, see the summary at the top).
@@ -1169,6 +1264,53 @@ The vendored files include no NOTICE file.
 **Upstream:** https://mozilla.github.io/pdf.js (npm `pdfjs-dist@6.3.289`)
 **Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/pdfjs/LICENSE`.
 Apache-2.0 is compatible with GPL-3.0. The vendored files include no NOTICE file.
+
+## Project Fluent (UI translation engine, issue #220)
+
+### @fluent/bundle 0.19.1 (vendored JS)
+
+**Used in:** `ui/vendor/fluent/fluent-bundle.js` (window.FluentBundle; ui/i18n.js formats
+`locales/<lang>/main.ftl` with it). Unmodified upstream bytes; version, publish date,
+npm integrity and sha256 live in `ui/vendor/vendor.lock.json` (+ `SHA256SUMS`).
+**Upstream:** https://github.com/projectfluent/fluent.js (npm `@fluent/bundle@0.19.1`)
+**Licence:** Apache-2.0 — full text in `ui/vendor/fluent/LICENSE`. GPL-3.0 compatible
+(Apache-2.0 is one-way compatible with GPLv3).
+
+### fluent-bundle 0.16.0 and its crates (Rust)
+
+**Used in:** `src-tauri/src/i18n.rs` (native dialog text from the same .ftl files).
+fluent-bundle, fluent-syntax, fluent-langneg, intl-memoizer, type-map:
+Apache-2.0 OR MIT; intl_pluralrules, unic-langid, unic-langid-impl: Apache-2.0 OR MIT;
+self_cell: Apache-2.0 OR GPL-2.0-only (used under Apache-2.0). Exact versions and
+checksums in `src-tauri/Cargo.lock`.
+
+## Lucide icons (glyph geometry)
+
+**Used in:** `ui/icons.js` — the `settings`, `rotate-ccw`, `x` and `chevron-down`
+path data (the graph settings card, the vault bar's Settings gear, the plugin
+API's `setIcon("settings")` and the canvas settings button all draw from it).
+**Upstream:** https://github.com/lucide-icons/lucide
+**Licence:** ISC (the Feather-derived portions MIT). GPL-compatible.
+
+```
+ISC License
+
+Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of
+Feather (MIT). All other copyright (c) for Lucide are held by Lucide
+Contributors 2022.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
 
 ## glib 0.18.5 (vendored Rust crate, gtk-rs)
 

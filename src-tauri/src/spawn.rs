@@ -113,6 +113,29 @@ pub fn new_token() -> String {
     format!("{}-{n:x}", std::process::id())
 }
 
+
+/* #144 toggle 12 "Restart now": a switch onto THIS window's own vault. The old process holds
+   the vault lock until it exits, so the child (and the spawner's lock probe) must know the
+   holder is the window that asked for the restart: the token names its pid,
+   `restart-<pid>-<clock>`. The child waits for the lock only while that pid is alive
+   (main.rs boot); a token naming a dead pid, or any other token, keeps the old refusal. */
+pub const RESTART_PREFIX: &str = "restart-";
+
+/// a restart token for THIS process (passes Switch::check: alnum + '-', <= 64 bytes)
+pub fn restart_token() -> String {
+    format!("{RESTART_PREFIX}{}", new_token())
+}
+
+/// the pid a restart token names (None = not a restart token)
+pub fn restart_of(token: &str) -> Option<u32> {
+    let rest = token.strip_prefix(RESTART_PREFIX)?;
+    let (pid, clock) = rest.split_once('-')?;
+    if clock.is_empty() || !clock.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    pid.parse().ok().filter(|p| *p > 1)
+}
+
 /// split `--switch=` out of argv: (the Switch if one was valid, the rest).
 /// A bad flag is reported and dropped — the window still opens, unswitched.
 pub fn take_switch(args: Vec<OsString>) -> (Option<Switch>, Vec<OsString>, Option<String>) {
@@ -378,6 +401,7 @@ mod tests {
 
     /// /proc liveness: we are alive, a reaped child is not, a zombie is not.
     #[test]
+    #[cfg(target_os = "linux")] // reads /proc/<pid>/stat
     fn switch_alive_probe_reads_proc() {
         assert!(alive(std::process::id()));
         let mut c = std::process::Command::new("/bin/true").spawn().unwrap();
@@ -397,9 +421,23 @@ mod tests {
         assert!(hidden_alive(std::process::id()), "kill 0 on ourselves must see us");
         assert!(!hidden_alive(0));
         assert!(!hidden_alive(u32::MAX));
-        let mut c = std::process::Command::new("/bin/true").spawn().unwrap();
+        let mut c = std::process::Command::new("true").spawn().unwrap(); // PATH: /usr/bin/true on macOS
         let pid = c.id();
         c.wait().unwrap();
         assert!(!hidden_alive(pid), "reaped pid counted as alive");
+    }
+
+    /// #144 toggle 12: a restart token names this pid, survives the --switch round trip,
+    /// and nothing else reads as one
+    #[test]
+    fn restart_token_names_its_pid_only() {
+        let t = restart_token();
+        assert_eq!(restart_of(&t), Some(std::process::id()));
+        let sw = Switch { x: 0, y: 0, w: 800, h: 600, max: false, token: t.clone() };
+        let back = Switch::parse(sw.to_arg().to_str().unwrap()).expect("round trip");
+        assert_eq!(restart_of(&back.token), Some(std::process::id()));
+        for bad in [new_token(), "restart-".into(), "restart-1-ab".into(), "restart-x-ab".into(), "restart-42-".into(), "restart-42-zz".into()] {
+            assert_eq!(restart_of(&bad), None, "{bad}");
+        }
     }
 }

@@ -33,6 +33,16 @@
     gear: I('<circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r="4.4"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>'),
     check: I('<path d="M3.5 8.5l3 3 6-7"/>'),
   };
+  /* issue #115: the same gear drawn with createElementNS (no HTML sink: opengrep html-sink-nonliteral) */
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function gearSvg() {
+    const mk = (t, at) => { const e = document.createElementNS(SVGNS, t); for (const k in at) e.setAttribute(k, at[k]); return e; };
+    const s = mk("svg", { class: "gi", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" });
+    s.appendChild(mk("circle", { cx: "8", cy: "8", r: "2" }));
+    s.appendChild(mk("circle", { cx: "8", cy: "8", r: "4.4" }));
+    s.appendChild(mk("path", { d: "M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" }));
+    return s;
+  }
   const host = window.__osPluginHost;
   if (!host || !host.app) return;
   const setting = host.app.setting;
@@ -103,6 +113,7 @@
     // af-fix 2b (operator rule 2026-10-01, noplugins NP_WANT): no Core plugins entry, no CORE PLUGINS group,
     // no Canvas entry — the Canvas settings pane opens from the board's own settings control (canvas-nav.js)
     entry("community", "Community plugins");
+    entry("security", "Security");   // #144: Options > Security (ui/security.js), a recorded addition: stock has none
     const tabs = setting.pluginTabs.filter(t => t && t.id);
     if (!tabs.length) return;
     const h = el("div", "snavh", "Community plugins"); h.dataset.cp = "1";
@@ -145,7 +156,15 @@
   /* showSettingsPage(id) asks here first: true = handled */
   function show(id) {
     if (inBuiltin) return false;
+    if (id === "security" && window.__osSecurity) {   // #144: the Security pane (ui/security.js); not an app.setting tab (stock has none)
+      closeSpMenu(); leaveTab();
+      const pg = clearPage("security", "rows");
+      __osSecurity.build(pg);
+      updateTitle();
+      return true;
+    }
     if (id === "core-canvas" && canvasPlugin()) return showCorePane(id);   // goal cvf-board; af-fix 2b: no nav entry, opened by the board gear
+    if (id === "core-daily-notes" && dailyPlugin()) return showCorePane(id);   // issue #115: no nav entry, opened by the Core plugins row gear
     closeSpMenu();
     let t;
     if (id === "community") t = builtinOf("community");
@@ -245,9 +264,19 @@
       const c3 = el("div", "scard"); pg.appendChild(c3);
       for (const [cid, p, name, desc] of core) {
         const on = !!p.enabled;
-        const t = toggle(on, () => act(() => (cid === "canvas" ? setCanvasOn(!on) : on ? p.disable() : p.enable())));
+        const t = toggle(on, () => act(() => (cid === "canvas" ? setCanvasOn(!on) : cid === "audio-recorder" ? setCoreOn(cid, !on) : on ? p.disable() : p.enable())));
         t.dataset.core = cid;
-        const r = row(c3, name, desc, [t]);
+        const ctls = [t];
+        /* issue #115: Daily notes has no board to open its options from, so its row carries a gear (pane
+           core-daily-notes), like a community plugin's Options gear */
+        if (cid === "daily-notes" && p.cfg && on) {   // stock: the gear only while the core plugin is on
+          const g = el("div", "sctl cpgear"); g.appendChild(gearSvg()); g.title = "Options"; g.tabIndex = 0;
+          g.setAttribute("role", "button"); g.setAttribute("aria-label", "Options"); g.dataset.coregear = cid;
+          g.onclick = ev => { ev.stopPropagation(); openDailySettings(); };
+          g.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openDailySettings(); } };
+          ctls.unshift(g);
+        }
+        const r = row(c3, name, desc, ctls);
         r.dataset.core = cid;
       }
     }
@@ -300,7 +329,12 @@
     saBusy = false;
     if (settingsOpen && sPane === "community") rebuild();
   }
-  const CORE_DESC = { canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."] };
+  // #116: stock lists the core plugins a-z (Audio recorder above Canvas); its description is stock's
+  const CORE_DESC = {
+    "audio-recorder": ["Audio recorder", "Record audio notes and save them as attachments."],
+    canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."],
+    "daily-notes": ["Daily notes", "Open or create today's note from a folder, a date format and a template."],   // issue #115: right after Canvas
+  };
   function coreList() {
     const ip = host.app.internalPlugins, ps = ip && ip.plugins || {};
     return Object.keys(CORE_DESC).filter(id => ps[id] && typeof ps[id].enable === "function")
@@ -312,6 +346,7 @@
     busy = false;
     if (settingsOpen && sPane === "community") rebuild();
     else if (settingsOpen && sPane === "core-canvas") showCorePane(sPane);   // goal cvf-board
+    else if (settingsOpen && sPane === "core-daily-notes") showCorePane(sPane);   // issue #115
     if (typeof refreshTree === "function") refreshTree().catch(() => {});   // canvas on/off: .canvas rows follow
     const n = document.getElementById("snav"); if (n && n.dataset.built === "1") nav(n);
   }
@@ -371,11 +406,23 @@
     try { const v = await vinv("core-plugins", { canvas: !!on }); if (v && typeof v === "object") cvc.core = v; }
     catch (e) { say_("Core plugins: " + String(e && e.message || e)); }
   }
+  /* #116: any other core plugin's switch (Audio recorder): its enable()/disable() and the same
+     core-plugins.json write ({"<id>": bool}, foreign keys merged by settings.rs) */
+  let coreGen = 0;   // #139: a core switch flipped while the boot read is in flight wins over that (stale) read
+  async function setCoreOn(id, on) {
+    coreGen++;
+    const ip = host.app.internalPlugins, p = ip && ip.plugins && ip.plugins[id]; if (!p) return;
+    await (on ? p.enable() : p.disable());
+    cvc.core[id] = !!on;
+    try { const v = await vinv("core-plugins", { [id]: !!on }); if (v && typeof v === "object") cvc.core = v; }
+    catch (e) { say_("Core plugins: " + String(e && e.message || e)); }
+  }
   /* boot: once main.js knows the vault (vaultPath, a bare global), read both files; a core-plugins.json
      that names canvas decides on/off for THIS vault (stock: per vault), else the app-wide choice stays */
   (function waitVault() {
     const vp = typeof vaultPath !== "undefined" ? vaultPath : null;
     if (!vp) { setTimeout(waitVault, 150); return; }
+    const g0 = coreGen;
     Promise.all([vinv("canvas").catch(() => ({})), vinv("core-plugins").catch(() => ({}))]).then(async ([cv, core]) => {
       cvc.canvas = cv && typeof cv === "object" ? cv : {};
       cvc.core = core && typeof core === "object" ? core : {};
@@ -385,6 +432,15 @@
       if (p && typeof cvc.core.canvas === "boolean" && !!p.enabled !== cvc.core.canvas) {
         try { await (cvc.core.canvas ? p.enable() : p.disable()); } catch (e) { console.error("[canvas] core-plugins.json:", e); }
         if (typeof refreshTree === "function") refreshTree().catch(() => {});
+      }
+      // #116: a core-plugins.json "audio-recorder" bool decides the Audio recorder for THIS vault too
+      const ar = host.app.internalPlugins && host.app.internalPlugins.plugins && host.app.internalPlugins.plugins["audio-recorder"];
+      // #139 (operator 2026-11-16): no key => ON for this vault (stock default); an explicit false is respected
+      const arOn = typeof cvc.core["audio-recorder"] === "boolean" ? cvc.core["audio-recorder"] : true;
+      if (ar && coreGen === g0 && !!ar.enabled !== arOn) {
+        // codeant #145: applyVault(false) may wait for a recording to stop; a switch flipped meanwhile wins (live() re-checks coreGen)
+        try { await (typeof ar.applyVault === "function" ? ar.applyVault(arOn, () => coreGen === g0) : arOn ? ar.enable() : ar.disable()); }
+        catch (e) { console.error("[audio-recorder] core-plugins.json:", e); }
       }
       if (typeof updateTitle === "function") updateTitle();
     });
@@ -495,9 +551,72 @@
     leaveTab(); closeSpMenu();
     const pg = clearPage(id, "rows");
     // af-fix 2b: no extra heading — the page keeps develop's layout so its last row (zoom threshold) stays on screen
-    buildCanvasPage(pg);
+    if (id === "core-daily-notes") buildDailyPage(pg); else buildCanvasPage(pg);
     if (typeof updateTitle === "function") updateTitle();
     return true;
+  }
+  /* ---- issue #115: the Daily notes options pane (core-daily-notes), stock's four rows. Reads / writes
+     <vault>/.obsidian/daily-notes.json through the plugin's cfg (main.js DN: merge, unknown keys kept, written as
+     you type like stock's Setting.onChange). Census while it is open: [dnsp=<ctl>:x,y,<value>] fmt folder tpl
+     autorun, [dnspv:<the live moment preview>] */
+  const dailyPlugin = () => { const ip = host.app.internalPlugins; const p = ip && ip.plugins && ip.plugins["daily-notes"]; return p && p.cfg ? p : null; };
+  let dnPrevPane = null;
+  function openDailySettings() {
+    if (!dailyPlugin()) return false;
+    if (typeof settingsOpen !== "undefined" && settingsOpen) { if (sPane !== "core-daily-notes") dnPrevPane = sPane; showCorePane("core-daily-notes"); return true; }
+    return false;
+  }
+  function dnPreview(f) {
+    const m = window.moment;
+    if (typeof m !== "function") return "";
+    try { return m().format(f || "YYYY-MM-DD"); } catch (_) { return ""; }
+  }
+  function buildDailyPage(pg) {
+    const p = dailyPlugin(); if (!p) return;
+    const cfg = p.cfg, c = el("div", "scard"); pg.appendChild(c);
+    const text = (ctl, key, ph, norm) => {
+      const f = el("input", "sctl text live");
+      f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = ph;
+      f.value = String(cfg.raw()[key] != null ? cfg.raw()[key] : ""); f.dataset.dnsp = ctl;
+      f.style.cssText = "width:220px;color:var(--text-chrome);background:var(--bg-surface)";
+      f.onmousedown = ev => ev.stopPropagation();
+      f.onkeydown = ev => { if (ev.key === "Escape") { f.blur(); return; } ev.stopPropagation(); if (ev.key === "Enter") f.blur(); };   // Escape still closes Settings
+      f.oninput = () => { cfg.set({ [key]: norm ? norm(f.value) : f.value }); if (key === "format") pv.textContent = dnPreview(f.value); if (typeof updateTitle === "function") updateTitle(); };
+      return f;
+    };
+    const pv = el("b", "dnsp-pv", dnPreview(cfg.get("format")));
+    const fd = el("div", "sdesc");
+    fd.append("For more syntax, refer to the moment.js format reference. Your current syntax looks like this: ", pv);
+    const fr = row(c, "Date format", [], [text("fmt", "format", "YYYY-MM-DD")]);
+    fr.querySelector(".sinfo").appendChild(fd);
+    row(c, "New file location", "New daily notes will be placed here.", [text("folder", "folder", "Example: folder 1/folder 2")]);
+    row(c, "Template file location", "Choose the file to use as a template.", [text("tpl", "template", "Example: folder/note")]);
+    const tg = toggle(cfg.get("autorun") === true, () => { cfg.set({ autorun: !(cfg.get("autorun") === true) }); rebuildDailyPage(); });
+    tg.dataset.dnsp = "autorun";
+    row(c, "Open daily note on startup", "Open your daily note automatically whenever you open this vault.", [tg]);
+    sRowsShown = 4; sEnabledShown = 4;
+    if (typeof window.moment !== "function") {   // restricted mode: moment comes with the plugin's first use; the preview follows
+      const s = document.createElement("script"); s.src = "vendor/moment.min.js";
+      s.onload = () => { if (pv.isConnected) pv.textContent = dnPreview(cfg.get("format")); if (typeof updateTitle === "function") updateTitle(); };
+      document.head.appendChild(s);
+    }
+  }
+  function rebuildDailyPage() {
+    if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "core-daily-notes") return;
+    const pg = document.getElementById("spage"); if (!pg) return;
+    const st = pg.scrollTop; pg.innerHTML = ""; buildDailyPage(pg); pg.scrollTop = st;
+    if (typeof updateTitle === "function") updateTitle();
+  }
+  function dailyTok() {
+    let t = "";
+    const esc = v => String(v).replace(/[\]|]/g, "");
+    for (const d of document.querySelectorAll("#spage [data-dnsp]")) {
+      const k = d.dataset.dnsp;
+      t += " [dnsp=" + k + ":" + ctr(d) + "," + esc(k === "autorun" ? (d.classList.contains("on") ? 1 : 0) : d.value) + "]";
+    }
+    const pv = document.querySelector("#spage .dnsp-pv");
+    if (pv) t += " [dnspv:" + esc(pv.textContent) + "]";
+    return t;
   }
   /* af-fix 2b: the board's settings control (canvas-nav.js) opens Settings on the Canvas pane; closing
      Settings puts back the pane it had before, so ctrl+, never lands on a pane the nav does not list */
@@ -510,7 +629,10 @@
     await openSettings();
     return true;
   }
-  function leaveCanvasPane() { if (sPane === "core-canvas") { sPane = cvPrevPane || "general"; cvPrevPane = null; } }
+  function leaveCanvasPane() {
+    if (sPane === "core-canvas") { sPane = cvPrevPane || "general"; cvPrevPane = null; }
+    else if (sPane === "core-daily-notes") { sPane = dnPrevPane || "community"; dnPrevPane = null; }   // issue #115: no nav entry either
+  }
   function coreTok() {
     let t = "";
     if (sPane === "core-canvas") {
@@ -550,7 +672,11 @@
       for (const tg of document.querySelectorAll("#spage .toggle[data-core]")) {
         const p = (host.app.internalPlugins.plugins || {})[tg.dataset.core];
         t += " [cpc=" + tg.dataset.core + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (p && p._loaded ? 1 : 0) + "]";
+        const cg = tg.parentNode && tg.parentNode.querySelector("[data-coregear]");
+        if (cg) t += " [cpcg=" + tg.dataset.core + ":" + ctr(cg) + "]";   // issue #115: the Daily notes row gear
       }
+    } else if (sPane === "core-daily-notes") {
+      t += dailyTok();
     } else if (sPane === "core-canvas") {
       t += coreTok();
     } else if (String(sPane).startsWith("plg:") && setting.activeTab && setting.activeTab.containerEl.isConnected) {

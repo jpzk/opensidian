@@ -1,0 +1,17 @@
+{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,
+ "metadata":{"component":{"bom-ref":"app","name":"opensidian","version":"0.0.0","type":"application"}},
+ "components":[
+  {"bom-ref":"pkg:npm/katex@0.16.47","type":"library","name":"katex","version":"0.16.47","purl":"pkg:npm/katex@0.16.47"},
+  {"bom-ref":"pkg:npm/js-yaml@4.3.0","type":"library","name":"js-yaml","version":"4.3.0","purl":"pkg:npm/js-yaml@4.3.0"},
+  {"bom-ref":"pkg:cargo/serde@1.0.200","type":"library","name":"serde","version":"1.0.200","purl":"pkg:cargo/serde@1.0.200"},
+  {"bom-ref":"pkg:cargo/serde_derive@1.0.200","type":"library","name":"serde_derive","version":"1.0.200","purl":"pkg:cargo/serde_derive@1.0.200"},
+  {"bom-ref":"pkg:deb/ubuntu/libwebkit2gtk-4.1-0@2.48.0","type":"library","name":"libwebkit2gtk-4.1-0","version":"2.48.0","purl":"pkg:deb/ubuntu/libwebkit2gtk-4.1-0@2.48.0?distro=ubuntu-22.04"},
+  {"bom-ref":"pkg:deb/ubuntu/libxml2@2.9.13","type":"library","name":"libxml2","version":"2.9.13","purl":"pkg:deb/ubuntu/libxml2@2.9.13?distro=ubuntu-22.04"},
+  {"bom-ref":"pkg:generic/pdfjs@4.0.0","type":"library","name":"pdfjs","version":"4.0.0","purl":"pkg:generic/pdfjs@4.0.0"},
+  {"bom-ref":"file:ui/vendor/x.js","type":"file","name":"ui/vendor/x.js"}
+ ],
+ "dependencies":[
+  {"ref":"app","dependsOn":["pkg:npm/katex@0.16.47","pkg:cargo/serde@1.0.200","pkg:deb/ubuntu/libxml2@2.9.13"]},
+  {"ref":"pkg:npm/katex@0.16.47","dependsOn":["pkg:npm/js-yaml@4.3.0"]},
+  {"ref":"pkg:cargo/serde@1.0.200","dependsOn":["pkg:cargo/serde_derive@1.0.200"]}
+ ]}
