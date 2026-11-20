@@ -16,7 +16,7 @@ set -euo pipefail
 say(){ echo "[$(date +%H:%M:%S)] [flatpak-env] $*"; }
 die(){ say "FAIL: $*"; exit 1; }
 ARCH=${FLATPAK_ARCH:-$(uname -m)}
-SNAP=20261004T000000Z        # = packaging/ci/appimage-build.sh (resolute; the runner is ubuntu-26.04)
+SNAP=20261004T000000Z        # resolute; 6-week rule. NOT appimage-build.sh SNAP: only the AppImage build env tracks the newest snapshot (operator decision 2026-11-19)
 HOST_PKGS="flatpak=1.16.6-1 flatpak-builder=1.4.8-1 elfutils=0.194-4"   # elfutils = eu-strip
 FLATHUB_REPO_URL=https://dl.flathub.org/repo/flathub.flatpakrepo
 FLATHUB_REPO_SHA256=3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a

@@ -33,6 +33,16 @@ fresh; jq '(.libraries[]|select(.name=="prismjs")|.published)="2025-03-11T00:00:
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "lock publish date != registry time (prismjs)"
 fresh; jq '(.libraries[]|select(.name=="pdfjs-dist")|.added)="2026-09-15"' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "six-week rule (pdfjs-dist added 17 days after publish)"
+# age_exemption: the only way past the six-week rule (mermaid 12.3.0, security fix). Every malformed form fails.
+mmsel='(.libraries[]|select(.name=="mermaid"))'
+fresh; jq "del($mmsel.age_exemption)" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "six-week rule: mermaid 12.3.0 without its age_exemption"
+fresh; jq "$mmsel.age_exemption.reason=\"convenience\"" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "age_exemption: reason is not security-fix"
+fresh; jq "$mmsel.age_exemption.advisories=[]" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "age_exemption: no advisory named"
+fresh; jq "$mmsel.age_exemption.advisories+=[\"see issue\"] | $mmsel.age_exemption.max_days=0" "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
+  && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "age_exemption: non-advisory id + unknown key"
 fresh; printf 'Prism.languages.x={};\n' >>"$scratch/vendor/prism/prism-components.js"; expect 1 "appended bytes in prism/prism-components.js (#186 concat)"
 fresh; jq '(.libraries[]|select(.name=="prismjs")|.files[]|select(.concat)|.concat)|=(.[1:]+.[:1])' "$scratch/vendor/vendor.lock.json" >"$scratch/l" \
   && mv "$scratch/l" "$scratch/vendor/vendor.lock.json"; expect 1 "concat order changed in lock (prism-components.js)"
@@ -55,5 +65,17 @@ fresh; lockmut "$srcsel.tarball_path=\"package/LICENSE\""; expect 1 "source entr
 fresh; printf ' ' >>"$scratch/vendor/fluent/LICENSE"; expect 1 "vendored fluent/LICENSE differs from the fetched source bytes"
 fresh; lockmut "(.libraries[]|select(.name==\"@fluent/bundle\")|.files)|=map(select(.path!=\"fluent/LICENSE\"))"
 expect 1 "fluent/LICENSE dropped from the lock (no longer covered)"
+# G5: bundles[].files[] — codemirror/LICENSE, pinned to an upstream commit, only the source form allowed
+cmsel='(.bundles[]|select(.name=="codemirror")|.files[]|select(.path=="codemirror/LICENSE"))'
+if jq -e "$cmsel|.source|test(\"^https://raw.githubusercontent.com/[^/]+/[^/]+/[0-9a-f]{40}/LICENSE$\")" "$root/ui/vendor/vendor.lock.json" >/dev/null \
+   && [ "$(jq -r "$cmsel|.sha256" "$root/ui/vendor/vendor.lock.json")" = "$(sha256sum "$root/ui/vendor/codemirror/LICENSE" | cut -d' ' -f1)" ]; then
+  echo "PASS  codemirror/LICENSE locked by commit-pinned source + sha256 of the vendored bytes"
+else echo "FAIL  codemirror/LICENSE is not locked by a commit-pinned source"; rc=1; fi
+fresh; lockmut "$cmsel.sha256=\"$(printf '0%.0s' {1..64})\""; expect 1 "bundle file: wrong sha256 (codemirror/LICENSE)"
+fresh; lockmut "$cmsel.source|=sub(\"/[0-9a-f]{40}/\";\"/main/\")"; expect 1 "bundle file: branch ref instead of commit (codemirror/LICENSE)"
+fresh; lockmut "$cmsel|=(del(.source)|.tarball_path=\"package/LICENSE\")"; expect 1 "bundle file: tarball_path form (bundles have no tarball)"
+fresh; printf 'x\n' >>"$scratch/vendor/codemirror/LICENSE"; expect 1 "vendored codemirror/LICENSE differs from the fetched source bytes"
+fresh; lockmut '(.bundles[]|select(.name=="codemirror")|.files)|=[]'; expect 1 "codemirror/LICENSE dropped from the lock (no longer covered)"
+fresh; rm "$scratch/vendor/codemirror/LICENSE"; expect 1 "codemirror/LICENSE missing from the tree"
 [ $rc = 0 ] && echo "vendor-verify.test: ALL PASS" || echo "vendor-verify.test: FAILURES"
 exit $rc

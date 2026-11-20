@@ -151,16 +151,16 @@
     },
     {
       "name": "mermaid",
-      "version": "11.17.2",
-      "purl": "pkg:npm/mermaid@11.17.2",
+      "version": "12.3.0",
+      "purl": "pkg:npm/mermaid@12.3.0",
       "license": "MIT",
-      "tarball": "https://registry.npmjs.org/mermaid/-/mermaid-11.17.2.tgz",
-      "integrity": "sha512-V6K3C8EBdEsPFZXSKMJe6ppQOENxuHARr9GvHX4hh47lAbhMRD9qf4oEK7LoaRQxULMa80/qt5gHO73aCleBBg==",
+      "tarball": "https://registry.npmjs.org/mermaid/-/mermaid-12.3.0.tgz",
+      "integrity": "sha512-4113TdXeLAsMruJ79OpFL5O8+LTFXhQqZ260rF3tgUmiNAtRm4Uume04I+65PRN6yZ69J4f8rVYWW8zRk65UYw==",
       "files": [
         {
           "path": "mermaid/mermaid.min.js",
           "tarball_path": "package/dist/mermaid.min.js",
-          "sha256": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
+          "sha256": "336df803d87a38b70a01e736e666c8f7601d2ce42f5e47c8fafe5d721074b9a3"
         },
         {
           "path": "mermaid/LICENSE",
@@ -174,14 +174,29 @@
           "regex": "=\\{version:\"[0-9]+\\.[0-9]+\\.[0-9]+\""
         }
       ],
-      "published": "2026-08-25T11:52:39.930Z",
-      "added": "2026-11-17",
-      "tarball_sha256": "6ad2f42c3fc26bbf9e45cbb6d11898972573ea52b33a5f4ff51952899f950ffd",
-      "files_taken": "package/dist/mermaid.min.js (IIFE build, sets globalThis.mermaid), package/LICENSE; mermaid/LICENSES-bundled.txt (ours, allowed_unlocked): licence texts of the 74 packages bundled inside mermaid.min.js, each from that package own npm tarball (list in THIRD-PARTY.md)",
-      "not_taken": "newer at vendoring time: 12.0.0 (2026-09-10), 12.1.0 (2026-10-02), 12.2.0 / 12.3.0 (< 6 weeks); 11.17.2 is the last release of the 11.x line, 12.x is a new major (new parser stack, +50% bundle size)",
-      "advisories": "GitHub advisory database 2026-11-17: every mermaid advisory is fixed at or before 11.16.1 (GHSA-rhh3-jpg6-66xh, GHSA-c4c3-pg64-4m4v, GHSA-6x64-9x62-f2gx, GHSA-3rrr-jr9j-h3q3, GHSA-2v8p-3f2j-5mp7); 11.17.2 has none open. Bundled DOMPurify 3.4.12: GHSA-55q2-fjhq-7xh7, GHSA-mrv2-3pqr-j5jr, GHSA-6688-9rhm-gjv2 need IN_PLACE (mermaid sanitizes strings, never nodes in place); GHSA-cg2g-xh64-v4q7 needs SAFE_FOR_TEMPLATES and GHSA-c6gr-qvv4-5v3f needs PARSER_MEDIA_TYPE application/xhtml+xml (mermaid sets neither). The only path to those options is mermaid dompurifyConfig, which loadMermaid adds to mermaid secure list (with the other sanitizing / styling / font keys), so a %%{init}%% directive cannot set it. Fixed DOMPurify 3.4.17 (2026-10-22) is younger than 6 weeks.",
-      "loaded_by": "ui/plugins/api-functions.js loadMermaid -> window.mermaid (engineOff(mermaid) gate first, #144), locked strict configuration; the app mermaid fences (ui/mermaid.js, #187) render through the same loader; no network, no eval (the bundle only Function(...) is lodash return-this global fallback, never reached); CSP script-src self",
-      "modified": false
+      "published": "2026-11-03T13:18:31.144Z",
+      "added": "2026-11-19",
+      "tarball_sha256": "be0684e8d20bfc874df12c0f04927a5c482f57f2200eec54cca52a4583fd4040",
+      "files_taken": "package/dist/mermaid.min.js (IIFE build, sets globalThis.mermaid), package/LICENSE; mermaid/LICENSES-bundled.txt (ours, allowed_unlocked): licence texts of the 74 packages bundled inside mermaid.min.js, each from that package own npm tarball, sha512 checked against registry dist.integrity (list in THIRD-PARTY.md)",
+      "not_taken": "11.17.2 (bundles katex 0.16.47 GHSA-238p-pmpm-9mq7, dompurify 3.4.12, js-yaml 4.3.0); 12.0.0 (2026-09-10), 12.1.0 (2026-10-02), 12.2.0 (2026-10-13): all bundle a DOMPurify older than the fixed 3.4.17. 12.x defaults to the ELK layout (elkjs 0.12.0 now bundled): loadMermaid pins layout dagre (protected key) so renders stay as in 11.x; ELK only for an explicit flowchart-elk diagram, in-process (no worker, no fetch)",
+      "advisories": "GitHub advisory database 2026-11-19: every mermaid advisory is fixed at or before 11.16.1; 12.3.0 has none open. Bundled katex 0.18.11 (GHSA-238p-pmpm-9mq7 fixed 0.18.2), dompurify 3.4.17 (GHSA-55q2-fjhq-7xh7, GHSA-mrv2-3pqr-j5jr, GHSA-6688-9rhm-gjv2, GHSA-cg2g-xh64-v4q7, GHSA-c6gr-qvv4-5v3f fixed), js-yaml 4.3.2 (GHSA-2883-xcg3-v3hh, GHSA-5p4m-2wfm-xmqj fixed). dompurifyConfig stays in the mermaid secure list (a %%{init}%% directive cannot set it), as do layout and the other sanitizing / styling / font keys",
+      "loaded_by": "ui/plugins/api-functions.js loadMermaid -> window.mermaid (engineOff(mermaid) gate first, #144), locked strict configuration (securityLevel strict, htmlLabels false, dompurifyConfig {}, layout dagre, secure keys); the app mermaid fences (ui/mermaid.js, #187) render through the same loader; no network, no eval (lodash return-this Function(...) global fallback, never reached; elkjs Worker path never reached, mermaid passes its in-process FakeWorker); CSP script-src self",
+      "modified": false,
+      "bump_reason": "11.17.2 -> 12.3.0: bundled KaTeX 0.16.47 has GHSA-238p-pmpm-9mq7 (fixed in katex 0.18.2); 12.3.0 bundles katex 0.18.11, dompurify 3.4.17 and js-yaml 4.3.2. No 11.x backport exists (11.17.2 is the last 11.x); 12.0.0-12.2.0 predate dompurify 3.4.17 (2026-10-22). 12.3.0 is the oldest release with all three fixed. Registry sha512 verified; npm SLSA v1 provenance: mermaid-js/mermaid .github/workflows/release.yml refs/heads/master",
+      "age_exemption": {
+        "reason": "security-fix",
+        "advisories": [
+          "GHSA-238p-pmpm-9mq7",
+          "GHSA-55q2-fjhq-7xh7",
+          "GHSA-mrv2-3pqr-j5jr",
+          "GHSA-6688-9rhm-gjv2",
+          "GHSA-cg2g-xh64-v4q7",
+          "GHSA-c6gr-qvv4-5v3f",
+          "GHSA-2883-xcg3-v3hh",
+          "GHSA-5p4m-2wfm-xmqj"
+        ],
+        "approved": "operator (jpzk) 2026-11-19: security-fix updates are exempt from the six-week rule; version + hash pinned, provenance checked"
+      }
     },
     {
       "name": "pdfjs-dist",
@@ -643,7 +658,7 @@
       },
       "recipe": "ui/vendor/codemirror/build/ (package.json, package-lock.json, entry.js, banner.txt, build.sh; originally harness bin/hz/cm6-vendor/): sh build.sh runs npm ci --ignore-scripts + esbuild and rebuilds cm6.js; CMP=ui/vendor/codemirror/cm6.js sh build.sh asserts byte-identity",
       "pin_rule": "each package = newest release published on or before 2026-09-01; sh build.sh check re-reads every publish date from the npm registry",
-      "license_file": "THIRD-PARTY.md (all MIT)",
+      "license_file": "codemirror/LICENSE (+ THIRD-PARTY.md, all MIT)",
       "packages": [
         {
           "name": "@codemirror/autocomplete",
@@ -802,7 +817,15 @@
       ],
       "previous_sha256": {
         "dd96abafcc8916d31dc355fa8886fca8384922f6dcc92022f70153818ab537ca": "2026-10-13 build; 2026-11-17 only the banner comment lines 2-3 were repointed (prose file deleted, #188)"
-      }
+      },
+      "files": [
+        {
+          "path": "codemirror/LICENSE",
+          "source": "https://raw.githubusercontent.com/codemirror/view/c7b762ef481994faeff1d6c1a61b1909ca26c2c3/LICENSE",
+          "sha256": "05c6130cda97e7600ca91427a41e8a065efcf82365fc0293e7de80faec494c07",
+          "$comment": "the MIT text of CodeMirror 6 and Lezer (same bytes as package/LICENSE of @codemirror/view 6.43.10; c7b762ef = its gitHead). The other bundled packages are MIT by the same author, texts in THIRD-PARTY.md"
+        }
+      ]
     }
   ],
   "allowed_unlocked": [
@@ -822,6 +845,6 @@
     "fluent/SHA256SUMS"
   ],
   "$comment_allowed": "allowed_unlocked: exact paths (no globs) that are documentation, checksums or build inputs, not shipped library bytes",
-  "$comment_files": "libraries[].files[] entry forms: {path, tarball_path, sha256} (a file of the npm tarball; optional local_header_lines + vendored_sha256), {path, concat, concat_separator, sha256} (concatenation of tarball files), or {path, source, sha256} for a file the tarball does not ship: source = https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (commit-pinned, never a branch/tag), fetched by vendor-verify.sh (https only, no redirects) and its sha256 checked against the lock and the vendored bytes",
+  "$comment_files": "libraries[].files[] entry forms: {path, tarball_path, sha256} (a file of the npm tarball; optional local_header_lines + vendored_sha256), {path, concat, concat_separator, sha256} (concatenation of tarball files), or {path, source, sha256} for a file the tarball does not ship: source = https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (commit-pinned, never a branch/tag), fetched by vendor-verify.sh (https only, no redirects) and its sha256 checked against the lock and the vendored bytes; bundles[].files[] accept only the source form",
   "six_week_rule": "published (npm registry time[version]) must be >= 42 days before added (the date the bytes landed in git)"
 }
