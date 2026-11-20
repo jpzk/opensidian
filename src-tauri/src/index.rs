@@ -421,22 +421,25 @@ pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
 }
 
 fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) {
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
+    // iterative (vaultfs::walk_tree), no depth cap as before: the note walk
+    // used to recurse once per level, so a deep enough vault aborted the app
+    // with a stack overflow; now its stack use is constant
+    crate::vaultfs::walk_tree(dir, usize::MAX, |e, _| {
+        let name = e.name.to_string_lossy().into_owned();
         if name.starts_with('.') {
-            continue;
+            return false;
         }
-        let p = e.path();
+        let p = &e.path;
         // S2: lstat, never follow — a symlinked dir/file is not part of the
         // vault (it would index and serve whatever it points at)
-        let Ok(m) = fs::symlink_metadata(&p) else { continue };
+        let Ok(m) = fs::symlink_metadata(p) else { return false };
         if m.is_symlink() {
-            continue;
+            return false;
         }
         if m.is_dir() {
-            walk(&p, base, out, imgs);
-        } else if let Some(rel) = img_rel(&p, base, &name) {
+            return true;
+        }
+        if let Some(rel) = img_rel(p, base, &name) {
             // R29.6: image files are vault MEMBERS but never notes. They ride
             // the note walk (no second traversal, no second symlink policy) and
             // land in their own list, keyed by vault-relative path WITH the
@@ -444,8 +447,8 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
             imgs.push(rel);
         } else if let Some(stem) = name.strip_suffix(".md") {
             if m.len() > MAX_NOTE_BYTES {
-                warn_oversized(&p);
-                continue;
+                warn_oversized(p);
+                return false;
             }
             let rel = p
                 .parent()
@@ -457,7 +460,8 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
                 format!("{}/{}", rel.display(), stem)
             });
         }
-    }
+        false
+    })
 }
 
 /// R29.8: the extensions v1 treats as vault images — Obsidian's list minus `svg`
@@ -815,7 +819,7 @@ impl Index {
         if let Some(root) = &self.root {
             let from = format!("{old}.md");
             let mut cvs = Vec::new();
-            canvas_walk(root, &mut cvs, 0);
+            canvas_walk(root, &mut cvs);
             for p in cvs {
                 let hits = canvas_cards_naming(&p, &from);
                 if hits > 0 {
@@ -829,28 +833,25 @@ impl Index {
 }
 
 /// CVR-A-088: the vault's .canvas files, same policy as `walk` — dot entries and
-/// symlinks are not part of the vault; depth-bounded
-fn canvas_walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
-    if depth > 64 {
-        return;
-    }
-    let Ok(rd) = fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
+/// symlinks are not part of the vault; depth-bounded (directories down to depth
+/// 64 are read, as before) and iterative (vaultfs::walk_tree)
+fn canvas_walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    crate::vaultfs::walk_tree(dir, 65, |e, _| {
+        if e.name.to_string_lossy().starts_with('.') {
+            return false;
         }
-        let p = e.path();
-        let Ok(m) = fs::symlink_metadata(&p) else { continue };
+        let Ok(m) = fs::symlink_metadata(&e.path) else { return false };
         if m.is_symlink() {
-            continue;
+            return false;
         }
         if m.is_dir() {
-            canvas_walk(&p, out, depth + 1);
-        } else if m.is_file() && name.ends_with(".canvas") && m.len() <= CANVAS_COUNT_MAX {
-            out.push(p);
+            return true;
         }
-    }
+        if m.is_file() && e.name.to_string_lossy().ends_with(".canvas") && m.len() <= CANVAS_COUNT_MAX {
+            out.push(e.path.clone());
+        }
+        false
+    })
 }
 
 /// a canvas larger than this is not counted (canvasfs refuses to read it as well)
