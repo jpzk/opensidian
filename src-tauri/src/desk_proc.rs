@@ -394,12 +394,12 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
     Ok(Pinned { fd, ident, path: c })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 pub fn pin(_file: &str) -> Result<Pinned, String> {
     Err("ENOSYS: running external programs is not supported on this OS".into())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn pin(file: &str) -> Result<Pinned, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let c = std::ffi::CString::new(file).map_err(|_| format!("EINVAL: spawn {file}: NUL in the path"))?;
@@ -459,12 +459,12 @@ pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     Ok(Pinned { fd, ident, path: c })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 pub fn pin_dir(_dir: &Path) -> Result<Pinned, String> {
     Err("ENOSYS: running external programs is not supported on this OS".into())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| format!("EINVAL: spawn: cwd {}: NUL in the path", dir.display()))?;
@@ -506,13 +506,13 @@ impl Pinned {
 
     /// #74: the pinned file opened for reading through /proc/self/fd/N — the very inode that
     /// was pinned (and that the exec runs), never the pathname again
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn open_read(&self) -> std::io::Result<std::fs::File> {
         std::fs::File::open(format!("/proc/self/fd/{}", self.raw()))
     }
 
     /// macOS: the pinned fd is O_RDONLY (no O_PATH), so a dup of it reads that very inode
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     pub fn open_read(&self) -> std::io::Result<std::fs::File> {
         use std::io::Seek;
         let mut f = std::fs::File::from(self.fd.try_clone()?);
@@ -667,11 +667,11 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     let want = prog.ident.clone();
     let d = dir.raw();
     let dwant = dir.ident.clone();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let mut c = Command::new(format!("/proc/self/fd/{n}"));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let mut c = Command::new(OsStr::from_bytes(prog.path.as_bytes()));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let ppath = prog.path.clone();
     c.arg0(sp.argv0.as_deref().unwrap_or(&sp.file));
     c.args(&sp.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
@@ -684,23 +684,23 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     // SAFETY: async-signal-safe syscalls only, between fork and exec
     unsafe {
         c.pre_exec(move || {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
             if libc::getppid() == 1 {
                 return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
             }
             // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
             // pipe, which a plain close_range would cut (spawn would "succeed")
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
             // macOS: no close_range; the same CLOEXEC sweep, one fcntl per descriptor
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
             for fd in 3..libc::getdtablesize() {
                 libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
             }
             // Y1: the program's fd survives the exec (a #! interpreter opens /proc/self/fd/N),
             // and the open file is still the one pinned before the question — else EPERM, no exec
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -711,7 +711,7 @@ fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
             // canonical path == the identity pinned before the question (a replaced, renamed or
             // symlinked-in file is EPERM, no exec). WEAKER than Linux's exec-by-fd: a swap in the
             // instant between this lstat and execve is not caught (macOS has no fexecve).
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
             if path_ident(ppath.as_ptr()).as_ref() != Some(&want) {
                 return Err(std::io::Error::from_raw_os_error(libc::EPERM));
             }
@@ -1103,12 +1103,12 @@ fn ident_of(p: &Path) -> Result<Ident, String> {
     Ok(id)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 fn ident_of(_p: &Path) -> Result<Ident, String> {
     Err("ENOSYS: running external programs is not supported on this OS".into())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn ident_of(p: &Path) -> Result<Ident, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
@@ -1296,13 +1296,13 @@ pub struct Launch<'a> {
 
 impl Launch<'_> {
     /// AA1: what the caller's opener Command is made from: the held opener's fd, never its name
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fn program(&self) -> String {
         format!("/proc/self/fd/{}", self.prog.raw())
     }
 
     /// macOS: no exec-by-fd (see build): the pinned canonical path, re-checked in apply's pre_exec
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     pub fn program(&self) -> String {
         String::from_utf8_lossy(self.prog.path.as_bytes()).into_owned()
     }
@@ -1313,13 +1313,13 @@ impl Launch<'_> {
     pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
         let n = self.prog.raw();
         let want = self.prog.ident.clone();
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let ppath = self.prog.path.clone();
         c.arg0(self.argv0).arg(self.arg).current_dir(self.cwd).env("PATH", &self.path);
         // SAFETY: async-signal-safe syscalls only (fcntl, fstat, lstat), between fork and exec
         unsafe {
             c.pre_exec(move || {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 if libc::fcntl(n, libc::F_SETFD, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -1327,7 +1327,7 @@ impl Launch<'_> {
                     return Err(std::io::Error::from_raw_os_error(libc::EPERM));
                 }
                 // macOS: the NAME execve will take is still the pinned file (as build; same caveat)
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 if path_ident(ppath.as_ptr()).as_ref() != Some(&want) {
                     return Err(std::io::Error::from_raw_os_error(libc::EPERM));
                 }
@@ -1654,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")] // reads /proc/self/cmdline
+    #[cfg(any(target_os = "linux", target_os = "android"))] // reads /proc/self/cmdline
     fn desk_argv0_is_the_asked_name_while_the_absolute_path_is_execd() {
         let mut sp = spec("/bin/cat", &["/proc/self/cmdline"], &std::env::temp_dir());
         sp.argv0 = Some("cat-as-asked".into());
@@ -2264,7 +2264,7 @@ mod tests {
        PATH is always set on the child. prepare takes the inherited value as a parameter, so
        this needs no process-wide env change. */
     #[test]
-    #[cfg(target_os = "linux")] // APFS refuses non-UTF-8 file names (EILSEQ), the setup cannot exist
+    #[cfg(any(target_os = "linux", target_os = "android"))] // APFS refuses non-UTF-8 file names (EILSEQ), the setup cannot exist
     fn desk_s2_a_non_utf8_inherited_path_is_cleaned_not_passed_through_raw() {
         let (base, vault, _) = helper_vault("s2", "s2helper");
         // V1: an entry is kept only if it resolves, so the non-UTF-8 dir exists
@@ -2350,7 +2350,7 @@ mod tests {
        runs. The cwd comes out canonical too (a symlinked cwd is shown resolved), and a cwd
        that is still under /proc after canonicalizing is refused before anything is asked. */
     #[test]
-    #[cfg(target_os = "linux")] // /proc/self/cwd is Linux
+    #[cfg(any(target_os = "linux", target_os = "android"))] // /proc/self/cwd is Linux
     fn desk_x1_a_program_path_through_proc_self_cwd_runs_the_canonical_app_side_file() {
         use std::os::unix::fs::symlink;
         let base = std::env::temp_dir().join(format!("desk-x1-{}", std::process::id()));
@@ -2400,7 +2400,7 @@ mod tests {
        it never follows the link itself: its PATH does not hold the link, and the vault's
        helper is not reached. A missing entry is dropped. */
     #[test]
-    #[cfg(target_os = "linux")] // /proc/self/cwd is Linux
+    #[cfg(any(target_os = "linux", target_os = "android"))] // /proc/self/cwd is Linux
     fn desk_v1_a_path_symlink_to_proc_self_cwd_does_not_reach_the_childs_cwd() {
         let _epoch = epoch_tests(); // DD1: shell_open carries a TrustSeen
         use std::os::unix::fs::symlink;

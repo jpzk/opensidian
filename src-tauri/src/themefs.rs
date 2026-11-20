@@ -163,6 +163,23 @@ pub fn set_quickfont(root: &Path, size: Option<i64>, action: Option<bool>) -> Re
     write_appearance(root, &m)
 }
 
+/// android-p2a M12.5: Settings > Interface > Full screen is Obsidian mobile's `autoFullScreen` in the vault's
+/// appearance.json. A missing (or non-bool) key reads as ON, stock's default.
+pub fn auto_full_screen(root: &Path) -> bool {
+    read_appearance(root).ok().and_then(|m| m.get("autoFullScreen").and_then(|v| v.as_bool())).unwrap_or(true)
+}
+
+/// Write `autoFullScreen` as a bool, every other key kept in its place; an
+/// unparseable file is refused, never overwritten; an unchanged value is skipped.
+pub fn set_auto_full_screen(root: &Path, on: bool) -> Result<(), String> {
+    let mut m = read_appearance(root)?;
+    if m.get("autoFullScreen") == Some(&Value::Bool(on)) {
+        return Ok(());
+    }
+    m.insert("autoFullScreen".into(), Value::Bool(on));
+    write_appearance(root, &m)
+}
+
 // ---------------------------------------------------------------------------
 // goal fontset (docs/fontset/recon.md REQ-8/11/13/14, D1/D3): the three
 // font rows. Keys in the SAME appearance.json, each a ","-joined string of

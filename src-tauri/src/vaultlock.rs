@@ -94,6 +94,7 @@ pub fn ready_in(dir: &Path, canon: &Path, token: &str) -> bool {
 }
 
 /// directory the lock files live in (pure: the caller reads the environment)
+#[cfg_attr(target_os = "android", allow(dead_code))] // android: appdirs::lock_dir
 pub fn lock_dir(flatpak_id: Option<OsString>, xdg_runtime: Option<OsString>, home: &Path) -> PathBuf {
     let rt = xdg_runtime.map(PathBuf::from).filter(|p| p.is_absolute());
     match (flatpak_id.filter(|s| !s.is_empty()), rt) {
@@ -104,10 +105,17 @@ pub fn lock_dir(flatpak_id: Option<OsString>, xdg_runtime: Option<OsString>, hom
 }
 
 pub fn env_lock_dir() -> PathBuf {
-    let in_flatpak = Path::new("/.flatpak-info").exists();
-    let id = if in_flatpak { std::env::var_os("FLATPAK_ID") } else { None };
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
-    lock_dir(id, std::env::var_os("XDG_RUNTIME_DIR"), &home)
+    // goal android: <app_data_dir>/locks (appdirs.rs) — no $HOME, no XDG
+    #[cfg(target_os = "android")]
+    let d = crate::appdirs::lock_dir();
+    #[cfg(not(target_os = "android"))]
+    let d = {
+        let in_flatpak = Path::new("/.flatpak-info").exists();
+        let id = if in_flatpak { std::env::var_os("FLATPAK_ID") } else { None };
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+        lock_dir(id, std::env::var_os("XDG_RUNTIME_DIR"), &home)
+    };
+    d
 }
 
 fn fnv1a64(b: &[u8]) -> u64 {

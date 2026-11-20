@@ -3179,6 +3179,9 @@ function wsSideKeep(which, view, open, lst) {
   if (open) delete o.collapsed; else o.collapsed = true;
   return o;
 }
+// android-p2a M12.2: on a phone mobile.js installs window.__wsMobile and the file is workspace-mobile.json in stock
+// mobile's shape (one tabs group, mobile-drawer sidebars); the desktop shape below is reshaped, never written as is.
+const wsPhone = () => !!window.__wsMobile;
 function wsDoc() {
   const ft = fg() && fg().active >= 0 ? fg().tabs[fg().active] : null;
   const d = {
@@ -3188,7 +3191,7 @@ function wsDoc() {
   };
   // W4: unknown top-level keys, where Obsidian puts its own extra key (left-ribbon)
   if (wsExtra) for (const k of Object.keys(wsExtra)) d[k] = wsClone(wsExtra[k]);
-  return Object.assign(d, {
+  Object.assign(d, {
     active: wsPersistable(ft) ? wsIdOf(ft, "lid") : emptyLeaf(fg()) ? wsIdOf(fg(), "eid") : "",   // R28.12: focus lands on the NAMED leaf (#242: or the empty one)
     // R28.15: `lastOpenFiles` is the note-use order, newest first. It is the
     // SAME list the quick switcher already keeps (mruList) rather than a second
@@ -3197,6 +3200,7 @@ function wsDoc() {
     // for a recent-files affordance that does not exist.
     lastOpenFiles: mruList.slice(0, 20).map(wsPathOut),
   });
+  return wsPhone() ? window.__wsMobile.out(d, ft && !ft.kind ? wsPathOut(ft.name) : null) : d;
 }
 /* R28.3 — WRITTEN WHILE RUNNING, NOT AT EXIT. This is the data-loss row of the
    section and the reason there is no beforeunload/window-close handler anywhere
@@ -3321,6 +3325,9 @@ function wsTabIn(leaf, have) {
   // state — the way Obsidian keeps a disabled plugin's leaf ("Plugin no longer
   // active"). Nothing about it is checked: its file is not ours to judge.
   const ty = leaf && leaf.state && leaf.state.type;
+  // android-p2a M12.3: a phone tab can be EMPTY (stock mobile's "+": a leaf of type "empty", tab "New tab"); it is
+  // the kept-leaf kind with utype "empty", so it persists verbatim. The desktop still drops an empty leaf.
+  if (ty === "empty" && wsPhone() && typeof leaf.id === "string" && leaf.id) { wsRestored++; return wsEmptyTab(leaf); }
   if (typeof ty === "string" && ty && !WS_KNOWN.has(ty) && typeof leaf.id === "string" && leaf.id) {
     const ti = leaf.state.title;
     wsRestored++;
@@ -3481,7 +3488,8 @@ async function wsApply(doc, names, boot) {   // #242: boot = the launch restore 
   for (const g of gs) if (g !== target) await loadActive(g);
   await loadActive(target);                              // the focused pane renders LAST, so it owns the caret
   // R28.10 / R28.11: the sidebars, each independently, with their own view state
-  try { wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+  try { if (!wsPhone()) wsSidesIn(doc); } catch (e) { /* a sidebar is not worth the layout */ }
+  if (wsPhone()) try { window.__wsMobile.sidesIn(doc); } catch (e) { /* M12.3: the drawer views, same rule */ }
   wsSide0 = { left: sidePane, right: rTab };             // W4: the file's currentTab stands until the user moves
   // R28.15: seed the quick switcher's recency from the file, filtered to notes
   // that still exist — the list is written for a recent-files affordance and a
@@ -6445,13 +6453,23 @@ async function askDelete(nm) {
   try { bl = await inv("backlinks_ctx", { name: nm }); }
   catch (err) { bl = []; }                   // a count we could not take must not block the delete
   const files = bl.length, lines = bl.reduce((a, b) => a + b.lines.length, 0);
-  openDelete(nm, files, lines);
+  // android-p2a M7.8: the phone sheet counts LINKS (Obsidian mobile wording), not lines — every [[nm…]] on those lines
+  const esc = nm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), re = new RegExp("\\[\\[" + esc + "(?=[\\]|#^])", "gi");
+  const links = bl.reduce((a, b) => a + b.lines.reduce((c, l) => c + Math.max(1, (String(l[1]).match(re) || []).length), 0), 0);
+  openDelete(nm, files, lines, links);
 }
-function openDelete(nm, files, lines) {
+function openDelete(nm, files, lines, links) {
   delPending = { name: nm, files, lines };
-  $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
-  $("delsay").textContent = delSentence(files, lines);
-  $("delsay").classList.toggle("mod-warning", files > 0);   // #59 slice 3: stock marks its backlink warning p.mod-warning
+  if (document.body.classList.contains("is-mobile")) {
+    const n = links == null ? lines : links;
+    $("delq").textContent = "Are you sure you want to delete “" + nm + ".md”? It will be moved to .trash in this vault.";
+    $("delsay").textContent = n ? "There " + (n === 1 ? "is currently 1 link" : "are currently " + n + " links") + " pointing to this file."
+                                : "There are no links pointing to this file.";
+  } else {
+    $("delq").textContent = "Are you sure you want to delete " + nm + "? It will be moved to .trash in this vault.";
+    $("delsay").textContent = delSentence(files, lines);
+    $("delsay").classList.toggle("mod-warning", files > 0);   // #59 slice 3: stock marks its backlink warning p.mod-warning
+  }
   $("delbox").hidden = false;
   $("del-no").focus();                       // the DEFAULT is Cancel — see style.css
   updateTitle();
@@ -6565,9 +6583,10 @@ async function loadActive(g) {
     }
     g.unkEl.innerHTML = "";
     const h = document.createElement("div"); h.className = "unkt";
-    h.textContent = "No view for “" + t.utype + "” here";
+    h.textContent = isEmptyTab(t) ? "No file is open" : "No view for “" + t.utype + "” here";
     const p = document.createElement("div");
-    p.textContent = "This tab is kept in the layout unchanged, so the app that made it finds it again.";
+    p.textContent = isEmptyTab(t) ? "Open a note from the drawer or the search."   // M12.3: the phone's empty tab
+      : "This tab is kept in the layout unchanged, so the app that made it finds it again.";
     g.unkEl.append(h, p);
     g.unkEl.hidden = false;
     renderTabs(g);
@@ -6746,7 +6765,8 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
   await act("note_open", { via, tabs: g.tabs.length }, twOpen(async sp => {
     await flushSave(g);
     const i = g.tabs.findIndex(x => x.name === name);
-    if (i >= 0) g.active = i;
+    if (isEmptyTab(lt)) { const nt = mkTab(name); nt.lid = lt.lid; g.tabs[g.active] = nt; }   // M12.3: fill the empty tab, same leaf id
+    else if (i >= 0) g.active = i;
     else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
@@ -7168,6 +7188,8 @@ async function closeTab(g, i, cause, via, noFlush) {
     return collapseGroup(g, "closeTab");
   if (g.active >= g.tabs.length) g.active = g.tabs.length - 1;
   else if (i < g.active) g.active--;
+  // android-p2b M6.5: on a phone, closing the active tab activates its left neighbour (stock mobile); desktop unchanged
+  else if (i === g.active && i > 0 && document.body.classList.contains("is-phone")) g.active--;
   await loadActive(g);
   });
 }
@@ -8318,6 +8340,24 @@ async function cmdNewTab() {       // R5.3 ctrl+t — v1: new tab on the current
   if (!n) return;
   await flushSave(g);
   g.tabs.push(mkTab(n));
+  g.active = g.tabs.length - 1;
+  await loadActive(g);
+}
+/* android-p2a M12.3: the phone tab switcher's "+" opens an EMPTY tab, as stock mobile does ("New tab", leaf type
+   "empty" in workspace-mobile.json); the next note opened from the drawer, search or the switcher FILLS it (openInTab)
+   under the same leaf id. Desktop ctrl+t keeps cmdNewTab. */
+function wsEmptyTab(leaf) {
+  const raw = leaf ? wsClone(leaf) : { id: wsId(), type: "leaf", state: { type: "empty", state: {}, icon: "lucide-file", title: "New tab" } };
+  delete raw.group;
+  return { kind: "unk", name: "New tab", utype: "empty", raw, lid: raw.id, mode: "source", hist: [], hpos: -1 };
+}
+const isEmptyTab = t => !!t && t.kind === "unk" && t.utype === "empty";
+async function cmdNewEmptyTab() {
+  if (!state) return;
+  const g = fg();
+  const lt = g.active >= 0 ? g.tabs[g.active] : null;
+  if (lt && !lt.kind) await flushSave(g);
+  g.tabs.push(wsEmptyTab());
   g.active = g.tabs.length - 1;
   await loadActive(g);
 }
@@ -13429,6 +13469,8 @@ async function openVault(p, replace) {
   // the flush above and die with the process.
   try { await inv("open_vault_window", { path: p, replace }); }
   catch (err) { document.body.inert = false; $("p-err").textContent = String(err); return; }
+  // android p1a: one process per vault — the backend recorded the vault as the last one; the app relaunches on it
+  if (replace && window.__osAndroid && typeof window.__osAndroid.restart === "function") { window.__osAndroid.restart(); return; }
   $("picker").hidden = true;
 }
 async function pickerGo(replace) {
