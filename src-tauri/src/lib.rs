@@ -1249,15 +1249,12 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     let (ptx, prx) = std::sync::mpsc::channel();
     audiorec::sess_put(&parent, audiorec::Sess { gated: Some(grx), ready: false, started: Some(stx), stop_tx: Some(ptx), stop_rx: Some(prx), data: None });
     audiorec::arm(&parent, &token, std::time::Instant::now())?;
-    let b = tauri::WebviewWindowBuilder::new(&app, audiorec::rec_label(&parent), tauri::WebviewUrl::App("recorder.html".into()))
-        .title("audio capture")
-        .skip_taskbar(true)
-        .decorations(false)
-        .inner_size(1.0, 1.0);
-    // android merge: WebviewWindowBuilder::focused is desktop-only in tauri 2 (no such method on mobile)
+    let b = tauri::WebviewWindowBuilder::new(&app, audiorec::rec_label(&parent), tauri::WebviewUrl::App("recorder.html".into()));
+    // android merge: title/skip_taskbar/decorations/inner_size/focused/visible are desktop-only
+    // window-builder methods in tauri 2 (absent on mobile); desktop keeps the same calls in the same order
     #[cfg(not(target_os = "android"))]
-    let b = b.focused(false);
-    #[cfg(not(target_os = "macos"))]
+    let b = b.title("audio capture").skip_taskbar(true).decorations(false).inner_size(1.0, 1.0).focused(false);
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     let b = b.visible(false);
     // macOS: WKWebView never answers getUserMedia from a page in a hidden window, and there is no
     // GTK box to embed it in (rec_offscreen is a no-op), so the recorder is a visible 1x1
