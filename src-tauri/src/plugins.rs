@@ -178,6 +178,7 @@ pub const TRUST_ID_KEY: &str = "plugins_trust_id";
 /// separates a reused inode number (rm -rf + mkdir often gets the freed one back); a filesystem
 /// without birth time gives NO identity (review #129: the inode alone is reused). The device number is left out on purpose: it is not
 /// stable across remounts of removable / network disks and the path already names the place.
+#[cfg(not(target_os = "android"))]
 pub fn dir_identity(canon: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let m = fs::metadata(canon).ok()?;
@@ -187,7 +188,16 @@ pub fn dir_identity(canon: &Path) -> Option<String> {
     identity_of(m.ino(), m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()))
 }
 
+/// android: shared storage (/storage/emulated, FUSE) keeps no birth time. The vault folder identity is
+/// "android:<root inode>:<marker inode>:<nonce>" of a random marker minted in the vault (android_trust.rs);
+/// None (never trusted) whenever that marker cannot be minted or read as expected.
+#[cfg(target_os = "android")]
+pub fn dir_identity(canon: &Path) -> Option<String> {
+    crate::android_trust::identity(canon)
+}
+
 /// "<inode>:<birth ns>"; no birth time = no identity (an inode number alone is handed out again)
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub fn identity_of(ino: u64, birth: Option<std::time::Duration>) -> Option<String> {
     birth.map(|b| format!("{ino}:{}", b.as_nanos()))
 }

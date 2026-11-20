@@ -26,6 +26,8 @@ mod appid;
 // goal android: config/lock/vault paths in app-private storage (android only)
 #[cfg(any(target_os = "android", test))]
 mod appdirs;
+#[cfg(any(target_os = "android", test))]
+mod android_trust; // #127 on android: the vault folder identity without birth time (a marker minted in the vault)
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
