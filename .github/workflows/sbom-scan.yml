@@ -91,7 +91,7 @@ jobs:
             grep -E '^(fetch|verify):' fetch.log | sed 's/^/- /'
             echo
             awk -F'\t' '{n=split($3,p,"/"); printf "- %s %s %s -> sbom-%s-%s (sha256 %s)\n", $1, $2, p[n], $4, $5, $6}' sboms/manifest.tsv
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-scan-inputs
@@ -151,7 +151,7 @@ jobs:
             echo
             echo "Advisory DBs (downloaded by this run):"
             sed 's/^/- /' out/dbrev.txt
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
       - name: upload SARIF (category sbom-${{ matrix.cat }})
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
@@ -201,4 +201,4 @@ jobs:
             echo
             sed 's/^/- /' snapshot.log
             echo "- $(cat submit.log)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API

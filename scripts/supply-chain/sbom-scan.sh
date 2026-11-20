@@ -339,7 +339,7 @@ cmd_submit() {
   echo "submit: HTTP 201 $(jq -c '{id, result, message, created_at}' <<<"$body")"
 }
 
-sub=${1:-}; shift || true
+sub=${1:-}; if [ $# -gt 0 ]; then shift; fi
 case "$sub" in
   fetch|verify|platform|scan|dbrev|enrich|merge|summary|snapshot|submit) "cmd_$sub" "$@" ;;
   *) log "usage: sbom-scan.sh fetch|verify|platform|scan|dbrev|enrich|merge|summary|snapshot|submit ..."; exit 2 ;;
