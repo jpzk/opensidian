@@ -34,8 +34,10 @@
 #   merge <category> <enriched.sarif>... stdout: one SARIF run (rules union, results concat)
 #   summary <label> <enriched.sarif>     stdout: one markdown list line with severity / fix counts
 #   snapshot <sha> <ref> <correlator> <scanned-iso> <manifest-name>=<sbom>...
-#        stdout: dependency submission snapshot; packages by purl, ONLY pkg:npm + pkg:cargo (the
-#        ecosystems Dependabot supports here), everything else counted on stderr as skipped.
+#        stdout: dependency submission snapshot; packages by purl, ONLY pkg:npm + pkg:cargo +
+#        VERSIONED pkg:maven (the ecosystems Dependabot supports here; a maven component with
+#        CycloneDX scope excluded = build/test only -> scope development), everything else
+#        counted on stderr as skipped.
 #   submit <snapshot.json>             POST /repos/{repo}/dependency-graph/snapshots; rc 1 unless 201
 #
 # env: GH_TOKEN, GITHUB_REPOSITORY (owner/repo), GITHUB_API_URL (default https://api.github.com),
@@ -71,10 +73,10 @@ cmd_platform() {
   local n=${1:?platform <file-name>} b arch plat
   b=$(basename "$n" .cdx.json)
   arch=${b##*-}
-  case "$arch" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; universal) ;;
+  case "$arch" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; universal|armv7|i686) ;;
     *) die "platform: cannot read the architecture from '$n'" ;; esac
   b=${b%-*}
-  case "${b##*-}" in macos|darwin) plat=macos ;; windows|win) plat=windows ;; linux) plat=linux ;; *) plat=linux ;; esac
+  case "${b##*-}" in macos|darwin) plat=macos ;; windows|win) plat=windows ;; android) plat=android ;; linux) plat=linux ;; *) plat=linux ;; esac
   printf '%s %s\n' "$plat" "$arch"
 }
 
@@ -183,7 +185,7 @@ cmd_dbrev() {
 # purl types in an SBOM -> osv offline DB directory names
 sbom_ecos() { jq -r '[.components[]?.purl // empty | capture("^pkg:(?<t>[a-z]+)/(?<ns>[^/@]*)") |
   if .t == "npm" then "npm" elif .t == "cargo" then "crates.io" elif .t == "deb" and .ns == "ubuntu" then "Ubuntu"
-  elif .t == "deb" and .ns == "debian" then "Debian" else empty end] | unique[]' "$1"; }
+  elif .t == "deb" and .ns == "debian" then "Debian" elif .t == "maven" then "Maven" else empty end] | unique[]' "$1"; }
 
 cmd_enrich() {
   local s=${1:?enrich <osv.sarif> <osv.json> <uri> [label]} j=${2:?} uri=${3:?} label=${4:-}
@@ -266,6 +268,7 @@ cmd_scan() {
   : >"$out/summary.md"
   while IFS=$'\t' read -r src rel path plat arch sha; do
     i=$((i + 1)); cat="sbom-$plat-$arch"; uri="release-assets/$rel/$(basename "$path")"
+    [ "$src" != android ] || uri="android-sbom/$rel/$(basename "$path")"   # built from the android branch, not a release asset
     log "[$(date -u +%H:%M:%S)] scan $i: $rel $(basename "$path") ($cat)"
     "$here/osv-json.sh" "$out/raw/$i.json" "$osv" scan source --offline-vulnerabilities --download-offline-databases \
       --format json -L "$path" >&2 || die "scan: osv-scanner json failed on $path"
@@ -301,10 +304,11 @@ cmd_snapshot() {
     name=${arg%%=*}; f=${arg#*=}
     [ -s "$f" ] || die "snapshot: $f missing"
     jq -e '.bomFormat == "CycloneDX"' "$f" >/dev/null || die "snapshot: $f is not CycloneDX"
-    jq -r --arg n "$name" '[.components[]? | (.purl // "") | (capture("^pkg:(?<t>[a-z]+)/").t // "no-purl")
-        | select(. != "npm" and . != "cargo")] | group_by(.) | map("snapshot: \($n): skipped \(length) pkg:\(.[0]) component(s) (not an ecosystem Dependabot supports here)")[]' "$f" >&2
+    jq -r --arg n "$name" '[.components[]? | (.purl // "") | select(test("^pkg:(npm|cargo)/|^pkg:maven/[^/@]+/[^/@]+@.") | not)
+        | (if test("^pkg:maven/") then "maven-without-version" else (capture("^pkg:(?<t>[a-z]+)/").t // "no-purl") end)]
+        | group_by(.) | map("snapshot: \($n): skipped \(length) pkg:\(.[0]) component(s) (not an ecosystem Dependabot supports here, or no exact version)")[]' "$f" >&2
     m=$(jq --arg n "$name" '
-      ([.components[]? | select(.purl // "" | test("^pkg:(npm|cargo)/"))]) as $keep
+      ([.components[]? | select(.purl // "" | test("^pkg:(npm|cargo)/|^pkg:maven/[^/@]+/[^/@]+@."))]) as $keep
       | ($keep | map(.["bom-ref"] // .purl) ) as $refs
       | ($keep | map({key: (.["bom-ref"] // .purl), value: .purl}) | from_entries) as $p
       | ((.dependencies // []) | map({key: .ref, value: (.dependsOn // [])}) | from_entries) as $dep
@@ -312,9 +316,9 @@ cmd_snapshot() {
       | {($n): {name: $n, file: {source_location: $n},
           resolved: ($keep | map({key: .purl, value: {package_url: .purl,
               relationship: (if ((.["bom-ref"] // .purl) as $r | $direct | index($r)) then "direct" else "indirect" end),
-              scope: "runtime",
+              scope: (if (.purl | startswith("pkg:maven/")) and .scope == "excluded" then "development" else "runtime" end),
               dependencies: ([$dep[(.["bom-ref"] // .purl)][]? | $p[.] // empty] | unique)}}) | from_entries)}}' "$f")
-    [ "$(jq --arg n "$name" '.[$n].resolved | length' <<<"$m")" -gt 0 ] || log "snapshot: $name: no npm/cargo package"
+    [ "$(jq --arg n "$name" '.[$n].resolved | length' <<<"$m")" -gt 0 ] || log "snapshot: $name: no npm/cargo/maven package"
     log "snapshot: $name: kept $(jq --arg n "$name" '[.[$n].resolved[] | .package_url | capture("^pkg:(?<t>[a-z]+)/").t] | group_by(.) | map("\(length) pkg:\(.[0])") | join(", ")' -r <<<"$m")"
     i=$((i + 1)); printf '%s\n' "$m" >"$tmp/$i.json"
   done
