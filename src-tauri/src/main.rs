@@ -323,15 +323,32 @@ fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
    /etc and /usr for reading and sandbox.rs:94 reports it unsupported on this
    kernel; it is defence in depth that is currently absent.                */
 
-/// R29.8: what v1 serves — Obsidian's list minus `svg` (scriptable, and we have
-/// no sanitizer), `bmp` and `avif` (scope only). ext -> Content-Type.
-const IMG_TYPES: [(&str, &str); 5] = [
+/// R29.8: what is served — Obsidian's list minus `bmp` and `avif` (scope only).
+/// ext -> Content-Type.
+///
+/// `svg` was left out of v1 as scriptable with no sanitizer here. It is served
+/// now WITHOUT a sanitizer, because the page never lets an SVG run as a
+/// document: every place that shows one does it through `<img>` (image_html,
+/// editor.js imgEl, the canvas image card), and an SVG loaded as an image runs
+/// no script and fetches nothing, in WebKit and Chromium alike. Two fences
+/// stand behind that, in case some later code puts the URL somewhere else:
+///   - the page CSP keeps the image scheme out of frame/object/script sources
+///     (default-src 'self'), and navigation to it is refused (nav_allowed);
+///   - the SVG response itself carries `SVG_CSP` (below), a sandbox with no
+///     script and no network, so even opened as a document it is inert.
+const IMG_TYPES: [(&str, &str); 6] = [
     ("png", "image/png"),
     ("jpg", "image/jpeg"),
     ("jpeg", "image/jpeg"),
     ("gif", "image/gif"),
     ("webp", "image/webp"),
+    ("svg", "image/svg+xml"),
 ];
+
+/// The Content-Security-Policy every SVG response carries (see IMG_TYPES): no
+/// script, no network, no frames; only its own inline styles and data: images
+/// and fonts, which Illustrator-style exports embed.
+const SVG_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox";
 
 /// the scheme our images are served on; the CSP names it exactly (R29 / S1)
 const IMG_SCHEME: &str = "opensidian-img";
@@ -8426,12 +8443,16 @@ fn main() {
                 }));
             }
             let res = match root.as_deref().and_then(|r| serve_image(r, &target)) {
-                Some((mime, body)) => tauri::http::Response::builder()
-                    .status(200)
-                    .header("Content-Type", mime)
-                    .header("X-Content-Type-Options", "nosniff")
-                    .header("Cache-Control", "no-store")
-                    .body(body),
+                Some((mime, body)) => {
+                    let b = tauri::http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", mime)
+                        .header("X-Content-Type-Options", "nosniff")
+                        .header("Cache-Control", "no-store");
+                    // an SVG is a document format: inert even if opened as one
+                    let b = if mime == "image/svg+xml" { b.header("Content-Security-Policy", SVG_CSP) } else { b };
+                    b.body(body)
+                }
                 None => tauri::http::Response::builder().status(404).body(Vec::new()),
             }
             .expect("img response");
@@ -9526,7 +9547,7 @@ mod tests {
         }
         symlink(outside.join("secret.png"), root.join("link.png")).unwrap();
         let ix = Index::build(&root);
-        assert_eq!(ix.images(), ["UP.JPG", "pic.png", "sub/nested.webp"], "{:?}", ix.images());
+        assert_eq!(ix.images(), ["UP.JPG", "doc.svg", "pic.png", "sub/nested.webp"], "{:?}", ix.images());
         assert_eq!(ix.names(), ["A"], "images must never become notes");
         let _ = fs::remove_dir_all(&outside);
     }
@@ -12197,6 +12218,26 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /// SVG is served on one condition (IMG_TYPES): it is only ever shown as an
+    /// image. Pinned here: the embed is an <img>, nothing else; and the policy the
+    /// response carries runs no script, opens no connection and sandboxes it.
+    #[test]
+    fn svg_embeds_are_images_and_their_response_policy_is_inert() {
+        let root = tmp_vault("svg-embed");
+        fs::write(root.join("logo.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>").unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(ix.images(), ["logo.svg"]);
+        let h = image_html(ix.images(), "logo.svg", "");
+        assert!(h.starts_with("<img ") && h.contains(&format!("src=\"{IMG_SCHEME}://localhost/logo.svg\"")), "{h}");
+        for tag in ["<object", "<iframe", "<embed", "<svg", "<script"] {
+            assert!(!h.contains(tag), "{tag} in {h}");
+        }
+        let d: Vec<&str> = SVG_CSP.split(';').map(str::trim).collect();
+        assert!(d.contains(&"default-src 'none'") && d.contains(&"sandbox"), "{SVG_CSP}");
+        assert!(!SVG_CSP.contains("script-src") && !SVG_CSP.contains("connect-src") && !SVG_CSP.contains("http"), "{SVG_CSP}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// R29 images, POSITIVE half: the shapes that MUST serve bytes. Kept next
     /// to the traversal test because a containment check that refuses
     /// everything also passes the negative one.
@@ -12217,8 +12258,9 @@ mod tests {
         assert_eq!(serve_image(&root, "UPPER.PNG").unwrap().0, "image/png");
         assert_eq!(serve_image(&root, "sub/nested.jpeg").unwrap().0, "image/jpeg");
         assert_eq!(serve_image(&root, "pic.png").unwrap().1, px.to_vec());
-        // R29.8: svg is NOT in v1 (scriptable, no sanitizer here); non-images never
-        assert_eq!(img_path_in(&root, "vec.svg"), None);
+        // R29.8: svg is served, as svg (IMG_TYPES says why that is safe); non-images never
+        assert_eq!(img_path_in(&root, "vec.svg"), Some(croot.join("vec.svg")));
+        assert_eq!(serve_image(&root, "vec.svg").unwrap().0, "image/svg+xml");
         assert_eq!(img_path_in(&root, "doc.md"), None);
         assert_eq!(img_path_in(&root, "pic"), None);
         // R29.4: a missing file serves nothing — same None as an escape, no leak
@@ -12328,9 +12370,9 @@ mod tests {
     fn media_rename_refuses_an_extension_change_or_non_media() {
         let (root, outside) = media_vault("mren-ext");
         fs::write(root.join("n.md"), b"#").unwrap();
-        fs::write(root.join("v.svg"), b"<svg/>").unwrap();
+        fs::write(root.join("v.html"), b"<html/>").unwrap();
         fs::write(root.join("pic.png"), b"png").unwrap();
-        for (a, b) in [("tone.mp3", "tone.wav"), ("tone.mp3", "tone.md"), ("tone.mp3", "tone"), ("n.md", "n.mp3"), ("n.md", "m.md"), ("pic.png", "pic.jpg"), ("v.svg", "w.svg")] {
+        for (a, b) in [("tone.mp3", "tone.wav"), ("tone.mp3", "tone.md"), ("tone.mp3", "tone"), ("n.md", "n.mp3"), ("n.md", "m.md"), ("pic.png", "pic.jpg"), ("v.html", "w.html"), ("pic.png", "pic.svg")] {
             assert!(media_rename_in(&root, a, b).is_err(), "{a} -> {b}");
         }
         assert!(root.join("tone.mp3").is_file() && root.join("n.md").is_file());
@@ -13209,7 +13251,7 @@ mod tests {
     fn drop_refuses_everything_outside_img_types() {
         let (root, srcd) = drop_vault("drop-ext");
         let mut paths = Vec::new();
-        for n in ["doc.pdf", "arch.zip", "vec.svg", "pic.bmp", "note.md", "noext", "script.png.sh"] {
+        for n in ["doc.pdf", "arch.zip", "page.html", "pic.bmp", "note.md", "noext", "script.png.sh"] {
             paths.push(src_file(&srcd, n, b"\x89PNGdisguised-as-an-image"));
         }
         let a = attach_drop(&root, "Note", &paths).unwrap();

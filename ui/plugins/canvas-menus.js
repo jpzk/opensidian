@@ -390,7 +390,7 @@
           // restricted vault (plugin file access off -> EPERM): an audio/video/image card renames through the core's
           // narrow media_rename (vault-confined, same extension, no overwrite); everything else reports as before
           const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
-          if (!/EPERM/.test(String((e && e.message) || e)) || !/^(mp3|m4a|ogg|oga|opus|wav|flac|webm|mp4|m4v|mov|ogv|png|jpe?g|gif|webp)$/.test(ext) || !inv) throw e;
+          if (!/EPERM/.test(String((e && e.message) || e)) || !/^(mp3|m4a|ogg|oga|opus|wav|flac|webm|mp4|m4v|mov|ogv|png|jpe?g|gif|webp|svg)$/.test(ext) || !inv) throw e;
           await inv("media_rename", { from: old, to });
         }
       } catch (e) { notify(c, "Canvas: " + old + " was not renamed — " + String((e && e.message) || e)); return; }

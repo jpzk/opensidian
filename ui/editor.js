@@ -465,7 +465,7 @@ const Ed = {
      R29.7: reading view (Rust/pulldown-cmark) and live preview are separate
      engines, so every decision below mirrors ONE named function in
      src-tauri/src/main.rs and nothing else:
-       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 5 extensions)
+       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 6 extensions)
        Ed.pctDec    <- pct_decode           (strict: %XX or nothing)
        Ed.pctEnc    <- pct_encode           (unreserved + '/' survive)
        Ed.imgRel    <- index::resolve       (exact, else basename suffix)
@@ -475,7 +475,7 @@ const Ed = {
      non-symlinked vault members, so a traversal target resolves to nothing
      and gets no URL at all (the byte server re-checks containment anyway).
      An unresolved target is R29.4's banner in both engines. */
-  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp"],
+  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp", "svg"],
   IMG_SCHEME: "opensidian-img",
   isImg(t) {                                   // is this target an IMAGE embed, not a note embed?
     const i = t.lastIndexOf(".");
