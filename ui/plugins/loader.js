@@ -143,7 +143,7 @@
      (main.js top-level bindings, __TAURI_INTERNALS__). See security.md. */
   let sealed = false;
   /* top5-func: data: URLs for plugin code, installed once right before the first plugin script
-     (seal), so a restricted page never has it. The page CSP is NOT touched (font-src 'self',
+     (seal), so a restricted page never has it. The page CSP is NOT touched here (font-src 'self' data: is the config's,
      connect-src ipc:/self stay). A data: URL carries its bytes inline: decoding it in-page reads
      nothing from anywhere and grants nothing a plugin cannot already do (atob + new
      FontFace(name, bytes) is allowed under any CSP). Excalidraw ships its fonts as data: URLs —

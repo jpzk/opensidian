@@ -12844,7 +12844,7 @@ mod tests {
         assert_eq!(
             csp,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; font-src 'self'; \
+             img-src 'self' data: opensidian-img:; font-src 'self' data:; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
@@ -12859,6 +12859,10 @@ mod tests {
         // no wildcard, no http(s) origin anywhere in the image directive
         assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
         assert!(!img.contains("http"), "img-src names a remote origin: {img}");
+        // android-merge (operator 2026-11-20): font-src widens by data: ONLY (Excalidraw's inline
+        // Virgil/Cascadia @font-face in a live-preview drawing) — no remote origin, no wildcard, no blob:
+        let font = csp.split("; ").find(|d| d.starts_with("font-src ")).unwrap();
+        assert_eq!(font, "font-src 'self' data:");
         // plugin-loader: script-src widens by ONE scheme token, ours, plus
         // 'wasm-unsafe-eval' (WebAssembly compile/instantiate only; Templater's
         // template parser is wasm). JS eval, new Function and string timers stay
@@ -12889,7 +12893,7 @@ mod tests {
         assert_eq!(
             r,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost; media-src 'self' blob:"
+             img-src 'self' data: opensidian-img:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; media-src 'self' blob:"
         );
         // no 'unsafe-eval' anywhere; blob: ONLY in media-src (never script-src / worker-src / anything else)
         assert!(!r.split_whitespace().any(|t| t == "'unsafe-eval'"), "{r}");
@@ -12917,7 +12921,7 @@ mod tests {
         assert_eq!(
             t,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self' data:; \
              connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:; media-src 'self' blob:"
         );
         // every directive other than script-src / worker-src / connect-src / media-src is byte-identical
@@ -12943,13 +12947,13 @@ mod tests {
         assert_eq!(
             a,
             "default-src 'self'; script-src 'self' http://opensidian-plugin.localhost 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: http://opensidian-img.localhost; font-src 'self'; \
+             img-src 'self' data: http://opensidian-img.localhost; font-src 'self' data:; \
              connect-src ipc: http://ipc.localhost"
         );
         assert_eq!(
             csp_by_trust(&a, true),
             "default-src 'self'; script-src 'self' http://opensidian-plugin.localhost 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: http://opensidian-img.localhost; font-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: http://opensidian-img.localhost; font-src 'self' data:; \
              connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:; media-src 'self' blob:"
         );
         // a look-alike scheme or a bare origin is not ours: untouched
