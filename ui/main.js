@@ -11207,6 +11207,9 @@ const CMDS = [
   ["graph:open",               "Open graph view",                     ["ctrl+g"],               cmdGlobalGraph],
   ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph(),
     () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
+  // sync M6c: both open the separate sync window (ui/sync.html); the sync/history commands answer only there (src-tauri/src/syncui.rs gate)
+  ["sync:open-settings",       "Sync: Open sync settings",            [],                       () => inv("sync_open", { pane: "sync" })],
+  ["sync:open-file-history",   "Sync: Open file history",             [],                       () => inv("sync_open", { pane: "history", note: cur() }), mdActive],
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
   // #156 stock 1.13.7: '#' goes in FRONT of the selection, the selected text is kept, caret right after the '#'
@@ -13660,6 +13663,34 @@ async function onVaultChanged(c) {
   updateTitle();
 }
 TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
+/* CodeRabbit #238 (main.rs history_restore): a file-history restore of an
+   OPEN note. Explicit behaviour: the restored version wins, on disk and in
+   the tab. A dirty buffer is never autosaved over it (its pending save is
+   cancelled); its text is kept as a new note "<name> (unsaved before
+   restore YYYYMMDDHHMMSS)" and the user is told. A clean tab just reloads. */
+async function onNoteRestored(c) {
+  const mod = new Set(c.modified);
+  for (const g of groups()) {
+    for (const x of g.tabs) if (!x.kind && x !== g.tabs[g.active] && mod.has(x.name)) x.stale = true;
+    const t = g.active >= 0 ? g.tabs[g.active] : null;
+    if (!t || t.kind || !mod.has(t.name)) continue;
+    clearTimeout(g.saveT); g.saveT = null; g.saveDl = null;
+    const ext = await inv("read_note", { name: t.name });
+    const buf = bufOf(g);
+    if (buf !== ext && t.base !== undefined && buf !== t.base) {
+      const d = new Date(), p = n => String(n).padStart(2, "0");
+      const copy = `${t.name} (unsaved before restore ${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())})`;
+      const r = await createNote(copy, buf);
+      say(r === "ok" ? `Restored "${t.name}". Your unsaved edits were kept in "${copy}".`
+                     : `Restored "${t.name}". Saving your unsaved edits to "${copy}" FAILED — copy them now.`, "history-restore");
+      if (r !== "ok") continue;   // keep the buffer on screen (dirty) rather than lose it
+    }
+    if (buf !== ext) await reloadInPlace(g, ext);
+    t.base = ext;
+  }
+  await onVaultChanged({ added: [], removed: [], renamed: [], modified: [] });
+}
+TAURI.event.listen("note-restored", e => onNoteRestored(e.payload));
 TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
 TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click

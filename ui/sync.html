@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  opensidian, a vault-compatible markdown notes app.
+  Copyright (C) 2026 Jendrik Poloczek
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Sync M6c: the sync window's own page, loaded ONLY into the "sync" webview
+  (src-tauri/src/syncui.rs sync_open). No plugin loader, no community code: the
+  sync/history commands answer this webview alone (syncui.rs gate).
+-->
+<html lang="en"><head><meta charset="utf-8"><title>opensidian — Sync</title>
+<link rel="stylesheet" href="sync.css"></head>
+<body>
+<nav id="tabs" role="tablist">
+  <button id="tab-sync" role="tab" data-pane="sync">Sync</button>
+  <button id="tab-history" role="tab" data-pane="history">File history</button>
+</nav>
+
+<main>
+<section id="pane-sync" hidden>
+  <div id="sync-off" hidden>
+    <h2>Set up sync for this vault</h2>
+    <p class="hint">End-to-end encrypted: the server stores only ciphertext. Everything hangs on 12 backup words.</p>
+    <label>Server URL <input id="s-url" type="url" placeholder="https://sync.example.org" autocomplete="off" spellcheck="false"></label>
+    <label>Device name <input id="s-device" type="text" placeholder="desktop" autocomplete="off"></label>
+    <fieldset>
+      <legend>How</legend>
+      <label class="row"><input type="radio" name="s-join" value="create" checked> Create a new remote vault (enrollment token from the server admin)</label>
+      <label class="row"><input type="radio" name="s-join" value="words"> Join an existing vault with its 12 backup words</label>
+    </fieldset>
+    <label id="s-secret-l">Enrollment token <textarea id="s-secret" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
+    <label>CA file (optional, self-hosted) <input id="s-ca" type="text" placeholder="/etc/ssl/my-ca.pem" autocomplete="off" spellcheck="false"></label>
+    <button id="s-setup" class="cta">Set up</button>
+  </div>
+
+  <div id="sync-on" hidden>
+    <h2>Sync</h2>
+    <dl id="s-status"></dl>
+    <div class="actions"><button id="s-now" class="cta">Sync now</button> <span id="s-result" class="hint"></span></div>
+    <h3>Conflicts</h3>
+    <label>When two devices changed the same note
+      <select id="s-mode">
+        <option value="auto-merge">Automatically merge</option>
+        <option value="conflict-file">Create conflict file</option>
+      </select>
+    </label>
+    <p class="hint">Applies to this device. Conflict files are named "&lt;note&gt; (Conflicted copy &lt;device&gt; YYYYMMDDHHMM).md"; the losing version is always kept in File history.</p>
+    <h3>Backup words</h3>
+    <p class="hint">The 12 words are the only way to recover the vault on a new device. They never leave this window.</p>
+    <button id="s-reveal">Reveal backup words…</button>
+    <h3>Vault compromised?</h3>
+    <p class="hint">If the backup words or a device of this vault were lost, stolen or seen by someone else, the vault is <b>burned</b> — a single device cannot be locked out. <b>Move to a new vault</b>: this device creates a new vault (new 12 words, new server space) from the notes in this folder and their file history, then destroys the old vault on the server. Every other device sets up sync again with the new words. Changes other devices never synced to this one are not carried over.</p>
+    <label>Enrollment token for the new vault <textarea id="m-token" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
+    <label>Current backup words (only if this device does not hold them) <textarea id="m-words" rows="2" autocomplete="off" spellcheck="false"></textarea></label>
+    <div class="actions"><button id="m-move" class="danger">Move to a new vault…</button> <span id="m-result" class="hint"></span></div>
+  </div>
+
+  <div id="words-box" hidden>
+    <p class="warn">Write these words on paper, in order. Nobody else should see them.</p>
+    <ol id="words" class="words" aria-label="backup words"></ol>
+    <p class="hint">Hidden again in <span id="words-left">60</span> s. <button id="words-hide">Hide now</button></p>
+    <div id="quiz">
+      <h3>Verify</h3>
+      <p class="hint">Type the words at these positions (after hiding them).</p>
+      <div id="quiz-fields"></div>
+      <button id="quiz-check">Check</button> <span id="quiz-result" class="hint"></span>
+    </div>
+  </div>
+  <p id="s-err" class="err" role="alert"></p>
+</section>
+
+<section id="pane-history" hidden>
+  <h2>File history</h2>
+  <div class="actions">
+    <label>Note <input id="h-note" type="text" placeholder="Folder/Note" autocomplete="off" spellcheck="false"></label>
+    <button id="h-show">Show versions</button>
+    <button id="h-deleted">Recently deleted</button>
+  </div>
+  <div id="h-split">
+    <ul id="h-list" class="list" aria-label="versions"></ul>
+    <div id="h-view">
+      <div id="h-head" class="hint">Select a version to compare it with the note on disk.</div>
+      <pre id="h-diff" class="diff"></pre>
+      <div class="actions"><button id="h-restore" disabled>Restore this version</button></div>
+    </div>
+  </div>
+  <p id="h-err" class="err" role="alert"></p>
+</section>
+</main>
+<script src="sync.js"></script>
+</body></html>

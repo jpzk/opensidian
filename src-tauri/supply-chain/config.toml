@@ -22,6 +22,9 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 [policy.glib]
 audit-as-crates-io = true
 
+[policy.rustls-webpki]
+audit-as-crates-io = true
+
 [[exemptions.aho-corasick]]
 version = "1.1.5"
 criteria = "safe-to-deploy"
@@ -294,6 +297,14 @@ criteria = "safe-to-deploy"
 version = "0.4.10"
 criteria = "safe-to-deploy"
 
+[[exemptions.fallible-iterator]]
+version = "0.3.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.fallible-streaming-iterator]]
+version = "0.1.9"
+criteria = "safe-to-deploy"
+
 [[exemptions.fastrand]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
@@ -478,6 +489,10 @@ criteria = "safe-to-deploy"
 version = "1.10.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.httpdate]]
+version = "1.0.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.hyper]]
 version = "1.11.1"
 criteria = "safe-to-deploy"
@@ -602,6 +617,10 @@ criteria = "safe-to-deploy"
 version = "0.4.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.jobserver]]
+version = "0.1.35"
+criteria = "safe-to-deploy"
+
 [[exemptions.js-sys]]
 version = "0.3.104"
 criteria = "safe-to-deploy"
@@ -648,6 +667,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.libredox]]
 version = "0.1.21"
+criteria = "safe-to-deploy"
+
+[[exemptions.libsqlite3-sys]]
+version = "0.38.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.linebender_resource_handle]]
@@ -765,6 +788,21 @@ criteria = "safe-to-deploy"
 [[exemptions.once_cell]]
 version = "1.21.4"
 criteria = "safe-to-deploy"
+
+[[exemptions.openssl]]
+version = "0.10.81"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap (operator 2026-11-19): safe Rust FFI over libcrypto; links ONLY the box-built OpenSSL 3.5.9 whose FIPS provider is CMVP #5586 (docs/sync/cmvp.md). Pinned exact (=0.10.81, crates.io 2026-06-12, >= 6 weeks; sha256 77823a27..7a45, docs/sync/deps.md). No vendored feature. Used only by sync-crypto + rustls-openssl, every EVP fetch with fips=yes; approved mode enforced at startup (refusal tests)."
+
+[[exemptions.openssl-macros]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap: proc-macro of the openssl crate (corresponds/derive helpers, no runtime code, no I/O). Pinned exact =0.1.1 (crates.io 2023-04-01; sha256 a948666b..7d9c, docs/sync/deps.md)."
+
+[[exemptions.openssl-sys]]
+version = "0.9.117"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap: raw libcrypto/libssl bindings; build.rs only locates the system OpenSSL via OPENSSL_DIR (box prefix, OPENSSL_NO_VENDOR=1). Optional openssl-src/aws-lc-*/bssl-sys/bindgen stay OFF (Cargo.lock has none). Pinned exact =0.9.117 (crates.io 2026-06-12; sha256 b47e7e6b..3695, docs/sync/deps.md)."
 
 [[exemptions.pango]]
 version = "0.18.3"
@@ -914,8 +952,29 @@ criteria = "safe-to-deploy"
 version = "0.13.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.rusqlite]]
+version = "0.40.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.rustc-hash]]
 version = "2.1.3"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustls]]
+version = "0.23.45"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustls-openssl]]
+version = "0.4.2"
+criteria = "safe-to-deploy"
+notes = "sync OpenSSL swap: rustls CryptoProvider on rust-openssl. Pinned exact =0.4.2 (crates.io 2026-10-02, 48 days; sha256 ddabe409..760c, docs/sync/deps.md), default-features off; we build a custom provider (TLS 1.3 AES-GCM suites, ECDHE P-256/P-384 only) and refuse unless provider.fips(). Source read during pinning (goal sync-e2e-4 research/ro)."
+
+[[exemptions.rustls-pki-types]]
+version = "1.15.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.rustls-webpki]]
+version = "0.103.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustversion]]
@@ -1051,6 +1110,10 @@ criteria = "safe-to-deploy"
 version = "0.6.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.subtle]]
+version = "2.6.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.swift-rs]]
 version = "1.0.8"
 criteria = "safe-to-deploy"
@@ -1155,6 +1218,10 @@ criteria = "safe-to-deploy"
 version = "1.53.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.tokio-rustls]]
+version = "0.26.6"
+criteria = "safe-to-deploy"
+
 [[exemptions.tokio-util]]
 version = "0.7.19"
 criteria = "safe-to-deploy"
@@ -1240,12 +1307,20 @@ criteria = "safe-to-deploy"
 version = "1.0.24"
 criteria = "safe-to-deploy"
 
+[[exemptions.untrusted]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.url]]
 version = "2.5.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.uuid]]
 version = "1.26.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.vcpkg]]
+version = "0.2.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.vello_common]]
@@ -1540,6 +1615,10 @@ criteria = "safe-to-deploy"
 version = "0.1.7"
 criteria = "safe-to-deploy"
 
+[[exemptions.zeroize]]
+version = "1.9.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.zerotrie]]
 version = "0.2.5"
 criteria = "safe-to-deploy"
@@ -1558,6 +1637,18 @@ criteria = "safe-to-deploy"
 
 [[exemptions.zmij]]
 version = "1.0.23"
+criteria = "safe-to-deploy"
+
+[[exemptions.zstd]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zstd-safe]]
+version = "8.0.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.zstd-sys]]
+version = "2.1.0+zstd.1.5.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.zune-core]]

@@ -10,6 +10,7 @@
 #   (webkit-bundle-cve moved to release.yml job appimage: it scans the SBOM generated in the build
 #                      container, both arches, blocking; G1 was this job installing apt on the runner host)
 #   glib-vendor-check  src-tauri/vendor/glib-0.18.5 == crates.io glib 0.18.5 + the one documented patch
+#   webpki-vendor-check  src-tauri/vendor/rustls-webpki-0.103.15 == crates.io 0.103.15 + Cargo.toml noring patch
 #   vex-check          supply-chain/vex.cdx.json == deny.toml / audit.toml ignores, no expired entry
 #   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
 #   (no SBOM job: release.yml generates it in the appimage build container,
@@ -214,6 +215,17 @@ jobs:
           persist-credentials: false
       - name: vendor/glib-0.18.5 == crates.io glib 0.18.5 + glib-fix/variantstriter.patch only
         run: scripts/supply-chain/glib-vendor-check.sh
+
+  webpki-vendor-check:
+    name: webpki vendor check
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: vendor/rustls-webpki-0.103.15 == crates.io rustls-webpki 0.103.15 + webpki-noring/noring.patch only
+        run: scripts/supply-chain/webpki-vendor-check.sh
 
   vex-check:
     name: VEX check

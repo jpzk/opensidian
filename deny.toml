@@ -30,6 +30,28 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained: transitive via serde_with (tauri-utils); revisit 2027-05-15" },
+  # sync TLS / storage deps (ledger 5b, 2026-11-19). rustls bumped 0.23.43 -> 0.23.45 (fixes RUSTSEC-2026-0285);
+  # the fixes below are all < 6 weeks old (dependency age policy). Reachability per id in supply-chain/vex.cdx.json.
+  { id = "RUSTSEC-2026-0346", reason = "rustls: needs Debug of a client session value; resumption disabled, no rustls type is Debug-formatted; bump >=0.23.46 by 2026-11-25" },
+  { id = "RUSTSEC-2026-0347", reason = "rustls: needs ECH, never configured; bump >=0.23.46 by 2026-11-25" },
+  { id = "RUSTSEC-2026-0348", reason = "rustls: needs the brotli feature, off (features = [std]); bump >=0.23.46 by 2026-11-25" },
+  { id = "RUSTSEC-2026-0349", reason = "rustls: classical ECDHE only (no hybrid to downgrade from), resumption disabled; bump >=0.23.46 by 2026-11-25" },
+  { id = "RUSTSEC-2026-0391", reason = "zstd: raw with_context unused (fresh context per object, object.rs); bump >=0.14.3 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0395", reason = "zstd-safe: only CompressionLevel is set, never StableInBuffer; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0396", reason = "zstd-safe: seekable feature off; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0397", reason = "zstd-safe: OutBuffer::around_pos never called (zstd 0.14.0 + sync-core); bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0398", reason = "zstd-safe: seekable feature off; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0399", reason = "zstd-safe: no dictionaries, init_using_*dict never called; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0400", reason = "zstd-safe: no one-shot decompress on a streaming DCtx; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0401", reason = "zstd-safe: zdict_builder feature off; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0402", reason = "zstd-safe: CCtx::try_clone never called, zstdmt off; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0403", reason = "zstd-safe: legacy feature off (no legacy frames), input AEAD-authenticated first; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0404", reason = "zstd-safe: DCtx::try_clone never called; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0405", reason = "zstd-safe: seekable feature off; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0406", reason = "zstd-safe: zstdmt off, NbWorkers never set, fresh context per call; bump >=8.2.0 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0410", reason = "zstd-sys: wasm32 only, no wasm32 target shipped; bump >=2.1.2 by 2026-11-27" },
+  { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys: needs a crafted -wal in sync-server's private 0700 data dir; bump >=0.39.0 by 2026-12-05" },
+  { id = "RUSTSEC-2026-0382", reason = "rustls-webpki (vendored path crate, invisible to cargo deny): only Roots::System via emSign; re-vendor >=0.103.16 by 2026-12-01" },
 ]
 
 [sources]
@@ -61,6 +83,12 @@ allow = [
 # the app crate itself is GPL-3.0-or-later; allow that for opensidian only, not for dependencies
 exceptions = [
   { crate = "opensidian", allow = ["GPL-3.0-or-later"] },
+  # NO "OpenSSL" (OpenSSL/SSLeay) licence anywhere: it is GPL-incompatible (docs/sync/open-questions.md
+  # #13, RESOLVED 2026-11-19: OpenSSL 3 FIPS provider, Apache-2.0). aws-lc-*/ring are gone from the
+  # lock; their exceptions were removed with them.
+  # sync TLS (docs/sync/deps.md): rustls-webpki (vendored path patch, noring) + its hard dep untrusted
+  { crate = "rustls-webpki", allow = ["ISC"] },
+  { crate = "untrusted", allow = ["ISC"] },
 ]
 # the vendored glib [patch] (path crate) is checked like any other crate; only unpublished crates are skipped
 [licenses.private]

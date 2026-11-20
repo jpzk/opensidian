@@ -1,0 +1,51 @@
+# Opensidian Sync CLIs @VERSION@ (Linux @ARCH@)
+
+Plain binaries for self-hosting Opensidian Sync, for Flatpak / AppImage users
+(deb/rpm packages are not built yet):
+
+- `opensidian-sync-server` — the storage server (ciphertext only, holds no keys)
+- `opensidian-syncd` — the sync user service + CLI
+
+Both run **only** on the OpenSSL 3.5.9 FIPS provider (CMVP certificate #5586)
+bundled here as `lib/ossl-modules/fips.so`; they refuse to start without it.
+libcrypto is linked statically; `fips.so` stays a separate module by design.
+
+## 1. Verify the download
+
+    sha256sum -c --ignore-missing SHA256SUMS
+    gh attestation verify opensidian-sync-@VERSION@-linux-@ARCH@.tar.gz --repo jpzk/opensidian
+
+## 2. Run fipsinstall once per machine
+
+    tar xzf opensidian-sync-@VERSION@-linux-@ARCH@.tar.gz
+    cd opensidian-sync-@VERSION@-linux-@ARCH@
+    ./opensidian-sync-fipsinstall
+
+This runs the FIPS module's self-tests on THIS machine (`openssl fipsinstall
+-pedantic`) and writes `ssl/fipsmodule.cnf` + `ssl/openssl.cnf`. Run it again
+after moving the directory. Never copy `fipsmodule.cnf` from another machine.
+
+## 3. Use
+
+    ./opensidian-sync-server vault create --data ~/sync-data      # prints a one-time enrollment token
+    ./opensidian-sync-server serve --data ~/sync-data             # 127.0.0.1:8471; TLS: --tls-cert/--tls-key
+    ./opensidian-syncd setup --url http://127.0.0.1:8471 --vault ~/Notes --name laptop --enroll TOKEN
+    ./opensidian-syncd status
+    ./opensidian-syncd sync-now
+
+Second device: `./opensidian-syncd setup --url URL --vault DIR --name NAME --words`
+(the 12 backup words are read from stdin). `./opensidian-syncd help` lists every command.
+Always start the programs through the launchers in this directory (they point
+OpenSSL at the bundled provider); symlinking them into `~/.local/bin` works.
+
+## FIPS note
+
+The provider is the CMVP #5586 module version (3.5.9), built from the
+signature-verified upstream tarball. Linux x86_64 is the architecture of the
+certificate's tested operational environments, but your distribution/CPU is
+very likely not one of them. **Linux aarch64 is NOT a tested operational
+environment of #5586.** Nothing here is a compliance claim.
+
+## Requirements
+
+glibc >= @GLIBC@ (built on Ubuntu 26.04). Licences: `licenses/`. Build details: `BUILDINFO.txt`.

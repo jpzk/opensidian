@@ -1325,3 +1325,22 @@ Everything else is the published crate byte for byte.
 **Licence:** MIT, full text shipped beside the files as `src-tauri/vendor/glib-0.18.5/LICENSE`
 (with the project's `COPYRIGHT`). MIT is compatible with GPL-3.0. The vendored files carry no
 SPDX tag of ours: tagging them would modify them.
+
+## EFF large wordlist (sync backup words)
+
+**Used in:** `crates/sync-crypto/wordlists/eff_large_wordlist.txt`, embedded in
+`sync-crypto` (`words.rs`) as the word list for the 12 sync backup words
+(docs/sync/key-tree.md §1). The file is the upstream download byte for byte (7776
+lines, dice code + word), sha256
+`addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e`, pinned in code and
+re-checked by `crates/sync-crypto/tests/words.rs`.
+**Upstream:** https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+(announced in "EFF Dice-Generated Passphrases", Joseph Bonneau, 2016-07-19,
+https://www.eff.org/dice)
+**Licence:** Creative Commons Attribution 3.0 United States (CC BY 3.0 US),
+https://creativecommons.org/licenses/by/3.0/us/ — © Electronic Frontier Foundation.
+Attribution: "EFF large wordlist by the Electronic Frontier Foundation, licensed under
+CC BY 3.0 US"; shown again on the sync licence/about screen. The list is a data file,
+unmodified, distributed alongside the GPL program (aggregate). Whether CC BY 3.0 data
+needs anything beyond this attribution next to GPL-3.0 code is listed in
+docs/sync/open-questions.md (licence review, operator).

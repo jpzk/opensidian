@@ -85,6 +85,48 @@
       "name": "chrono",
       "version": "0.4.45",
       "purl": "pkg:cargo/chrono@0.4.45"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustls@0.23.45",
+      "name": "rustls",
+      "version": "0.23.45",
+      "purl": "pkg:cargo/rustls@0.23.45"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zstd@0.14.0",
+      "name": "zstd",
+      "version": "0.14.0",
+      "purl": "pkg:cargo/zstd@0.14.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zstd-safe@8.0.0",
+      "name": "zstd-safe",
+      "version": "8.0.0",
+      "purl": "pkg:cargo/zstd-safe@8.0.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zstd-sys@2.1.0+zstd.1.5.7",
+      "name": "zstd-sys",
+      "version": "2.1.0+zstd.1.5.7",
+      "purl": "pkg:cargo/zstd-sys@2.1.0+zstd.1.5.7"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libsqlite3-sys@0.38.2",
+      "name": "libsqlite3-sys",
+      "version": "0.38.2",
+      "purl": "pkg:cargo/libsqlite3-sys@0.38.2"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustls-webpki@0.103.15",
+      "name": "rustls-webpki",
+      "version": "0.103.15",
+      "purl": "pkg:cargo/rustls-webpki@0.103.15"
     }
   ],
   "vulnerabilities": [
@@ -383,6 +425,545 @@
         {
           "name": "opensidian:expires",
           "value": "2027-05-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0346",
+      "id": "RUSTSEC-2026-0346",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0346.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/rustls@0.23.45"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Debug impls of rustls client session values leak TLS secrets only if the application Debug-formats a session store value; sync-core disables resumption (transport/http.rs client_config: Resumption::disabled, no ClientSessionStore) and never Debug-formats rustls types (HttpTransport Debug prints the base URL only). Fix rustls 0.23.46 (2026-10-14) is < 6 weeks old (dependency age policy); bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0347",
+      "id": "RUSTSEC-2026-0347",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0347.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/rustls@0.23.45"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Needs Encrypted Client Hello; sync-core/sync-server never configure ECH (no EchMode in any ClientConfig). Introduced by the 0.23.45 bump that fixes RUSTSEC-2026-0285. Fix 0.23.46 (2026-10-14) < 6 weeks old; bump by expiry.",
+        "justification": "requires_configuration",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0348",
+      "id": "RUSTSEC-2026-0348",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0348.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/rustls@0.23.45"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Needs the rustls brotli feature (certificate decompression); rustls is built default-features=false, features=[std] in sync-core and sync-server, so no brotli decompressor exists. Fix 0.23.46 (2026-10-14) < 6 weeks old; bump by expiry.",
+        "justification": "requires_configuration",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0349",
+      "id": "RUSTSEC-2026-0349",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0349.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/rustls@0.23.45"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Downgrade of later connections to classical key exchange via a cached key-share prediction from an unauthenticated ServerHello: the sync TLS provider offers classical ECDHE only (rustls-openssl custom_provider, SECP256R1/SECP384R1, no hybrid ML-KEM), so there is nothing to downgrade from, and the client disables resumption. Fix 0.23.46 (2026-10-14) < 6 weeks old; bump by expiry.",
+        "justification": "protected_by_mitigating_control",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-25"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0391",
+      "id": "RUSTSEC-2026-0391",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0391.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd@0.14.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Affects zstd::stream::raw::{Encoder,Decoder}::with_context (reused context); sync-core only calls zstd::bulk::compress and zstd::stream::read::Decoder::new, each with a fresh owned context per object (crates/sync-core/src/object.rs). Fix zstd 0.14.3 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0395",
+      "id": "RUSTSEC-2026-0395",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0395.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Use-after-free only with CParameter::StableInBuffer; the only parameter sync-core sets (via bulk::Compressor) is CompressionLevel. Fix zstd-safe 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0396",
+      "id": "RUSTSEC-2026-0396",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0396.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "zstd_safe::seekable is behind the seekable feature, which is off (default-features=false on zstd/zstd-safe/zstd-sys). Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_present",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0397",
+      "id": "RUSTSEC-2026-0397",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0397.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "OutBuffer::around_pos is never called by zstd 0.14.0 or sync-core (grep of both sources). Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0398",
+      "id": "RUSTSEC-2026-0398",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0398.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Seekable::decompress is behind the seekable feature, off. Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_present",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0399",
+      "id": "RUSTSEC-2026-0399",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0399.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "init_using_cdict / init_using_ddict are never called (no dictionaries; sync-core passes no dictionary). Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0400",
+      "id": "RUSTSEC-2026-0400",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0400.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Needs a one-shot DCtx::decompress* on a context with an open stream; sync-core decompresses only via a fresh stream::read::Decoder per object (decompress_stream), never one-shot on a streaming context. Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0401",
+      "id": "RUSTSEC-2026-0401",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0401.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "train_from_buffer is behind the zdict_builder feature, off (default-features=false). Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_present",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0402",
+      "id": "RUSTSEC-2026-0402",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0402.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "CCtx::try_clone on a multithreaded context: never called, and zstdmt is off. Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0403",
+      "id": "RUSTSEC-2026-0403",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0403.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Needs a legacy (pre-v0.8) frame; the legacy feature is off, so libzstd is built with ZSTD_LEGACY_SUPPORT=0 and rejects legacy frames; input is also AEAD-authenticated (object::open decrypts before decompressing). Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_present",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0404",
+      "id": "RUSTSEC-2026-0404",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0404.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "DCtx::try_clone is never called. Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0405",
+      "id": "RUSTSEC-2026-0405",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0405.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "SeekableCStream is behind the seekable feature, off. Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_present",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0406",
+      "id": "RUSTSEC-2026-0406",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0406.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-safe@8.0.0"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Needs a multithreaded context (NbWorkers > 0) with an unfinished frame; zstdmt is off and sync-core never sets NbWorkers; each bulk::compress uses a fresh context. Fix 8.2.0 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_reachable",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0410",
+      "id": "RUSTSEC-2026-0410",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0410.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/zstd-sys@2.1.0+zstd.1.5.7"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "wasm32-only allocator shim; opensidian/sync ship no wasm32 target (Linux x86_64/aarch64 artifacts). Fix zstd-sys 2.1.2 (2026-10-16) < 6 weeks old; bump by expiry.",
+        "justification": "code_not_present",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-11-27"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0459",
+      "id": "RUSTSEC-2026-0459",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0459.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/libsqlite3-sys@0.38.2"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "detail": "Bundled SQLite < 3.54.0 returns stale page-cache bytes when a database is opened with a crafted sibling -wal; only sync-server links SQLite (rusqlite bundled) and it opens only its own index under its private data dir (0700), so an attacker needs write access to the server data dir (already full control of the ciphertext store). Fix libsqlite3-sys 0.39.0 / rusqlite 0.41 (2026-10-24) < 6 weeks old; bump by expiry.",
+        "justification": "requires_environment",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-12-05"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:RUSTSEC-2026-0382",
+      "id": "RUSTSEC-2026-0382",
+      "source": {
+        "name": "RustSec",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0382.html"
+      },
+      "affects": [
+        {
+          "ref": "pkg:cargo/rustls-webpki@0.103.15"
+        }
+      ],
+      "analysis": {
+        "state": "exploitable",
+        "detail": "Distrusted emSign intermediates may be accepted. vendored path crate (src-tauri/vendor, noring patch) so cargo deny/audit cannot see it; listed here and in both ignore lists so the triage is explicit. Reachable only with Roots::System and a server chain through those intermediates; the recommended setup pins the server CA (Roots::Pem / --ca-file). Fix 0.103.16 (2026-10-20) < 6 weeks old: re-vendor by expiry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2026-12-01"
         }
       ]
     }

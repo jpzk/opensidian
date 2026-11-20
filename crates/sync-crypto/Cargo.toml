@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# sync-crypto: the suite + CryptoProvider trait (docs/sync/spec.md, key-tree.md). No network code.
+# Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
+# and src-tauri/target where CI and the harness expect them). Dependencies are
+# pinned exact (>= 6 weeks old) — see docs/sync/deps.md.
+[package]
+name = "sync-crypto"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+workspace = "../../src-tauri"
+
+[dependencies]
+sha2 = "=0.10.9"
+# M2 suite v1 (docs/sync/cmvp.md, deps.md): the OpenSSL 3 FIPS provider 3.5.9 (CMVP #5586)
+# through rust-openssl (operator 2026-11-19: OpenSSL 3 = Apache-2.0 replaces AWS-LC, whose
+# OpenSSL/SSLeay licence is GPL-incompatible). No `vendored` feature: openssl-sys links the
+# libcrypto built from the pinned openssl-3.5.9 tarball (OPENSSL_DIR, OPENSSL_NO_VENDOR=1,
+# fips-env.sh); fips.so is a separate loadable module (OPENSSL_MODULES + fipsmodule.cnf).
+# Pinned exact, all >= 6 weeks old (deps.md): openssl 0.10.81 / openssl-sys 0.9.117
+# (2026-06-12; 0.10.82 is 2026-11-01, too new), foreign-types 0.3.2 (ForeignTypeRef::as_ptr
+# for the ossl_ffi module).
+openssl = { version = "=0.10.81", default-features = false }
+openssl-sys = { version = "=0.9.117", default-features = false }
+foreign-types = "=0.3.2"
+# 1.9.2 (2026-11-17) is < 6 weeks old -> pin 1.9.1 (2026-10-06). Wipes key material.
+zeroize = "=1.9.1"
+
+[dev-dependencies]
+# Wycheproof JSON vectors (tests/wycheproof.rs); same pin as sync-proto/sync-core.
+serde_json = "=1.0.151"

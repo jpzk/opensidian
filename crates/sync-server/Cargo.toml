@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# sync-server: opensidian-sync-server, self-host storage (M3). Ciphertext only, no keys.
+# HARD RULE (plan §1): depends ONLY on sync-proto + sync-crypto — no Tauri, no sync-core.
+# Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
+# and src-tauri/target where CI and the harness expect them). Every dependency is pinned
+# exact; the HTTP stack reuses crates already in src-tauri/Cargo.lock (hyper, hyper-util,
+# tokio, http, http-body-util, bytes, base64). New crates (rusqlite + bundled SQLite,
+# httpdate via hyper/server) are listed with dates + checksums in docs/sync/deps.md.
+[package]
+name = "sync-server"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+workspace = "../../src-tauri"
+
+[lib]
+name = "sync_server"
+path = "src/lib.rs"
+
+[dependencies]
+sync-proto = { path = "../sync-proto" }
+sync-crypto = { path = "../sync-crypto" }
+# already in the lock via sync-crypto (=1.9.1, deps.md §M2a)
+zeroize = "=1.9.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+base64 = "=0.22.1"
+bytes = "=1.12.1"
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "sync", "time"] }
+# Metadata index (vaults, hashed tokens, object rows, list cursor). Newest release
+# >= 6 weeks old at 2026-11-18 = rusqlite 0.40.2 / libsqlite3-sys 0.38.2 (both
+# 2026-08-08; 0.41.0 is 2026-10-24). Default features off (no statement cache ->
+# no hashlink); "bundled" compiles the vendored SQLite with cc (already locked).
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+libsqlite3-sys = { version = "=0.38.2", default-features = false, features = ["bundled"] }
+# TLS (M3a, OpenSSL swap 2026-11-19): rustls with the rustls-openssl crypto provider, TLS 1.3 only,
+# so every TLS primitive (AES-GCM, HKDF/HMAC, ECDHE P-256/P-384, signature verify, DRBG) runs in the
+# OpenSSL 3.5.9 FIPS provider (CMVP #5586) through EVP with default properties fips=yes
+# (sync_crypto::fips::init). rustls with NO crypto feature (no aws_lc_rs / ring / fips), webpki
+# "std" only (it verifies with the provider's algorithms). rustls 0.23.45 (2026-09-14) + webpki 0.103.15
+# (2026-08-21; rustls 0.23.45 needs ^0.103.14) = newest >= 6 weeks, bumped for RUSTSEC-2026-0285
+# (patched 0.23.45; 0346/0347/0348/0349 need 0.23.46 = 2026-10-14, < 6 weeks -> VEX until 2026-11-25);
+# tokio-rustls 0.26.6 kept; rustls-openssl 0.4.2 (2026-10-02, needs rustls
+# ^0.23.20) default features off (no tls12, no post-quantum hybrid preference). deps.md §TLS-OpenSSL.
+rustls = { version = "=0.23.45", default-features = false, features = ["std"] }
+tokio-rustls = { version = "=0.26.6", default-features = false }
+rustls-webpki = { version = "=0.103.15", default-features = false, features = ["std"] }
+rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
+rustls-openssl = { version = "=0.4.2", default-features = false }
+subtle = { version = "=2.6.1", default-features = false }
+
+[[bin]]
+name = "opensidian-sync-server"
+path = "src/main.rs"

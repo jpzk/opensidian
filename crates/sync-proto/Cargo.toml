@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# sync-proto: /v1 wire types and canonical encodings (docs/sync/spec.md). No I/O.
+# Workspace member; the workspace root is src-tauri/ (keeps src-tauri/Cargo.lock
+# and src-tauri/target where CI and the harness expect them). Dependencies are
+# pinned exact to versions ALREADY in src-tauri/Cargo.lock — see docs/sync/deps.md.
+[package]
+name = "sync-proto"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+workspace = "../../src-tauri"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "=1.0.151"
