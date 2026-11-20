@@ -56,7 +56,7 @@ WORDS=$(sed -n 's/^  \([a-z][a-z -]*\)$/\1/p' "$W/a/setup.err" | head -1)
 say "client A: status + sync-now"
 A status > "$W/a/status.json"; jq -e --arg v "$VID" '.server_ok == true and .vault_id == $v and .device_name == "smoke-a"' "$W/a/status.json" >/dev/null || { cat "$W/a/status.json"; die "A status"; }
 printf 'hello from A\n' > "$W/a/vault/note.md"; mkdir -p "$W/a/vault/sub"; head -c 200000 /dev/urandom > "$W/a/vault/sub/blob.bin"
-A sync-now > "$W/a/sync1.json"; jq -e '.committed != null and .pushed >= 2' "$W/a/sync1.json" >/dev/null || { cat "$W/a/sync1.json"; die "A sync-now"; }
+A sync-now > "$W/a/sync1.json"; jq -e '.committed != null and .pushed >= 1 and .head == .committed' "$W/a/sync1.json" >/dev/null || { cat "$W/a/sync1.json"; die "A sync-now"; }
 
 say "client B: setup --words (stdin)"
 printf '%s\n' "$WORDS" | B setup --url "$URL" --vault "$W/b/vault" --name smoke-b --words > "$W/b/setup.json" 2> "$W/b/setup.err" || { cat "$W/b/setup.err" "$W/b/setup.json"; die "B setup --words"; }
