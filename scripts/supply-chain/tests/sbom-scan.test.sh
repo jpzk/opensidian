@@ -83,6 +83,33 @@ eq "platform: linux aarch64"                      "$("$S" platform opensidian-0.
 eq "platform: macos arm64 -> aarch64"             "$("$S" platform opensidian-0.9.6-macos-arm64.cdx.json)" "macos aarch64"
 eq "platform: macos x86_64"                       "$("$S" platform opensidian-0.9.6-macos-x86_64.cdx.json)" "macos x86_64"
 refuses "platform: unknown arch"          "$S" platform opensidian-0.9.6.cdx.json
+for a in aarch64 armv7 i686 x86_64; do
+  eq "platform: android $a"                      "$("$S" platform "opensidian-0.9.6-android-$a.cdx.json")" "android $a"
+done
+
+# --- android SBOM: versioned pkg:maven kept, unversioned skipped, build-only = development ----
+cat >"$t/android.cdx.json" <<'JSON'
+{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,
+ "metadata":{"component":{"bom-ref":"root","name":"opensidian android","version":"0.0.0"}},
+ "components":[
+  {"bom-ref":"pkg:cargo/jni@0.21.1","name":"jni","version":"0.21.1","purl":"pkg:cargo/jni@0.21.1"},
+  {"bom-ref":"pkg:npm/katex@0.16.47","name":"katex","version":"0.16.47","purl":"pkg:npm/katex@0.16.47"},
+  {"bom-ref":"pkg:maven/androidx.webkit/webkit@1.14.0","group":"androidx.webkit","name":"webkit","version":"1.14.0","scope":"required","purl":"pkg:maven/androidx.webkit/webkit@1.14.0"},
+  {"bom-ref":"pkg:maven/com.android.tools.build/gradle@8.11.0","group":"com.android.tools.build","name":"gradle","version":"8.11.0","scope":"excluded","purl":"pkg:maven/com.android.tools.build/gradle@8.11.0"},
+  {"bom-ref":"pkg:maven/junit/junit#declared=4.+","group":"junit","name":"junit","version":"4.+","scope":"excluded"},
+  {"bom-ref":"pkg:maven/x.y/z","name":"z","version":"unspecified","purl":"pkg:maven/x.y/z"},
+  {"bom-ref":"os:android-system-webview","name":"Android System WebView","version":"provided by the device"}],
+ "dependencies":[{"ref":"root","dependsOn":["pkg:cargo/jni@0.21.1","pkg:npm/katex@0.16.47","pkg:maven/androidx.webkit/webkit@1.14.0","pkg:maven/com.android.tools.build/gradle@8.11.0"]}]}
+JSON
+"$S" snapshot $SHA refs/heads/develop opensidian-sbom-scan/android-aarch64 2026-11-20T00:00:00Z \
+  android/aarch64="$t/android.cdx.json" >"$t/asnap.json" 2>"$t/asnap.err"
+eq "android snapshot: cargo,maven,npm kept"       "$(jq -r '[.manifests[].resolved[].package_url | capture("^pkg:(?<t>[a-z]+)/").t] | unique | join(",")' "$t/asnap.json")" cargo,maven,npm
+eq "android snapshot: 2 versioned maven only"     "$(jq '[.manifests[].resolved[] | select(.package_url | startswith("pkg:maven/"))] | length' "$t/asnap.json")" 2
+eq "android snapshot: unversioned maven skipped"  "$(grep -c 'skipped 1 pkg:maven-without-version' "$t/asnap.err")" 1
+eq "android snapshot: no-purl counted"            "$(grep -c 'skipped 2 pkg:no-purl' "$t/asnap.err")" 1
+eq "android snapshot: maven scope runtime/dev"    "$(jq -r '.manifests[].resolved | [."pkg:maven/androidx.webkit/webkit@1.14.0".scope, ."pkg:maven/com.android.tools.build/gradle@8.11.0".scope] | join("/")' "$t/asnap.json")" runtime/development
+eq "android snapshot: cargo scope stays runtime"  "$(jq -r '.manifests[].resolved."pkg:cargo/jni@0.21.1".scope' "$t/asnap.json")" runtime
+eq "android snapshot: kept-count log line"        "$(grep -c 'kept 1 pkg:cargo, 2 pkg:maven, 1 pkg:npm' "$t/asnap.err")" 1
 
 # --- advisory DB freshness -------------------------------------------------------------------
 mkdir -p "$t/db/osv-scalibr/npm" "$t/rec"
