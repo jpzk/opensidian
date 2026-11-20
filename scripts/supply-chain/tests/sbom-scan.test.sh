@@ -92,5 +92,22 @@ NOW=$(date -u -d '2026-11-20 00:00:00' +%s)
 if NOW=$NOW "$S" dbrev "$t/db" "npm" >"$t/so" 2>&1; then ok "dbrev: fresh DB accepted ($(grep -o 'newest record [^ ]*' "$t/so"))"; else cat "$t/so"; bad "dbrev: fresh DB refused"; fi
 refuses "dbrev: DB not fetched"           env NOW="$NOW" "$S" dbrev "$t/db" crates.io
 refuses "dbrev: DB older than 3 days"     env NOW=$((NOW + 5 * 86400)) "$S" dbrev "$t/db" npm
+# crates.io ships zip entries without times (1980): freshness from the records' "modified"
+mkdir -p "$t/db/osv-scalibr/crates.io" "$t/rec2"
+echo '{"id":"RUSTSEC-1","modified":"2026-11-18T08:00:00Z"}' >"$t/rec2/RUSTSEC-1.json"
+echo '{"id":"RUSTSEC-2","modified":"2026-11-19T09:30:00Z"}' >"$t/rec2/RUSTSEC-2.json"
+touch -d '1980-01-01 00:00:00 UTC' "$t/rec2"/*.json
+(cd "$t/rec2" && TZ=UTC zip -q -X "$t/db/osv-scalibr/crates.io/all.zip" RUSTSEC-1.json RUSTSEC-2.json)
+if NOW=$NOW "$S" dbrev "$t/db" crates.io >"$t/so" 2>&1 && grep -q 'newest record 2026-11-19T09:30:00Z' "$t/so"; then ok "dbrev: 1980 zip times -> newest record modified"; else cat "$t/so"; bad "dbrev: 1980 zip times"; fi
+refuses "dbrev: 1980 zip times + stale modified" env NOW=$((NOW + 5 * 86400)) "$S" dbrev "$t/db" crates.io
+echo '{"id":"RUSTSEC-3"}' >"$t/rec2/RUSTSEC-3.json"; touch -d '1980-01-01 00:00:00 UTC' "$t/rec2/RUSTSEC-3.json"; rm -f "$t/db/osv-scalibr/crates.io/all.zip"
+(cd "$t/rec2" && TZ=UTC zip -q -X "$t/db/osv-scalibr/crates.io/all.zip" RUSTSEC-3.json)
+refuses "dbrev: 1980 zip times + no modified"    env NOW="$NOW" "$S" dbrev "$t/db" crates.io
+
+# --- snapshot of a real-sized SBOM (manifest JSON larger than one argv string, 128 KiB) ------
+jq -n '{bomFormat: "CycloneDX", specVersion: "1.6", components: [range(4000) | {"bom-ref": "n\(.)", purl: "pkg:npm/big-package-name-\(.)@1.0.\(.)"}]}' >"$t/big.cdx.json"
+if "$S" snapshot $SHA refs/heads/develop c 2026-11-20T00:00:00Z a="$t/big.cdx.json" b="$SBOM" >"$t/big.json" 2>"$t/big.err"; then
+  eq "snapshot: big SBOM kept 4000 + 4 packages" "$(jq '[.manifests[].resolved[]] | length' "$t/big.json")" 4004
+else cat "$t/big.err"; bad "snapshot: big SBOM failed"; fi
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

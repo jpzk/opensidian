@@ -167,7 +167,14 @@ cmd_dbrev() {
     [ -s "$z" ] || die "advisory DB $eco not fetched ($z missing/empty): failing, no stale-cache pass"
     newest=$(unzip -Z -T "$z" | awk '$NF ~ /\.json$/ {print $(NF-1)}' | sort | tail -1)
     [ -n "$newest" ] || die "advisory DB $eco ($z) holds no records"
-    ts=$(date -u -d "${newest:0:8} ${newest:9:2}:${newest:11:2}:${newest:13:2}" +%s) || die "advisory DB $eco: bad time '$newest'"
+    if [ "${newest:0:4}" -ge 2000 ] 2>/dev/null; then
+      ts=$(date -u -d "${newest:0:8} ${newest:9:2}:${newest:11:2}:${newest:13:2}" +%s) || die "advisory DB $eco: bad time '$newest'"
+    else
+      # entries without zip times (e.g. crates.io: DOS epoch 1980-00-00): newest record "modified" instead
+      newest=$(unzip -p "$z" '*.json' | jq -rn '[inputs | .modified // empty] | max // empty')
+      [ -n "$newest" ] || die "advisory DB $eco ($z): no zip times and no record 'modified'"
+      ts=$(date -u -d "$newest" +%s) || die "advisory DB $eco: bad modified time '$newest'"
+    fi
     echo "osv advisory DB: $eco size $(stat -c %s "$z") sha256 $(sha256sum "$z" | awk '{print $1}') newest record $(date -u -d "@$ts" +%Y-%m-%dT%H:%M:%SZ) (fetched by this run, checked $(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ))"
     [ $(( (now - ts) / 86400 )) -le "$max" ] || die "advisory DB $eco newest record is older than $max days: stale"
   done
@@ -287,7 +294,9 @@ cmd_snapshot() {
   [ $# -gt 0 ] || die "snapshot: no SBOM"
   grep -Eqx '[0-9a-f]{40}' <<<"$sha" || die "snapshot: sha '$sha' is not a 40-hex commit"
   case "$ref" in refs/heads/*|refs/tags/*) ;; *) die "snapshot: ref '$ref' is not a full ref" ;; esac
-  local arg name f manifests='{}' m
+  # manifests go through files, not argv: real SBOMs exceed ARG_MAX as --argjson
+  local arg name f m tmp i=0
+  tmp=$(mktemp -d); trap 'rm -rf "$tmp"' RETURN
   for arg in "$@"; do
     name=${arg%%=*}; f=${arg#*=}
     [ -s "$f" ] || die "snapshot: $f missing"
@@ -307,9 +316,10 @@ cmd_snapshot() {
               dependencies: ([$dep[(.["bom-ref"] // .purl)][]? | $p[.] // empty] | unique)}}) | from_entries)}}' "$f")
     [ "$(jq --arg n "$name" '.[$n].resolved | length' <<<"$m")" -gt 0 ] || log "snapshot: $name: no npm/cargo package"
     log "snapshot: $name: kept $(jq --arg n "$name" '[.[$n].resolved[] | .package_url | capture("^pkg:(?<t>[a-z]+)/").t] | group_by(.) | map("\(length) pkg:\(.[0])") | join(", ")' -r <<<"$m")"
-    manifests=$(jq -n --argjson a "$manifests" --argjson b "$m" '$a + $b')
+    i=$((i + 1)); printf '%s\n' "$m" >"$tmp/$i.json"
   done
-  jq -n --arg sha "$sha" --arg ref "$ref" --arg corr "$corr" --arg scanned "$scanned" --argjson man "$manifests" '{
+  jq -s 'add' "$tmp"/*.json >"$tmp/manifests"
+  jq -n --arg sha "$sha" --arg ref "$ref" --arg corr "$corr" --arg scanned "$scanned" --slurpfile ms "$tmp/manifests" '$ms[0] as $man | {
     version: 0, sha: $sha, ref: $ref,
     job: {correlator: $corr, id: $corr},
     detector: {name: "opensidian-sbom-scan", version: "1", url: "https://github.com/jpzk/opensidian/blob/main/scripts/supply-chain/sbom-scan.sh"},
