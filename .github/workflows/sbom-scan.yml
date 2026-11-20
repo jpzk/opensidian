@@ -1,0 +1,393 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# SBOM scan — the SBOMs attached to our releases -> GitHub Security (operator 2026-11-20 07:20Z).
+#   fetch             every *.cdx.json asset of the latest PUBLISHED release and of the current
+#                     DRAFT(s), each verified against its .sha256 asset (missing / mismatch -> red).
+#                     When this token cannot see drafts, the sbom-* artifacts of the latest successful
+#                     release.yml run are used instead (artifact zip checked against its sha256 digest,
+#                     then the SBOM against its .sha256). The job summary records which path was taken.
+#   sarif             one job per <platform>-<arch>: pinned osv-scanner with advisory DBs downloaded
+#                     fresh by this run (missing / stale DB -> red), SARIF enriched with
+#                     security-severity (CVSS) and the fixed version, one upload per SBOM category
+#                     sbom-<platform>-<arch> to the PRIVATE code-scanning tab; summary per artifact.
+#   dependency-graph  the same SBOMs as a Dependency submission snapshot (npm + cargo only; deb /
+#                     generic / other components are skipped and counted) so Dependabot sees the
+#                     vendored npm packages and the crates. Stable correlator: resubmission replaces.
+#   android           (android-sbom / android-sarif / android-dependency-graph) no APK is released
+#                     yet: SBOMs are built from a read-only checkout of the android branch at its
+#                     resolved head sha (scripts/supply-chain/android-sbom.sh, one per Rust target the
+#                     Gradle build compiles), scanned the same way -> categories sbom-android-<arch>;
+#                     npm + cargo + versioned maven -> dependency graph, correlator
+#                     opensidian-sbom-scan/android-<arch> per artifact.
+# NO public issues: results go only to code scanning and the dependency graph.
+# Logic + self-test: scripts/supply-chain/sbom-scan.sh, scripts/supply-chain/tests/sbom-scan.test.sh.
+#
+# Triggers: daily cron; workflow_dispatch (optional `release` = id or tag to scan just that release);
+#   release published/edited; workflow_run of Release (release.yml stages/updates the DRAFT, and
+#   GitHub does not fire `release` events for drafts). No pull_request / pull_request_target:
+#   nothing here runs PR code.
+#
+# Hardening: top-level permissions {} and per-job grants; every action pinned to a full commit sha;
+#   checkout never persists the token; no caches; no continue-on-error; osv-scanner pinned by
+#   version + per-arch sha256 (osv-install.sh). The dispatch input reaches the shell only through env
+#   and is validated.
+name: SBOM scan
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'scan only this release (numeric id or tag); empty = latest published + drafts'
+        type: string
+        default: ''
+  release:
+    types: [published, edited]
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: sbom-scan-${{ github.ref }}-${{ inputs.release || 'default' }}
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    name: fetch + verify release SBOMs
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read   # release assets (drafts only if this token can see them)
+      actions: read    # release.yml artifact fallback
+    outputs:
+      cats: ${{ steps.fetch.outputs.cats }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: self-test (no network)
+        run: bash scripts/supply-chain/tests/sbom-scan.test.sh
+      - name: fetch + sha256-verify
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL_INPUT: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if [ -n "${REL_INPUT:-}" ]; then
+            [[ "$REL_INPUT" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || { echo "::error::release input '$REL_INPUT' is not an id or tag"; exit 1; }
+            specs=("release:$REL_INPUT")
+          else
+            specs=(latest drafts)
+          fi
+          bash scripts/supply-chain/sbom-scan.sh fetch sboms "${specs[@]}" 2> >(tee fetch.log >&2)
+          wait
+          cats=$(awk -F'\t' '{print $4"-"$5}' sboms/manifest.tsv | sort -u | jq -R . | jq -cs .)
+          echo "cats=$cats" >> "$GITHUB_OUTPUT"
+          {
+            echo "## SBOM inputs (${specs[*]})"
+            echo
+            grep -E '^(fetch|verify):' fetch.log | sed 's/^/- /'
+            echo
+            awk -F'\t' '{n=split($3,p,"/"); printf "- %s %s %s -> sbom-%s-%s (sha256 %s)\n", $1, $2, p[n], $4, $5, $6}' sboms/manifest.tsv
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-scan-inputs
+          path: sboms/
+          if-no-files-found: error
+          retention-days: 7
+
+  sarif:
+    name: sarif ${{ matrix.cat }}
+    needs: fetch
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        cat: ${{ fromJSON(needs.fetch.outputs.cats) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom-scan-inputs
+          path: sboms/
+      - name: re-verify + select ${{ matrix.cat }}
+        env:
+          CAT: ${{ matrix.cat }}
+        run: |
+          set -euo pipefail
+          awk -F'\t' -v c="$CAT" '$4"-"$5 == c' sboms/manifest.tsv > manifest.cat.tsv
+          [ -s manifest.cat.tsv ] || { echo "::error::no SBOM for $CAT"; exit 1; }
+          while IFS=$'\t' read -r _ _ path _ _ sha; do
+            got=$(bash scripts/supply-chain/sbom-scan.sh verify "$path" "$path.sha256")
+            [ "$got" = "$sha" ] || { echo "::error::$path changed between jobs"; exit 1; }
+          done < manifest.cat.tsv
+      - name: install osv-scanner (pinned version + per-arch sha256)
+        run: |
+          bin=$(bash scripts/supply-chain/osv-install.sh --pinned "$RUNNER_TEMP/osv")
+          "$bin" --version
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: scan with fresh advisory DBs -> enriched SARIF + summary
+        env:
+          CAT: ${{ matrix.cat }}
+        run: |
+          set -euo pipefail
+          bash scripts/supply-chain/sbom-scan.sh scan "$OSV" manifest.cat.tsv out
+          test -s "out/sbom-$CAT.sarif"
+          jq -e '[.runs[0].tool.driver.rules[] | select(.properties["security-severity"])] | length > 0 or (.runs[0].results | length) == 0' "out/sbom-$CAT.sarif" >/dev/null
+          {
+            echo "## sbom-$CAT"
+            echo
+            cat out/summary.md
+            echo
+            echo "Advisory DBs (downloaded by this run):"
+            sed 's/^/- /' out/dbrev.txt
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
+      - name: upload SARIF (category sbom-${{ matrix.cat }})
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: out/sbom-${{ matrix.cat }}.sarif
+          category: sbom-${{ matrix.cat }}
+
+  dependency-graph:
+    name: dependency-graph
+    needs: fetch
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write   # required by POST /repos/{owner}/{repo}/dependency-graph/snapshots; nothing else
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom-scan-inputs
+          path: sboms/
+      - name: SBOMs -> snapshot (npm + cargo only) -> submit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL_INPUT: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS=$'\t' read -r src _ path _ _ sha; do
+            got=$(bash scripts/supply-chain/sbom-scan.sh verify "$path" "$path.sha256")
+            [ "$got" = "$sha" ] || { echo "::error::$path changed between jobs"; exit 1; }
+            args+=("$src/$(basename "$path")=$path")
+          done < sboms/manifest.tsv
+          # the dependency graph + Dependabot follow the DEFAULT branch: attach the snapshot to its head
+          def=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          head=$(gh api "repos/$GITHUB_REPOSITORY/branches/$def" --jq .commit.sha)
+          # stable correlator: the default set (latest + drafts) always replaces itself;
+          # a manual single-release scan gets its own correlator so it never replaces the default set
+          corr="opensidian-sbom-scan/release-sboms"
+          [ -z "${REL_INPUT:-}" ] || corr="opensidian-sbom-scan/manual-${REL_INPUT}"
+          bash scripts/supply-chain/sbom-scan.sh snapshot "$head" "refs/heads/$def" "$corr" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${args[@]}" > snapshot.json 2> >(tee snapshot.log >&2)
+          wait
+          bash scripts/supply-chain/sbom-scan.sh submit snapshot.json | tee submit.log
+          {
+            echo "## dependency graph snapshot ($corr -> refs/heads/$def @ ${head:0:12})"
+            echo
+            sed 's/^/- /' snapshot.log
+            echo "- $(cat submit.log)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
+
+  # --- Android (operator 2026-11-20 09:56Z): no APK is released yet, so the SBOM is BUILT here from
+  # a read-only checkout of the android product branch (resolved to its head sha first, checked
+  # out at exactly that sha, no token persisted), one SBOM per Rust target its Gradle build
+  # compiles (android-sbom.sh -L). Same fail-closed scan + categories sbom-android-<arch>.
+  # Not on release / workflow_run events and not for a single-release dispatch.
+  android-sbom:
+    name: android SBOMs (android branch)
+    if: contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event_name) && !inputs.release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read   # read the android branch (no write anywhere)
+    outputs:
+      cats: ${{ steps.sbom.outputs.cats }}
+      sha: ${{ steps.head.outputs.sha }}
+    env:
+      ANDROID_REF: android
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: self-test (no network)
+        run: |
+          bash scripts/supply-chain/tests/android-sbom.test.sh
+          bash scripts/supply-chain/tests/sbom-scan.test.sh
+      - name: resolve ${{ env.ANDROID_REF }} head sha
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/$ANDROID_REF" --jq .commit.sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot resolve $ANDROID_REF head ('$sha')"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "$ANDROID_REF head: $sha"
+      - name: checkout ${{ env.ANDROID_REF }} @ resolved sha (read-only)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.head.outputs.sha }}
+          path: android
+          persist-credentials: false
+      - name: toolchain (rust-toolchain.sh pin; used only for cargo metadata)
+        run: |
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
+          ch=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml)
+          # the android checkout may carry its own rust-toolchain.toml: never let rustup auto-install it
+          echo "RUSTUP_TOOLCHAIN=$ch" >> "$GITHUB_ENV"
+          echo "android rust-toolchain.toml channel: $(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' android/rust-toolchain.toml 2>/dev/null || echo none) (metadata runs with the pinned $ch)"
+      - name: android-sbom.sh per target -> sboms/
+        id: sbom
+        env:
+          SHA: ${{ steps.head.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C android rev-parse HEAD)" = "$SHA" ] || { echo "::error::android checkout is not $SHA"; exit 1; }
+          mkdir -p sboms/android; : > sboms/manifest.tsv
+          mapfile -t tgts < <(bash scripts/supply-chain/android-sbom.sh -L -C android)
+          [ "${#tgts[@]}" -gt 0 ] || { echo "::error::no android target"; exit 1; }
+          for tgt in "${tgts[@]}"; do
+            echo "[$(date -u +%H:%M:%S)] $tgt"
+            (cd android/src-tauri && cargo metadata --locked --format-version 1 --filter-platform "$tgt") > "meta-$tgt.json"
+            rc=0; f=$(bash scripts/supply-chain/android-sbom.sh -C android -t "$tgt" -o sboms/android -m "meta-$tgt.json" -R "$ANDROID_REF" 2>"log-$tgt") || rc=$?
+            cat "log-$tgt" >&2; cat "log-$tgt" >> android-sbom.log
+            [ "$rc" -eq 0 ] || { echo "::error::android-sbom.sh failed for $tgt (rc $rc)"; exit 1; }
+            sha=$(bash scripts/supply-chain/sbom-scan.sh verify "$f" "$f.sha256")
+            read -r plat arch < <(bash scripts/supply-chain/sbom-scan.sh platform "$f")
+            [ "$plat" = android ] || { echo "::error::$f is not an android SBOM name"; exit 1; }
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' android "$ANDROID_REF@${SHA:0:12}" "$f" "$plat" "$arch" "$sha" >> sboms/manifest.tsv
+          done
+          cats=$(awk -F'\t' '{print $4"-"$5}' sboms/manifest.tsv | sort -u | jq -R . | jq -cs .)
+          echo "cats=$cats" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Android SBOMs ($ANDROID_REF @ ${SHA:0:12}, targets: ${tgts[*]})"
+            echo
+            grep -E '^android-sbom: ' android-sbom.log | sort -u | sed 's/^/- /'
+            echo
+            awk -F'\t' '{n=split($3,p,"/"); printf "- %s -> sbom-%s-%s (sha256 %s)\n", p[n], $4, $5, $6}' sboms/manifest.tsv
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-scan-android
+          path: sboms/
+          if-no-files-found: error
+          retention-days: 7
+
+  android-sarif:
+    name: sarif ${{ matrix.cat }}
+    needs: android-sbom
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        cat: ${{ fromJSON(needs.android-sbom.outputs.cats) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom-scan-android
+          path: sboms/
+      - name: re-verify + select ${{ matrix.cat }}
+        env:
+          CAT: ${{ matrix.cat }}
+        run: |
+          set -euo pipefail
+          awk -F'\t' -v c="$CAT" '$4"-"$5 == c' sboms/manifest.tsv > manifest.cat.tsv
+          [ -s manifest.cat.tsv ] || { echo "::error::no SBOM for $CAT"; exit 1; }
+          while IFS=$'\t' read -r _ _ path _ _ sha; do
+            got=$(bash scripts/supply-chain/sbom-scan.sh verify "$path" "$path.sha256")
+            [ "$got" = "$sha" ] || { echo "::error::$path changed between jobs"; exit 1; }
+          done < manifest.cat.tsv
+      - name: install osv-scanner (pinned version + per-arch sha256)
+        run: |
+          bin=$(bash scripts/supply-chain/osv-install.sh --pinned "$RUNNER_TEMP/osv")
+          "$bin" --version
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: scan with fresh advisory DBs -> enriched SARIF + summary
+        env:
+          CAT: ${{ matrix.cat }}
+        run: |
+          set -euo pipefail
+          bash scripts/supply-chain/sbom-scan.sh scan "$OSV" manifest.cat.tsv out
+          test -s "out/sbom-$CAT.sarif"
+          jq -e '[.runs[0].tool.driver.rules[] | select(.properties["security-severity"])] | length > 0 or (.runs[0].results | length) == 0' "out/sbom-$CAT.sarif" >/dev/null
+          {
+            echo "## sbom-$CAT"
+            echo
+            cat out/summary.md
+            echo
+            echo "Advisory DBs (downloaded by this run):"
+            sed 's/^/- /' out/dbrev.txt
+          } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
+      - name: upload SARIF (category sbom-${{ matrix.cat }})
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: out/sbom-${{ matrix.cat }}.sarif
+          category: sbom-${{ matrix.cat }}
+
+  android-dependency-graph:
+    name: dependency-graph android
+    needs: android-sbom
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write   # required by POST /repos/{owner}/{repo}/dependency-graph/snapshots; nothing else
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom-scan-android
+          path: sboms/
+      - name: android SBOMs -> one snapshot per target (npm + cargo + versioned maven) -> submit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          def=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          head=$(gh api "repos/$GITHUB_REPOSITORY/branches/$def" --jq .commit.sha)
+          echo "## dependency graph snapshots (android -> refs/heads/$def @ ${head:0:12})" | tee -a "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r src rel path plat arch sha; do
+            got=$(bash scripts/supply-chain/sbom-scan.sh verify "$path" "$path.sha256")
+            [ "$got" = "$sha" ] || { echo "::error::$path changed between jobs"; exit 1; }
+            # one stable correlator per artifact: each target's resubmission replaces only itself
+            corr="opensidian-sbom-scan/$plat-$arch"
+            bash scripts/supply-chain/sbom-scan.sh snapshot "$head" "refs/heads/$def" "$corr" \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$src/$(basename "$path")=$path" > "snapshot-$arch.json" 2> >(tee "snapshot-$arch.log" >&2)
+            wait
+            counts=$(jq -r '[.manifests[].resolved[].package_url | capture("^pkg:(?<t>[a-z]+)/").t] | group_by(.) | map("\(.[0]) \(length)") | join(", ")' "snapshot-$arch.json")
+            bash scripts/supply-chain/sbom-scan.sh submit "snapshot-$arch.json" | tee "submit-$arch.log"
+            {
+              echo
+              echo "### $corr ($rel, $(basename "$path"))"
+              echo "- packages: $counts"
+              sed 's/^/- /' "snapshot-$arch.log"
+              echo "- $(cat "submit-$arch.log")"
+            } | tee -a "$GITHUB_STEP_SUMMARY"   # also in the log: summaries are not readable via the REST API
+          done < sboms/manifest.tsv

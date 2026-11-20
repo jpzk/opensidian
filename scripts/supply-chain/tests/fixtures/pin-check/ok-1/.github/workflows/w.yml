@@ -1,0 +1,23 @@
+jobs:
+  a:
+    container:
+      image: docker.io/library/debian@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v6.1.0
+      - uses: ./.github/actions/local
+      - uses: docker://alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - name: apt-get install curl and npm ci (a step name is not a command)
+        run: |
+          # apt-get install curl   (comment)
+          echo "  Debian: sudo apt install libwebkit2gtk-4.1-0"
+          sudo apt-get install -y -q --no-install-recommends curl=8.14.1-2 \
+            elfutils=0.192-4  # elfutils = eu-strip
+          cargo install --locked cargo-about --version 0.8.4
+          cargo install --locked cargo-cyclonedx@0.5.7
+          flatpak --user install -y flathub org.gnome.Platform//49
+          flatpak --user update -y --commit=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef org.gnome.Platform//49
+          curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/tool" "$URL"
+          echo "$SHA  $RUNNER_TEMP/tool" | sha256sum -c -
+          curl -fsS -H "Accept: application/json" https://api.github.com/repos/x/y/releases/latest | jq -r .tag_name
+          pip install --require-hashes -r requirements.txt
+      - uses: semgrep-free/scanner-image@0123456789abcdef0123456789abcdef01234567

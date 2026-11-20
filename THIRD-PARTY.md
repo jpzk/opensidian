@@ -1092,7 +1092,8 @@ THE SOFTWARE.
 
 These files are unmodified upstream bytes under `ui/vendor/`, served from 'self'
 under the app's CSP and loaded only when a community plugin asks for them
-(`moment`, `loadMathJax`, `loadPdfJs`, `loadPrism`). Versions, publish dates,
+(`moment`, `loadMathJax`, `loadPdfJs`, `loadPrism`, `loadMermaid`; Mermaid also renders
+mermaid code blocks in notes). Versions, publish dates,
 npm integrity and sha256 sums live in `ui/vendor/vendor.lock.json` (+ `SHA256SUMS`).
 They carry no SPDX tag of ours: tagging them would modify them, and our GPL tag
 would mislabel them.
@@ -1130,7 +1131,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 ### Prism 1.30.0
 
-**Used in:** `ui/vendor/prism/prism.js` (`loadPrism`, manual mode)
+**Used in:** `ui/vendor/prism/prism.js` + `ui/vendor/prism/prism-components.js` (every language component of the same release, #186) (`loadPrism`, manual mode; the app's fenced-code highlighting `ui/codehl.js`)
 **Upstream:** https://prismjs.com (npm `prismjs@1.30.0`)
 **Licence:** MIT. GPL-compatible. Full text: `ui/vendor/prism/LICENSE`, reproduced here.
 
@@ -1158,6 +1159,97 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+### Mermaid 12.3.0
+
+**Used in:** `ui/vendor/mermaid/mermaid.min.js` (`loadMermaid`; mermaid code blocks in reading view and Live Preview)
+**Upstream:** https://mermaid.js.org (npm `mermaid@12.3.0`)
+**Licence:** MIT. GPL-compatible. Full text: `ui/vendor/mermaid/LICENSE`.
+
+The single bundled file also contains the third-party packages below (resolved
+versions as recorded in the bundle's module paths; the parser's own prebundle
+holds langium, chevrotain-allstar and the vscode-languageserver packages). All are
+GPL-3.0-compatible: MIT, ISC, BSD-3-Clause, Apache-2.0 (chevrotain), DOMPurify,
+dual-licensed MPL-2.0 OR Apache-2.0, used here under Apache-2.0, and elkjs
+(the ELK layout engine, bundled since mermaid 12), dual-licensed EPL-2.0 OR
+GPL-3.0-or-later, used here under GPL-3.0-or-later (the app's own licence). The
+full licence text of every package, taken from its own npm tarball, ships beside
+the bundle as `ui/vendor/mermaid/LICENSES-bundled.txt`.
+
+- `@braintree/sanitize-url@7.1.2` — MIT
+- `@chevrotain/cst-dts-gen@13.2.0` — Apache-2.0
+- `@chevrotain/gast@13.2.0` — Apache-2.0
+- `@chevrotain/regexp-to-ast@13.2.0` — Apache-2.0
+- `@chevrotain/utils@13.2.0` — Apache-2.0
+- `@iconify/utils@3.0.2` — MIT
+- `@mermaid-js/parser@2.0.1` — MIT
+- `@upsetjs/venn.js@2.0.0` — MIT
+- `chevrotain-allstar@0.5.0` — MIT
+- `chevrotain@13.2.0` — Apache-2.0
+- `cose-base@1.0.3` — MIT
+- `cose-base@2.2.0` — MIT
+- `cytoscape-cose-bilkent@4.1.0` — MIT
+- `cytoscape-fcose@2.2.0` — MIT
+- `cytoscape@3.34.0` — MIT
+- `d3-array@2.12.1` — BSD-3-Clause
+- `d3-array@3.2.4` — ISC
+- `d3-axis@3.0.0` — ISC
+- `d3-brush@3.0.0` — ISC
+- `d3-chord@3.0.1` — ISC
+- `d3-color@3.1.0` — ISC
+- `d3-contour@4.0.2` — ISC
+- `d3-delaunay@6.0.4` — ISC
+- `d3-dispatch@3.0.1` — ISC
+- `d3-drag@3.0.0` — ISC
+- `d3-dsv@3.0.1` — ISC
+- `d3-ease@3.0.1` — BSD-3-Clause
+- `d3-fetch@3.0.1` — ISC
+- `d3-force@3.0.0` — ISC
+- `d3-format@3.1.0` — ISC
+- `d3-geo@3.1.1` — ISC
+- `d3-hierarchy@3.1.2` — ISC
+- `d3-interpolate@3.0.1` — ISC
+- `d3-path@1.0.9` — BSD-3-Clause
+- `d3-path@3.1.0` — ISC
+- `d3-polygon@3.0.1` — ISC
+- `d3-quadtree@3.0.1` — ISC
+- `d3-random@3.0.1` — ISC
+- `d3-sankey@0.12.3` — BSD-3-Clause
+- `d3-scale-chromatic@3.1.0` — ISC
+- `d3-scale@4.0.2` — ISC
+- `d3-selection@3.0.0` — ISC
+- `d3-shape@1.3.7` — BSD-3-Clause
+- `d3-shape@3.2.0` — ISC
+- `d3-time-format@4.1.0` — ISC
+- `d3-time@3.1.0` — ISC
+- `d3-timer@3.0.1` — ISC
+- `d3-transition@3.0.1` — ISC
+- `d3-zoom@3.0.0` — ISC
+- `d3@7.9.0` — ISC
+- `dagre-d3-es@7.0.14` — MIT
+- `dayjs@1.11.21` — MIT
+- `dompurify@3.4.17` — (MPL-2.0 OR Apache-2.0)
+- `elkjs@0.12.0` — EPL-2.0 OR GPL-3.0-or-later
+- `es-toolkit@1.45.1` — MIT
+- `fastdom@1.0.12` — MIT
+- `internmap@2.0.3` — ISC
+- `js-yaml@4.3.2` — MIT
+- `katex@0.18.11` — MIT
+- `khroma@2.1.0` — MIT
+- `langium@4.4.0` — MIT
+- `layout-base@1.0.2` — MIT
+- `layout-base@2.0.1` — MIT
+- `lodash-es@4.18.1` — MIT
+- `marked@16.3.0` — MIT
+- `roughjs@4.6.6` — MIT
+- `stylis@4.3.6` — MIT
+- `ts-dedent@2.2.0` — MIT
+- `vscode-jsonrpc@9.0.3` — MIT
+- `vscode-languageserver-protocol@3.18.4` — MIT
+- `vscode-languageserver-textdocument@1.0.15` — MIT
+- `vscode-languageserver-types@3.18.4` — MIT
+- `vscode-languageserver@10.1.1` — MIT
+- `vscode-uri@3.1.0` — MIT
+
 ### MathJax 3.2.2
 
 **Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`; the app's math rendering `ui/mathview.js`)
@@ -1179,7 +1271,7 @@ Apache-2.0 is compatible with GPL-3.0. The vendored files include no NOTICE file
 
 **Used in:** `ui/vendor/fluent/fluent-bundle.js` (window.FluentBundle; ui/i18n.js formats
 `locales/<lang>/main.ftl` with it). Unmodified upstream bytes; version, publish date,
-npm integrity and sha256 in `ui/vendor/fluent/VENDOR.md` / `SHA256SUMS`.
+npm integrity and sha256 live in `ui/vendor/vendor.lock.json` (+ `SHA256SUMS`).
 **Upstream:** https://github.com/projectfluent/fluent.js (npm `@fluent/bundle@0.19.1`)
 **Licence:** Apache-2.0 — full text in `ui/vendor/fluent/LICENSE`. GPL-3.0 compatible
 (Apache-2.0 is one-way compatible with GPLv3).

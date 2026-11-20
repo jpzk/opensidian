@@ -24,6 +24,10 @@ FIXED_FILE=src/variant_iter.rs
 # GLIB_INDEX_URL: test hook only (tests/glib-vendor-check.test.sh serves a doctored index via file://)
 INDEX_URL=${GLIB_INDEX_URL:-https://index.crates.io/gl/ib/glib}
 CRATE_URL=https://static.crates.io/crates/glib/glib-0.18.5.crate
+# sha256 of the 0.18.5 index record (jq -cS {name,vers,deps,cksum,features,yanked}, yanked=false),
+# read 2026-11-18. The index FILE is mutable (every new glib release appends a line), the 0.18.5
+# record is not: any change to it (deps, features, cksum, yanked) fails closed here.
+INDEX_ENTRY_SHA=25a5c5b4653fae1c49d0680f3a29443f45f1cd9f89b3a98cdb6d27f8d1acb2c7
 V=$T/src-tauri/vendor/glib-0.18.5
 refuse() { echo "GLIB-VENDOR REFUSED $*"; exit 1; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -47,6 +51,8 @@ IX=$(jq -r 'select(.vers=="0.18.5") | "\(.cksum) \(.yanked)"' "$W/index" | head 
 [ -n "$IX" ] || refuse "glib 0.18.5 not in crates.io index"
 [ "${IX% *}" = "$CRATE_SHA" ] || refuse "crates.io index cksum ${IX% *} != pinned $CRATE_SHA"
 [ "${IX#* }" = "false" ] || refuse "glib 0.18.5 is yanked on crates.io (yanked=${IX#* }): pick a non-yanked base"
+jq -cS 'select(.vers=="0.18.5") | {name,vers,deps,cksum,features,yanked}' "$W/index" | head -1 >"$W/entry"
+echo "$INDEX_ENTRY_SHA  $W/entry" | sha256sum -c --status - || refuse "crates.io index record of glib 0.18.5 != pinned sha256 $INDEX_ENTRY_SHA"
 echo "[glib-vendor] crates.io index cksum ${IX% *} (== pinned), yanked=${IX#* }"
 
 # 2. the .crate itself
@@ -54,6 +60,7 @@ C=${GLIB_CRATE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/glib-vendor-check}/glib-0.
 mkdir -p "$(dirname "$C")" || refuse "cache dir"
 if [ ! -s "$C" ] || [ "$(sha "$C")" != "$CRATE_SHA" ]; then
   curl -4 -fsSL -m 120 -o "$C.part" "$CRATE_URL" || refuse "download failed: $CRATE_URL"
+  echo "$CRATE_SHA  $C.part" | sha256sum -c --status - || { rm -f "$C.part"; refuse "crate sha256 != pinned $CRATE_SHA: $CRATE_URL"; }
   mv "$C.part" "$C"
 fi
 GOT=$(sha "$C")

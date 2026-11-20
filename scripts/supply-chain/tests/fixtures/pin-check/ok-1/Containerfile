@@ -1,0 +1,2 @@
+FROM docker.io/library/debian@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef AS build
+FROM scratch

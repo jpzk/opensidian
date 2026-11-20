@@ -285,7 +285,8 @@ mod tests {
        program no longer matches and the spawn is asked again; unchanged = same hash (cached). */
     #[test]
     fn spawn_allow_program_hash_change_asks_again() {
-        let d = std::env::temp_dir().join(format!("spawnallow-prog-{}", std::process::id()));
+        // canonical: pin() takes the canonical path (macOS: $TMPDIR is under /var -> /private/var)
+        let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-prog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let prog = d.join("prog");

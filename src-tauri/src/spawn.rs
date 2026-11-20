@@ -400,6 +400,7 @@ mod tests {
 
     /// /proc liveness: we are alive, a reaped child is not, a zombie is not.
     #[test]
+    #[cfg(target_os = "linux")] // reads /proc/<pid>/stat
     fn switch_alive_probe_reads_proc() {
         assert!(alive(std::process::id()));
         let mut c = std::process::Command::new("/bin/true").spawn().unwrap();
@@ -419,7 +420,7 @@ mod tests {
         assert!(hidden_alive(std::process::id()), "kill 0 on ourselves must see us");
         assert!(!hidden_alive(0));
         assert!(!hidden_alive(u32::MAX));
-        let mut c = std::process::Command::new("/bin/true").spawn().unwrap();
+        let mut c = std::process::Command::new("true").spawn().unwrap(); // PATH: /usr/bin/true on macOS
         let pid = c.id();
         c.wait().unwrap();
         assert!(!hidden_alive(pid), "reaped pid counted as alive");

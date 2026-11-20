@@ -26,11 +26,14 @@
 //! phases' (osdrop: a file drag still attaches; droplink: a link drag lands as Markdown).
 //! No new crate: gtk/gdk 0.18.2 are already pinned (consent.rs), the webview's
 //! webkit2gtk::WebView is used only as the gtk::Widget it already is.
+#[cfg(target_os = "linux")]
 use gtk::prelude::*;
+#[cfg(target_os = "linux")]
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::rc::Rc;
 
 /// `pre` stripped off the front of `s`, ASCII case-insensitively (URI schemes are)
@@ -118,6 +121,26 @@ struct Ctl {
 /// wire the app window's webview: call once, after build, with Tauri's own handler disabled
 /// (page_window: disable_drag_drop_handler). The emitted payload is the one the old
 /// WindowEvent::DragDrop pass-through emitted: (paths, x, y), x/y the GTK drop point.
+/// macOS: the same rule on AppKit's drop (macos::file_drop_hook): local files -> drop-files with
+/// (paths, x, y); anything else is WebKit's DOM drop
+#[cfg(target_os = "macos")]
+pub(crate) fn attach(w: &tauri::WebviewWindow) {
+    let win = w.clone();
+    let r = w.with_webview(move |pw| {
+        crate::macos::file_drop_hook(pw.inner(), move |paths, x, y| {
+            use tauri::Emitter;
+            let _ = win.emit(crate::DROP_EVENT, (paths, x, y));
+        });
+    });
+    if let Err(e) = r {
+        eprintln!("[xdnd] macOS drop transport not installed: {e}");
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn attach(_w: &tauri::WebviewWindow) {}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn attach(w: &tauri::WebviewWindow) {
     let win = w.clone();
     let r = w.with_webview(move |pw| {

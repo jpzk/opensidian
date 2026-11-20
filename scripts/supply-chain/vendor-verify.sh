@@ -6,22 +6,31 @@
 #
 # Source of truth: ui/vendor/vendor.lock.json. VENDOR.md files are prose and are NEVER read here.
 # For every library in the lock:
-#   a) GET <registry>/<name>/<version>: .version, .dist.integrity and .dist.tarball must equal the lock;
+#   a) GET <registry>/<name>: the record of <version> (.version, .dist.integrity, .dist.tarball) must
+#      equal the lock, field by field AND as a sha256 of its canonical JSON (#189 pin-check: fetch);
 #   b) download the lock's tarball URL, its sha512 must equal the lock integrity; extract with tar;
 #      every vendored file's sha256 must equal the lock sha256 AND the file at tarball_path
 #      (local_header_lines=N: the vendored file is N lines of our own header + the upstream bytes;
-#      the whole file must also equal vendored_sha256);
+#      the whole file must also equal vendored_sha256; concat=[tarball paths] + concat_separator: the
+#      vendored file is exactly those tarball files in that order, each followed by the separator,
+#      rebuilt from the tarball here — prism-components.js, #186;
+#      source=<URL>: a file the npm tarball does not ship, e.g. fluent/LICENSE — the URL must be
+#      https://raw.githubusercontent.com/<owner>/<repo>/<40-hex commit>/<path> (immutable: no branch or
+#      tag ref), it is fetched once with https only and no redirects followed, and its sha256 must
+#      equal the lock sha256 AND the vendored file; a source entry has no tarball_path/concat);
 #   c) every embedded_version rule (ERE in the file's bytes) must match and yield exactly the lock
 #      version (pdfjsVersion, moment header + .version, MathJax VERSION; prism has none);
 #   d) every file under ui/vendor must be a lock file, a bundle, or listed in allowed_unlocked
 #      (exact paths); symlinks are refused; any VENDOR.md (retired prose notes) is an error;
 #   e) lock published == registry time[version], and published is >= 42 days (six weeks) before
-#      added (the date the bytes landed in git).
+#      added (the date the bytes landed in git), unless the lock carries an age_exemption for a security
+#      fix (reason "security-fix", the GHSA/CVE ids it fixes, who approved it; see age_exempt_ok).
 # For every bundle (CodeMirror cm6.js, an esbuild bundle no upstream file matches): the bundle
 #   sha256 must equal the lock, its committed package-lock.json must exist, its non-dev packages
 #   must be exactly the lock's bundles[].packages (name, version, integrity), every package must
 #   have version/integrity/resolved equal to the registry's version/dist.integrity/dist.tarball,
 #   and every shipped package's publish date must match the registry and obey the six-week rule.
+#   bundles[].files[] (codemirror/LICENSE) take only the commit-pinned source form above.
 #
 # Exit 0 = all proven; 1 = any mismatch (all problems are listed); 2 = usage.
 # Usage: scripts/supply-chain/vendor-verify.sh
@@ -55,15 +64,59 @@ sri_hex() {
   printf '%s' "${1#sha512-}" | base64 -d 2>/dev/null | od -An -v -tx1 | tr -d ' \n'
 }
 purl_of() { local n=$1; printf 'pkg:npm/%s@%s' "${n/#@/%40}" "$2"; }
-# registry packument -> $work/meta.json = versions[v] + {time: time[v]} (fails if v is absent)
+# the pinned registry record of one version: canonical JSON of {version, integrity, tarball}
+#   rec VERSION INTEGRITY TARBALL -> stdout (one line); pin_of ... -> its sha256
+rec() { jq -cnS --arg v "$1" --arg i "$2" --arg t "$3" '{version: $v, integrity: $i, tarball: $t}'; }
+pin_of() { rec "$@" | sha256sum | cut -d' ' -f1; }
+# registry packument -> $work/meta.json = versions[v] + {time: time[v]} (fails if v is absent).
+#   meta NAME VERSION PIN: PIN = sha256 of the lock's record (pin_of). The packument itself is a
+#   mutable index (new versions, dist-tags), so it cannot be hash-pinned as a whole; the record
+#   it serves for VERSION is: its canonical {version, integrity, tarball} must hash to PIN, else
+#   FAIL (#189). The field checks of the callers still run and name the field that differs.
 meta() {
   curl -4 -fsS --retry 3 -m 120 "$reg/$1" -o "$work/pack.json" &&
     jq -e --arg v "$2" '.versions[$v] as $d | select($d != null) | $d + {time: .time[$v]}' \
-      "$work/pack.json" >"$work/meta.json"
+      "$work/pack.json" >"$work/meta.json" || return 1
+  rec "$(jq -r .version "$work/meta.json")" "$(jq -r .dist.integrity "$work/meta.json")" "$(jq -r .dist.tarball "$work/meta.json")" >"$work/meta.rec"
+  echo "$3  $work/meta.rec" | sha256sum -c --status - || err "$1@$2: registry record $(cat "$work/meta.rec") != lock pin sha256 $3"
 }
 # whole days from the date of ISO timestamp $1 to the date of $2
 days() { echo $((($(date -ud "${2:0:10}" +%s) - $(date -ud "${1:0:10}" +%s)) / 86400)); }
 MINDAYS=42 # six-week rule
+# age_exempt_ok <library json>: the ONLY way past the six-week rule is a security fix, written down in
+# the lock as age_exemption = {reason: "security-fix", advisories: ["GHSA-…"|"CVE-…", …] (non-empty,
+# each the advisory the bump fixes), approved: "<who + date>"} and nothing else. Hashes, registry
+# integrity and publish date are still proven exactly as for every other library.
+age_exempt_ok() {
+  jq -e '.age_exemption | type == "object" and (keys == ["advisories", "approved", "reason"])
+    and .reason == "security-fix" and (.approved | type == "string" and length > 0)
+    and (.advisories | type == "array" and length > 0
+         and all(.[]; type == "string" and test("^(GHSA(-[23456789cfghjmpqrvwx]{4}){3}|CVE-[0-9]{4}-[0-9]{4,})$")))' <<<"$1" >/dev/null
+}
+# a files[] "source" URL must be an immutable, commit-addressed raw file: https, one fixed host,
+# /<owner>/<repo>/<40-hex commit sha>/<path> (no branch or tag refs, no query, no '..', no userinfo)
+SRC_HOST=raw.githubusercontent.com
+source_ok() {
+  case $1 in *..* | *'?'* | *'#'* | *'@'* | *%*) return 1 ;; esac
+  printf '%s' "$1" | grep -Eqx "https://${SRC_HOST//./\\.}/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/[0-9a-f]{40}/[A-Za-z0-9._/-]+"
+}
+# check_source <id> <files[] entry json> <tag>: a commit-pinned upstream file (fluent/LICENSE,
+# codemirror/LICENSE). Fetched once, https only, no redirects followed; its sha256 must equal the
+# lock AND the vendored bytes. Returns 0 even on mismatch (errors are counted by err).
+check_source() {
+  local id=$1 F=$2 tag=$3 p s src sf up
+  p=$(jq -r .path <<<"$F"); s=$(jq -r .sha256 <<<"$F"); src=$(jq -r .source <<<"$F")
+  jq -e 'has("tarball_path") or has("concat") | not' <<<"$F" >/dev/null \
+    || { err "$id: $p: a source entry must not also have tarball_path/concat"; return 0; }
+  printf '%s' "$s" | grep -Eqx '[0-9a-f]{64}' || { err "$id: $p: lock sha256 '$s' is not 64 hex"; return 0; }
+  source_ok "$src" || { err "$id: $p: source '$src' is not https://$SRC_HOST/<owner>/<repo>/<40-hex commit>/<path>"; return 0; }
+  [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; return 0; }
+  sf=$work/src.$tag
+  if ! curl -4 -fsS --proto =https --max-redirs 0 --retry 3 -m 120 "$src" -o "$sf"; then err "$id: $p: download $src failed"; return 0; fi
+  up=$(sha256sum "$sf" | cut -d' ' -f1)
+  [ "$up" = "$s" ] || err "$id: lock sha256 of $p ($s) != source $src ($up)"
+  [ "$(sha256 "$vd/$p")" = "$up" ] || err "$id: $p differs from source $src"
+}
 
 jq -e '.lockfileVersion == 1 and (.libraries|type=="array") and (.bundles|type=="array")
        and (.allowed_unlocked|type=="array")' "$lock" >/dev/null \
@@ -79,7 +132,7 @@ for ((i = 0; i < nlib; i++)); do
   want=$(sri_hex "$integ"); [ ${#want} -eq 128 ] || err "$id: lock integrity is not a sha512 SRI"
 
   # a) registry metadata
-  if meta "$name" "$ver"; then
+  if meta "$name" "$ver" "$(pin_of "$ver" "$integ" "$url")"; then
     rv=$(jq -r .version "$work/meta.json"); ri=$(jq -r .dist.integrity "$work/meta.json"); rt=$(jq -r .dist.tarball "$work/meta.json")
     [ "$rv" = "$ver" ] || err "$id: registry version is $rv"
     [ "$ri" = "$integ" ] || err "$id: registry dist.integrity $ri != lock $integ"
@@ -88,7 +141,10 @@ for ((i = 0; i < nlib; i++)); do
     rtime=$(jq -r '.time // ""' "$work/meta.json"); pub=$(jq -r '.published // ""' <<<"$L"); add=$(jq -r '.added // ""' <<<"$L")
     [ -n "$pub" ] && [ "$pub" = "$rtime" ] || err "$id: lock published '$pub' != registry time[$ver] '$rtime'"
     if [ -n "$pub" ] && [ -n "$add" ] && d=$(days "$pub" "$add" 2>/dev/null); then
-      [ "$d" -ge "$MINDAYS" ] || err "$id: published $pub only $d day(s) before added $add (six-week rule: >= $MINDAYS)"
+      if [ "$d" -ge "$MINDAYS" ]; then :
+      elif age_exempt_ok "$L"; then
+        ok "$id: published $pub only $d day(s) before added $add: six-week rule waived for a security fix ($(jq -r '.age_exemption.advisories | join(", ")' <<<"$L"))"
+      else err "$id: published $pub only $d day(s) before added $add (six-week rule: >= $MINDAYS; a security fix needs a well-formed age_exemption)"; fi
     else err "$id: lock needs published + added dates"; fi
   else
     err "$id: no version $ver in registry packument $reg/$name"
@@ -106,6 +162,31 @@ for ((i = 0; i < nlib; i++)); do
     p=$(jq -r .path <<<"$F"); tp=$(jq -r .tarball_path <<<"$F"); s=$(jq -r .sha256 <<<"$F")
     hl=$(jq -r '.local_header_lines // 0' <<<"$F")
     printf '%s\n' "$p" >>"$covered"
+    if jq -e 'has("source")' <<<"$F" >/dev/null; then
+      # a file the npm tarball does not ship (fluent/LICENSE): pinned to an upstream commit URL
+      check_source "$id" "$F" "lib$i.$j"
+      continue
+    fi
+    if jq -e 'has("concat")' <<<"$F" >/dev/null; then
+      # a derived file: the exact concatenation of tarball files (in lock order), each followed by
+      # concat_separator; rebuilt here from the tarball, it must equal the lock sha256 and the vendored bytes
+      [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; continue; }
+      jq -e '(.concat|type=="array") and (.concat|length>0) and (.concat_separator|type=="string")' <<<"$F" >/dev/null \
+        || { err "$id: $p: concat needs a non-empty array + a concat_separator string"; continue; }
+      jq -j '.concat_separator' <<<"$F" >"$work/sep"; : >"$work/cat"; cbad=0
+      while IFS= read -r cp; do
+        case $cp in /* | *..* | "") err "$id: $p: unsafe concat path '$cp'"; cbad=1; break ;; esac
+        [ -f "$x/$cp" ] && [ ! -L "$x/$cp" ] || { err "$id: $p: concat part $cp not in tarball"; cbad=1; break; }
+        cat "$x/$cp" "$work/sep" >>"$work/cat"
+      done <<EOF_CAT
+$(jq -r '.concat[]' <<<"$F")
+EOF_CAT
+      [ "$cbad" = 0 ] || continue
+      up=$(sha256 "$work/cat")
+      [ "$up" = "$s" ] || err "$id: lock sha256 of $p ($s) != concatenation of $(jq '.concat|length' <<<"$F") tarball files ($up)"
+      [ "$(sha256 "$vd/$p")" = "$up" ] || err "$id: $p differs from the concatenation of its tarball files"
+      continue
+    fi
     case $tp in /* | *..*) err "$id: unsafe tarball_path $tp"; continue ;; esac
     [ -f "$vd/$p" ] && [ ! -L "$vd/$p" ] || { err "$id: vendored file $p missing"; continue; }
     [ -f "$x/$tp" ] || { err "$id: $tp not in tarball"; continue; }
@@ -143,6 +224,15 @@ for ((i = 0; i < nb; i++)); do
   jq -e '.lockfileVersion >= 2 and (.packages|type=="object")' "$vd/$pl" >/dev/null || { err "bundle $bn: $pl not a v2/v3 package-lock"; continue; }
   badd=$(jq -r '.added // ""' <<<"$B")
   bad=$nerr
+  # bundles[].files[]: files next to the bundle (codemirror/LICENSE). A bundle has no tarball, so
+  # only the commit-pinned "source" form is accepted.
+  nbf=$(jq '.files // [] | length' <<<"$B")
+  for ((j = 0; j < nbf; j++)); do
+    F=$(jq -c ".files[$j]" <<<"$B")
+    printf '%s\n' "$(jq -r .path <<<"$F")" >>"$covered"
+    jq -e 'has("source")' <<<"$F" >/dev/null || { err "bundle $bn: files[$j] $(jq -r .path <<<"$F"): a bundle file needs a commit-pinned source"; continue; }
+    check_source "bundle $bn" "$F" "bundle$i.$j"
+  done
   # the lock's bundled-package list must be exactly the package-lock's non-dev packages
   plset=$(jq -r '.packages|to_entries[]|select(.key!="" and (.value.dev|not))|"\(.key|sub("^.*node_modules/";"")) \(.value.version) \(.value.integrity)"' "$vd/$pl" | sort)
   lkset=$(jq -r '.packages[]?|"\(.name) \(.version) \(.integrity)"' <<<"$B" | sort)
@@ -153,7 +243,7 @@ for ((i = 0; i < nb; i++)); do
   n=0
   while read -r key pv pi pr pd; do
     pn=${key##*node_modules/}; n=$((n + 1))
-    if ! meta "$pn" "$pv"; then err "bundle $bn: $pn@$pv not in registry"; continue; fi
+    if ! meta "$pn" "$pv" "$(pin_of "$pv" "$pi" "$pr")"; then err "bundle $bn: $pn@$pv not in registry"; continue; fi
     [ "$(jq -r .dist.integrity "$work/meta.json")" = "$pi" ] || err "bundle $bn: $pn@$pv integrity != registry"
     [ "$(jq -r .dist.tarball "$work/meta.json")" = "$pr" ] || err "bundle $bn: $pn@$pv resolved != registry dist.tarball"
     rtime=$(jq -r '.time // ""' "$work/meta.json")
@@ -166,7 +256,7 @@ for ((i = 0; i < nb; i++)); do
   done <<EOF_PL
 $(jq -r '.packages | to_entries[] | select(.key != "") | "\(.key) \(.value.version) \(.value.integrity) \(.value.resolved) \(.value.dev // false)"' "$vd/$pl")
 EOF_PL
-  [ "$bad" = "$nerr" ] && ok "bundle $bn: $p sha256, $n package-lock entries match the registry"
+  [ "$bad" = "$nerr" ] && ok "bundle $bn: $p sha256, $nbf file(s), $n package-lock entries match the registry"
 done
 
 # d) the prose notes were retired for vendor.lock.json (#188): one coming back is an error by itself

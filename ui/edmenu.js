@@ -126,7 +126,7 @@ const EdMenu = (() => {
        Plugin clipboard off (a plugin is on this page): Copy / Cut run WebKit's own copy inside this
        click (execCommand: a real user gesture, CM6 fills the data), Paste rows disabled. */
     const off = clip && clip.off ? clip.off : "", appOff = /App clipboard\)/.test(off);
-    const pasteWhy = appOff ? off : off ? off + " — use Ctrl+V" : clip ? undefined : "";
+    const pasteWhy = appOff ? off : off ? off + " — use " + (/Mac/.test(navigator.platform) ? "Cmd" : "Ctrl") + "+V" : clip ? undefined : "";
     const viaKey = off && !appOff ? cmd => go(() => { if (!document.execCommand(cmd)) say(off, "secclip"); }) : null;
     const CLIP = [
       R(I18N.m("Cut"), viaKey ? viaKey("cut") : go(() => clipCut(g)), "clipboard", appOff ? off : none),

@@ -582,20 +582,24 @@
   /* the free variable `process` an owner's bundle reads (Electron-renderer code: module-scope
      process.umask(), semver checks on process.version, process.platform, process.env.NODE_DEBUG).
      plugins.rs wrap_cjs_ctx binds it as the owners' 4th factory parameter and loader.js fills
-     it from view.process. I/O-free: constants and no-ops only. No exit/kill/stdout/stdin/
+     it from view.process. I/O-free: constants and no-ops only. No exit/kill/stdin/
      binding/getuid/chdir, no electron version, an empty env. chdir is absent, not a throwing
      member: graceful-fs (zotero, slides) wraps a present chdir and setPrototypeOf(wrapper, chdir)s it;
      on this frozen shim the wrap assignment is dropped, so that became setPrototypeOf(chdir, chdir)
      ("Cyclic __proto__ value") and failed the load. execa / which check chdir !== undefined first. */
+  /* stdout / stderr as stock 1.13.7 shows them to a plugin (black box, devtools values only):
+     not a terminal stream, so NO isTTY / columns / rows property at all ("isTTY" in stdout is
+     false) and no tty.WriteStream methods; fd 1 / 2, writable, write() returns true and calls
+     its callback once. tests/procstdio.rs runs this shim in JavaScriptCore against those values. */
   function stdioShim(fd) {
     const s = Object.create(null);
     const noop = () => s;
-    return Object.freeze(Object.assign(s, { fd, isTTY: false, columns: 80, rows: 24, writable: true,
+    return Object.freeze(Object.assign(s, { fd, writable: true,
       write: (c, e, cb) => { const f = typeof e === "function" ? e : cb; if (typeof f === "function") queueMicrotask(() => f()); return true; },
       end: noop, on: noop, once: noop, off: noop, addListener: noop, removeListener: noop, emit: () => false }));
   }
-  function processShim() {
-    const self = Object.create(null);
+  function processShim(proto = null) {
+    const self = Object.create(proto);
     const noop = () => self;
     return Object.freeze(Object.assign(self, {
       platform: "linux", arch: "x64", browser: false, pid: 0,
@@ -607,8 +611,8 @@
       umask: () => 0o022,
       nextTick: (fn, ...a) => { queueMicrotask(() => fn(...a)); },
       emitWarning: () => {},   // deprecation warnings: dropped (no stderr)
-      // stdout/stderr: no terminal (isTTY false, as in a GUI renderer); writes are dropped, like
-      // emitWarning: the page has no stdio. realclaudian's SDK reads process.stdout.isTTY on send.
+      // stdout/stderr: no terminal (no isTTY, as stock); writes are dropped, like emitWarning:
+      // the page has no stdio. realclaudian's SDK reads process.stdout.isTTY on send.
       stdout: stdioShim(1), stderr: stdioShim(2),
       on: noop, once: noop, off: noop, addListener: noop, removeListener: noop, removeAllListeners: noop, emit: () => false,
     }));
@@ -2038,10 +2042,28 @@
   function labelled(m, id) {
     return Object.assign({}, m, { createServer: (o, f) => { const s = m.createServer(o, f); s._plugin = id; return s; } });
   }
+  /* the page-global `process` (copilot-tty). In stock a plugin's process IS window.process, so
+     bundled code that reaches the global object (globalThis.process / window.process) finds the
+     same Node process the factory variable is. Ours had none: copilot reads the global process
+     (box t1 with a read-logging getter) and failed to start with "undefined is not an object
+     (evaluating 'process.stdout.isTTY')"; with this global it starts. Installed when the first plugin view is made
+     (plugins only run in a trusted vault), so a vault without plugins keeps a page with no
+     process. One shared shim, the same constants and no-ops as a plugin's own; its prototype is
+     Object.prototype so String(process) is "[object Object]", never a throw, and page code that
+     sniffs for Node (pdf.js checks process+"" === "[object process]") still sees a browser.
+     Writable and configurable like a plain global, so a plugin's own polyfill assignment works. */
+  let pageProcess = false;
+  function installPageProcess() {
+    if (pageProcess) return;
+    pageProcess = true;
+    if (Object.prototype.hasOwnProperty.call(window, "process")) return;
+    Object.defineProperty(window, "process", { value: processShim(Object.prototype), writable: true, configurable: true, enumerable: false });
+  }
   const views = new Map();   // id -> view (one per plugin id for the page's life)
   function view(id) {
     id = String(id);
     if (views.has(id)) return views.get(id);
+    installPageProcess();
     const made = new Map();   // one module object per builtin name (require twice -> same object)
     let boundReq = null;      // the loader's require for this plugin, for module.createRequire
     const ownRequire = function require(n) {

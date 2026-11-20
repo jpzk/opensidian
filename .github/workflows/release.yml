@@ -10,8 +10,25 @@
 #   opensidian-<ver>-<arch>.flatpak            packaging/flatpak/build.sh
 #   opensidian-<ver>-<arch>.rpm                packaging/ci/rpm-build.sh (fedora:44 GA by digest, per arch)
 #   opensidian-<ver>-<arch>.deb                packaging/ci/deb-build.sh (debian:trixie multi-arch index digest)
-#   SHA256SUMS                                 sha256sum of the ten, x86_64 five first (scripts/release.sh order)
-#   opensidian-<ver>.cdx.json                  merged CycloneDX SBOM from supply-chain.yml (called below; draft-release needs it green)
+#   SHA256SUMS                                 sha256sum of EVERY other release asset (scripts/supply-chain/
+#                                              release-sums.sh): the ten Linux packages first in scripts/release.sh
+#                                              order (x86_64 five, then aarch64), then every other asset (macOS
+#                                              zips + dmg, all SBOMs, all .sha256 files) in C name order.
+#                                              draft-release checks the uploaded draft: asset names minus
+#                                              SHA256SUMS == SHA256SUMS entries, each hash == the GitHub digest
+#   opensidian-<ver>-<arch>.cdx.json (+ .sha256)  the SBOM, generated in the appimage job INSIDE the
+#                                              pinned build container (sbom-local.sh --release), attested
+# macOS, UNSIGNED (not code-signed, not notarized yet), from .github/workflows/macos.yml (workflow_call,
+# job `macos`: native macos-26 arm64 + macos-26-intel runners, cargo build + the full cargo test per
+# arch, lipo -> ONE universal app + launch smoke of it on both arches, then every macOS SBOM + osv CVE
+# scan against the VEX, fail closed). draft-release needs ALL of it green:
+#   opensidian-<ver>-universal.dmg (+ .sha256)  RECOMMENDED: Opensidian.app with one fat binary
+#                                              (x86_64 + arm64), drag-install dmg; macOS runs the native slice
+#   opensidian-<ver>-macos-universal.cdx.json (+ .sha256)  its SBOM (union of the Cargo graphs for both
+#                                              apple triples + vendored JS + WKWebView as an OS component)
+#   opensidian-<ver>-macos-<arch>-unsigned.app.zip   alternative per-arch Opensidian.app, <arch> = aarch64 | x86_64
+#   opensidian-<ver>-macos-<arch>.cdx.json (+ .sha256)  the per-arch macOS SBOM (Cargo graph for the apple
+#                                              triple + vendored JS + WKWebView as an OS component)
 # The recipe is the one releases are cut with today (harness scripts/release.sh +
 # bin/hz/release-build.sh): ONE cargo build PER ARCH, both AppImages from that binary,
 # rpm + deb wrap the SAME binary (each stage refuses unless its /usr/bin/opensidian
@@ -42,7 +59,7 @@ on:
     tags: ['v*']
     # release branch v<ver>-release: builds and stages the DRAFT for tag v<ver>.
     # The tag itself is created by GitHub only when the operator publishes.
-    branches: ['v0.9.4-release']
+    branches: ['v0.9.6-release']
 
 permissions:
   contents: read
@@ -94,37 +111,17 @@ jobs:
             refs/heads/v*-release) [ "v$V-release" = "$GITHUB_REF_NAME" ] || { echo "branch $GITHUB_REF_NAME != version $V"; exit 1; };;
           esac
           echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
-      - name: system packages (= bin/hz/cloud-init.yaml build set)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends build-essential pkg-config libssl-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
-      - name: rust ${{ env.RUST_TOOLCHAIN }}
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-          rustc --version | grep -q "$RUST_TOOLCHAIN" || exit 1
-          rustc -vV | grep -E '^host:'
+          # SBOM root purl pkg:github/jpzk/opensidian@<tag>: the tag itself, or the tag this build is for
+          case "$GITHUB_REF" in refs/tags/v*) TAG=$GITHUB_REF_NAME;; *) TAG=v$V;; esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"; echo "tag $TAG"
+      # The runner is only a HOST from here on (#189): ubuntu-26.04 floats by design, but nothing it
+      # ships is compiled in or bundled. The build environment is packaging/ci/appimage-build.sh's
+      # digest-pinned ubuntu:26.04 image + snapshot.ubuntu.com apt + pkg=version + sha256-checked Rust.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           workspaces: src-tauri
-          key: ${{ matrix.arch }}
-      - name: cargo build --release --locked
-        working-directory: src-tauri
-        run: |
-          # ui/ is not a cargo input (release.sh): force our crate to re-embed it.
-          cargo clean -p opensidian --release
-          cargo build --release --locked
-          ls -l target/release/opensidian; sha256sum target/release/opensidian
-      - name: binary arch + glibc floor
-        run: |
-          B=src-tauri/target/release/opensidian
-          file -b "$B"
-          case "$ARCH" in x86_64) W='x86-64' ;; aarch64) W='ARM aarch64' ;; esac
-          file -b "$B" | grep -q "$W" || { echo "binary is not $W"; exit 1; }
-          echo "glibc floor ($ARCH): $(objdump -T "$B" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)"
-          ldd --version | head -1
+          key: ${{ matrix.arch }}-pinned-env
       - name: appimagetool r13 (sha256-pinned, ${{ matrix.arch }})
         run: |
           eval "SHA=\$APPIMAGETOOL_SHA256_$ARCH"
@@ -132,16 +129,82 @@ jobs:
           curl -4 -fsSL -m 300 -o "$RUNNER_TEMP/appimagetool" "$APPIMAGETOOL_URL_BASE-$ARCH.AppImage"
           echo "$SHA  $RUNNER_TEMP/appimagetool" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/appimagetool"
-      - name: AppImages
+      # SBOM (G1): generated INSIDE the same pinned build container right after the build, from the
+      # built binary (appimage-build.sh SBOM_TAG -> scripts/supply-chain/sbom-local.sh --release:
+      # rust (cargo metadata licenses + $ARCH resolve scope) + ui/vendor + flatpak + the WebKit
+      # closure read from THAT dpkg database + the binary's own ldd closure). --release fails the
+      # job on a skipped part, a structural error (sbom-validate.sh) or a denied license
+      # (license-policy.sh, G7). Nothing about the SBOM comes from the runner host.
+      - name: binary + AppImages + SBOM in the pinned build env (resolved package set recorded)
         env:
           V: ${{ steps.ver.outputs.version }}
+          SBOM_TAG: ${{ steps.ver.outputs.tag }}
         run: |
-          export APPIMAGETOOL="$RUNNER_TEMP/appimagetool"
-          for F in slim portable; do bash packaging/ci/build-appimage.sh "$F" "$V"; done
+          podman --version
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" bash packaging/ci/appimage-build.sh . "$V"
           mkdir -p out/bin
           cp src-tauri/target/release/opensidian out/bin/opensidian
-          ls -l dist/*.AppImage; sha256sum dist/*.AppImage
+          ls -l dist/*.AppImage; sha256sum dist/*.AppImage dist/pkgset-*.tsv dist/libset-*.tsv
           ls dist/opensidian-$V-$ARCH-slim.AppImage dist/opensidian-$V-$ARCH-portable.AppImage
+          S=dist/sbom/opensidian-$V-$ARCH.cdx.json
+          (cd dist/sbom && sha256sum -c opensidian-$V-$ARCH.cdx.json.sha256)
+          jq -e --arg tag "$SBOM_TAG" '(.metadata.properties | map({key: .name, value: .value}) | from_entries) as $p
+            | $p["opensidian:sbom-local:skipped"] == "" and $p["opensidian:sbom-local:release"] == "true"
+            and .metadata.component.purl == "pkg:github/jpzk/opensidian@\($tag)"' "$S" >/dev/null
+          {
+            echo "### SBOM $ARCH (in the build container)"
+            echo "components $(jq '.components | length' "$S"), without licenses $(jq '[.components[] | select((.licenses // []) | length == 0)] | length' "$S"), sha256 $(cut -d' ' -f1 "$S.sha256")"
+          } >> "$GITHUB_STEP_SUMMARY"
+      # WebKit bundle CVE gate (BLOCKING; moved here from supply-chain.yml webkit-bundle-cve, which
+      # installed the apt set on the runner HOST): scans the WebKit part generated above in the build
+      # container, i.e. exactly what this AppImage bundles, on BOTH arches. Fails on any CVE with a
+      # fixed Ubuntu version (osv-fixed-gate.sh); draft-release needs this job.
+      - name: osv-scanner (pinned version + per-arch sha256, osv-scanner.pins)
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh --pinned "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: WebKit bundle CVE gate on the in-container SBOM (fail only on CVEs with a fixed Ubuntu version)
+        run: |
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          W=dist/sbom/parts/webkit.cdx.json
+          echo "WebKit part: $(jq '.components | length' "$W") components"
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-webkit.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json -L "$W"
+          scripts/supply-chain/osv-fixed-gate.sh "$RUNNER_TEMP/osv-webkit.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/sbom/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.cdx.json
+            dist/sbom/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.cdx.json.sha256
+          retention-days: 30
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}   # also when a gate failed: the logs say why
+        with:
+          name: sbom-logs-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/sbom/logs/
+            dist/sbom/parts/
+          retention-days: 30
+          if-no-files-found: warn
+      # SBOM provenance (same mechanism as every release asset): NOT in a dispatch dry run
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        with:
+          subject-path: dist/sbom/opensidian-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.cdx.json
+      # resolved package set + portable library set: SBOM input (#188) and the "same tag twice gives
+      # the same library set" check (#189). Not release assets.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: appimage-pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
+            dist/libset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
+            dist/apt-${{ matrix.arch }}.log
+          retention-days: 90
+          if-no-files-found: error
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -254,14 +317,12 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
-      - name: flatpak + flatpak-builder (runner distro versions, = bin/hz/cloud-init.yaml)
+      - name: flatpak build env (packaging/flatpak/runtimes.sh, pinned host tools + runtime commits)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends flatpak flatpak-builder elfutils  # elfutils = eu-strip (a Recommends, dropped by --no-install-recommends)
-          dpkg-query -W flatpak flatpak-builder elfutils
-          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive --arch="$ARCH" flathub org.gnome.Platform//49 org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
-          flatpak --user list --runtime --columns=application,arch,branch,active
+          bash packaging/flatpak/runtimes.sh host
+          bash packaging/flatpak/runtimes.sh remote
+          bash packaging/flatpak/runtimes.sh log
+          bash packaging/flatpak/runtimes.sh install
       - name: packaging/flatpak/build.sh
         shell: bash  # -eo pipefail: the grep filter must not mask a build failure
         env:
@@ -281,9 +342,18 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # macOS (unsigned): build + full cargo test per arch, then the macOS SBOM + CVE scan (fail
+  # closed). Called, not copied; a failure of ANY of its jobs fails this job, and sums +
+  # draft-release need it, so no release is drafted without green mac builds, tests and scan.
+  macos:
+    name: macOS
+    uses: ./.github/workflows/macos.yml
+    permissions:
+      contents: read
+
   sums:
     name: SHA256SUMS
-    needs: [appimage, wrap, flatpak]
+    needs: [appimage, wrap, flatpak, macos]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -293,23 +363,61 @@ jobs:
     env:
       V: ${{ needs.appimage.outputs.version }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: opensidian-*
           path: dist
           merge-multiple: true
-      - name: SHA256SUMS (scripts/release.sh file order, x86_64 then aarch64)
+      # the Linux SBOMs (appimage job, attested there) + the macOS SBOMs (macos.yml, scanned there)
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-${{ env.V }}-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-macos-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS over EVERY release asset (Linux packages in scripts/release.sh order, then the rest)
         working-directory: dist
+        env:
+          DMG_SHA256: ${{ needs.macos.outputs.dmg_sha256 }}
         run: |
-          F=()
+          set -euo pipefail
+          # the macOS zips arrive with the .sha256 macos.yml wrote next to them: check, then drop
+          # it (not a release asset; SHA256SUMS covers the zips)
           for A in x86_64 aarch64; do
-            F+=(opensidian-$V-$A-slim.AppImage opensidian-$V-$A-portable.AppImage \
-                opensidian-$V-$A.flatpak opensidian-$V-$A.rpm opensidian-$V-$A.deb)
+            sha256sum -c "opensidian-$V-macos-$A-unsigned.app.zip.sha256"
+            rm "opensidian-$V-macos-$A-unsigned.app.zip.sha256"
           done
-          sha256sum "${F[@]}" > SHA256SUMS
-          cat SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 10 ] || { echo "SHA256SUMS must list exactly 10 files"; exit 1; }
-          [ "$(ls -1 | wc -l)" -eq 11 ] || { ls -l; echo "expected exactly 10 artifacts + SHA256SUMS"; exit 1; }
+          # the dmg arrives with its .sha256 (a release asset); it must match, and equal the sha256
+          # the macos universal job reported as its output
+          D="opensidian-$V-universal.dmg"
+          sha256sum -c "$D.sha256"
+          [ "$(sha256sum "$D" | cut -c1-64)" = "$DMG_SHA256" ] || { echo "$D sha256 != macos.yml output '$DMG_SHA256'"; exit 1; }
+          for A in x86_64 aarch64; do sha256sum -c "opensidian-$V-$A.cdx.json.sha256"; done
+          for A in x86_64 aarch64 universal; do sha256sum -c "opensidian-$V-macos-$A.cdx.json.sha256"; done
+          # exactly the 24 release files: 10 Linux + 2 zips + dmg + dmg.sha256 + 5 SBOMs + their .sha256
+          W=()
+          for A in x86_64 aarch64; do
+            W+=(opensidian-$V-$A-slim.AppImage opensidian-$V-$A-portable.AppImage \
+                opensidian-$V-$A.flatpak opensidian-$V-$A.rpm opensidian-$V-$A.deb \
+                opensidian-$V-macos-$A-unsigned.app.zip \
+                opensidian-$V-$A.cdx.json opensidian-$V-$A.cdx.json.sha256 \
+                opensidian-$V-macos-$A.cdx.json opensidian-$V-macos-$A.cdx.json.sha256)
+          done
+          W+=("$D" "$D.sha256" opensidian-$V-macos-universal.cdx.json opensidian-$V-macos-universal.cdx.json.sha256)
+          [ "$(printf '%s\n' "${W[@]}" | sort)" = "$(ls -1A | sort)" ] || { ls -l; echo "dist != the 24 expected release files"; exit 1; }
+          bash "$GITHUB_WORKSPACE/scripts/supply-chain/release-sums.sh" make . "$V"
+          [ "$(wc -l < SHA256SUMS)" -eq 24 ] || { echo "SHA256SUMS must list exactly 24 files"; exit 1; }
+          # same check draft-release runs against the uploaded draft, here on the local files (dry runs too)
+          for f in "${W[@]}"; do echo "$f sha256:$(sha256sum "$f" | cut -c1-64)"; done > "$RUNNER_TEMP/assets.txt"
+          echo "SHA256SUMS sha256:$(sha256sum SHA256SUMS | cut -c1-64)" >> "$RUNNER_TEMP/assets.txt"
+          bash "$GITHUB_WORKSPACE/scripts/supply-chain/release-sums.sh" check SHA256SUMS "$RUNNER_TEMP/assets.txt"
           # TODO(signing, OFFLINE/manual — deliberately NOT in CI): the operator signs
           #   gpg --armor --detach-sign SHA256SUMS   -> SHA256SUMS.asc
           # on their own machine; the private key never touches GitHub. No signing
@@ -317,6 +425,17 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/SHA256SUMS
+      # the macOS files come from the called macos.yml (built in THIS run); attest them here,
+      # like every Linux file, so `gh attestation verify` works for each release asset
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/opensidian-${{ env.V }}-macos-x86_64-unsigned.app.zip
+            dist/opensidian-${{ env.V }}-macos-aarch64-unsigned.app.zip
+            dist/opensidian-${{ env.V }}-universal.dmg
+            dist/opensidian-${{ env.V }}-macos-x86_64.cdx.json
+            dist/opensidian-${{ env.V }}-macos-aarch64.cdx.json
+            dist/opensidian-${{ env.V }}-macos-universal.cdx.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: SHA256SUMS
@@ -324,18 +443,14 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # SBOM + CVE scan + dependency policy: the ONE supply-chain workflow, called (not copied).
-  # A called workflow gets at most the permissions granted here; inside it only the
-  # attest-sbom job uses id-token/attestations write. draft-release needs it green.
+  # CVE scan + dependency policy: the supply-chain workflow, called (not copied). It no
+  # longer builds an SBOM (the SBOM + WebKit CVE gate run in the appimage job above), so it needs no
+  # id-token/attestations. draft-release still needs EVERY remaining supply-chain job green.
   supply-chain:
     name: supply-chain
     uses: ./.github/workflows/supply-chain.yml
-    with:
-      attest: true
     permissions:
       contents: read
-      id-token: write
-      attestations: write
 
   # DRAFT release only — CI never publishes. The operator signs SHA256SUMS
   # OFFLINE (gpg key never touches GitHub), uploads SHA256SUMS.asc, and only
@@ -344,7 +459,7 @@ jobs:
   # the runner's preinstalled first-party gh CLI with the job's github.token.
   draft-release:
     name: draft-release
-    needs: [appimage, sums, supply-chain]
+    needs: [appimage, sums, supply-chain, macos]
     # tags v* -> draft for that tag; branch v<ver>-release -> draft for tag v<ver>
     # targeting the branch commit (no tag is pushed; it appears on publish).
     # A workflow_dispatch dry run (the default) never gets here.
@@ -372,20 +487,35 @@ jobs:
           path: assets
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: sbom
-          path: sbom
-      - name: check the SBOM is opensidian-<ver>.cdx.json (CycloneDX 1.6)
-        run: |
-          ls -l sbom
-          [ "$(ls -1 sbom | wc -l)" -eq 1 ] || { echo "expected exactly one SBOM file"; exit 1; }
-          jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.6"' "sbom/opensidian-$V.cdx.json"
-      - name: check the 11 assets against SHA256SUMS
+          pattern: sbom-${{ env.V }}-*
+          path: assets
+          merge-multiple: true
+      # the macOS SBOMs (macos.yml jobs sbom + sbom-universal, scanned there, fail closed) + their .sha256
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sbom-macos-*
+          path: assets
+          merge-multiple: true
+      # the per-arch SBOMs, generated in the appimage job's build container (+ their .sha256)
+      - name: check the 25 assets (24 files listed in SHA256SUMS + SHA256SUMS)
         working-directory: assets
         run: |
+          set -euo pipefail
+          # macos.yml's per-zip .sha256 is not an asset (SHA256SUMS covers the zips)
+          for A in x86_64 aarch64; do rm "opensidian-$V-macos-$A-unsigned.app.zip.sha256"; done
           ls -l
           sha256sum -c SHA256SUMS
-          [ "$(wc -l < SHA256SUMS)" -eq 10 ] || { echo "SHA256SUMS must list exactly 10 files"; exit 1; }
-          [ "$(ls -1 | wc -l)" -eq 11 ] || { echo "expected exactly 11 assets"; exit 1; }
+          [ "$(wc -l < SHA256SUMS)" -eq 24 ] || { echo "SHA256SUMS must list exactly 24 files"; exit 1; }
+          sha256sum -c "opensidian-$V-universal.dmg.sha256"
+          for A in x86_64 aarch64; do
+            sha256sum -c "opensidian-$V-$A.cdx.json.sha256"
+            sha256sum -c "opensidian-$V-macos-$A.cdx.json.sha256"
+          done
+          sha256sum -c "opensidian-$V-macos-universal.cdx.json.sha256"
+          [ "$(ls -1 | wc -l)" -eq 25 ] || { echo "expected exactly 25 assets"; exit 1; }
+          # every file here except SHA256SUMS is in SHA256SUMS, and nothing else is
+          for f in *; do echo "$f sha256:$(sha256sum "$f" | cut -c1-64)"; done > "$RUNNER_TEMP/local-assets.txt"
+          bash ../scripts/supply-chain/release-sums.sh check SHA256SUMS "$RUNNER_TEMP/local-assets.txt"
       - name: create or update the DRAFT release (never publish)
         shell: bash
         run: |
@@ -405,9 +535,13 @@ jobs:
             P="assets/opensidian-$V-$A"
             FILES+=("$P-slim.AppImage" "$P-portable.AppImage" "$P.flatpak" "$P.rpm" "$P.deb")
           done
+          for A in x86_64 aarch64; do FILES+=("assets/opensidian-$V-macos-$A-unsigned.app.zip"); done
+          FILES+=("assets/opensidian-$V-universal.dmg" "assets/opensidian-$V-universal.dmg.sha256")
           FILES+=(assets/SHA256SUMS)
-          # the SBOM rides next to SHA256SUMS (attested by supply-chain.yml; not listed in SHA256SUMS)
-          FILES+=("sbom/opensidian-$V.cdx.json")
+          for A in x86_64 aarch64; do FILES+=("assets/opensidian-$V-$A.cdx.json" "assets/opensidian-$V-$A.cdx.json.sha256"); done
+          for A in x86_64 aarch64; do FILES+=("assets/opensidian-$V-macos-$A.cdx.json" "assets/opensidian-$V-macos-$A.cdx.json.sha256"); done
+          FILES+=("assets/opensidian-$V-macos-universal.cdx.json" "assets/opensidian-$V-macos-universal.cdx.json.sha256")
+          [ "${#FILES[@]}" -eq 25 ] || { echo "FILES lists ${#FILES[@]}, want 25"; exit 1; }
           {
             if [ -f ".github/release-notes/v$V.md" ]; then
               cat ".github/release-notes/v$V.md"
@@ -447,10 +581,30 @@ jobs:
             gh release create "$TAG" --draft --latest=false --title "$TITLE" --notes-file notes.md "${EXTRA[@]}" "${FILES[@]}"
           fi
 
-          # prove the result: exactly one release for TAG, still a draft, exactly 12 assets (10 + SHA256SUMS + SBOM)
+          # prove the result: exactly one release for TAG, still a draft, exactly 25 CI assets (10 Linux
+          # + 2 macOS zips + the universal dmg and its .sha256 + SHA256SUMS + opensidian-<ver>-<arch>.cdx.json
+          # and .sha256 and opensidian-<ver>-macos-<arch>.cdx.json and .sha256 for both arches +
+          # opensidian-<ver>-macos-universal.cdx.json and .sha256), names = this run's FILES.
           gh api --paginate "repos/$GH_REPO/releases" \
             --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) draft=\(.draft) assets=\(.assets | length) \(.html_url)\"" > after.txt
           cat after.txt
           [ "$(wc -l < after.txt)" -eq 1 ] || { echo "::error::expected exactly one release for $TAG"; exit 1; }
-          grep -q ' draft=true assets=12 ' after.txt || { echo "::error::release is not a draft with 12 assets"; exit 1; }
-          gh api "repos/$GH_REPO/releases/$(cut -d' ' -f1 after.txt)" --jq '.assets[].name'
+          grep -q ' draft=true assets=25 ' after.txt || { echo "::error::release is not a draft with 25 CI assets"; exit 1; }
+          gh api "repos/$GH_REPO/releases/$(cut -d' ' -f1 after.txt)" --jq '.assets[].name' | sort | tee got.txt
+          printf '%s\n' "${FILES[@]##*/}" | sort | cmp -s - got.txt || { echo "::error::draft asset names != this run's 25 files"; exit 1; }
+          # SHA256SUMS == the draft's assets, checked against what GitHub STORED: every asset except
+          # SHA256SUMS is listed, nothing else is, and each listed sha256 == the asset's GitHub digest
+          # (an asset without a digest is downloaded by id and hashed). Fail closed.
+          RID=$(cut -d' ' -f1 after.txt)
+          gh api --paginate "repos/$GH_REPO/releases/$RID/assets" --jq '.[] | "\(.id) \(.name) \(.digest // "null")"' > gh-assets.txt
+          : > draft-assets.txt
+          while read -r AID ANAME ADIG; do
+            if [ "$ADIG" = null ]; then
+              gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$AID" > dl.bin
+              ADIG="sha256:$(sha256sum dl.bin | cut -c1-64)"; rm dl.bin
+            fi
+            echo "$ANAME $ADIG" >> draft-assets.txt
+          done < gh-assets.txt
+          gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$(awk '$2 == "SHA256SUMS" {print $1}' gh-assets.txt)" > draft-SHA256SUMS
+          cmp -s draft-SHA256SUMS assets/SHA256SUMS || { echo "::error::the draft's SHA256SUMS != this run's"; exit 1; }
+          bash scripts/supply-chain/release-sums.sh check draft-SHA256SUMS draft-assets.txt

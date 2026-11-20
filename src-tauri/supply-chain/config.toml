@@ -1009,6 +1009,11 @@ criteria = "safe-to-deploy"
 version = "0.36.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.self_cell]]
+version = "1.3.0"
+criteria = "safe-to-deploy"
+notes = "transitive via Mozilla fluent (fluent-bundle / intl-memoizer); no trusted published audit exists; temporary, revisit by 2027-02-19"
+
 [[exemptions.serde]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
@@ -1276,6 +1281,11 @@ criteria = "safe-to-deploy"
 [[exemptions.tray-icon]]
 version = "0.24.2"
 criteria = "safe-to-deploy"
+
+[[exemptions.type-map]]
+version = "0.5.1"
+criteria = "safe-to-deploy"
+notes = "transitive via Mozilla fluent (fluent-bundle / intl-memoizer); no trusted published audit exists; temporary, revisit by 2027-02-19"
 
 [[exemptions.typeid]]
 version = "1.0.3"

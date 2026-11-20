@@ -711,7 +711,49 @@ const Ed = {
       parts.push(c); off += c.byteLength;
     } while (off < size);
     const ext = p.slice(p.lastIndexOf(".") + 1).toLowerCase();
-    return URL.createObjectURL(new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" }));
+    return new Blob(parts, { type: Ed.AUDIO_MIME[ext] || "" });
+  },
+  /* #197: the player's spinner and "--:--". WebKit's native controls (public WebKit source,
+     Modules/modern-media-controls/media/status-support.js) paint the activity indicator in place of the
+     elapsed time, and NaN as the duration, while
+       !media.played.length && media.readyState !== HAVE_ENOUGH_DATA && media.networkState === NETWORK_LOADING.
+     WebKitGTK's GStreamer player turns its download buffering OFF for every blob: URL
+     (MediaPlayerPrivateGStreamer::updateDownloadBufferingFlag, "Blob URI detected"), so a plain blob: player
+     never learns its download finished: it rests at HAVE_FUTURE_DATA (3) with networkState LOADING, i.e.
+     spinner + "--:--" until the first play, whatever Duration the file carries. A Media Source
+     (W3C Media Source Extensions) holding the whole file is different: after endOfStream() every byte is
+     buffered, the duration is the buffered end, and the element reaches HAVE_ENOUGH_DATA. So a WebM the engine's
+     MSE accepts (the recorder writes audio/webm;codecs=opus) plays from a MediaSource; anything else, or any MSE
+     refusal (no MediaSource, type unsupported, addSourceBuffer / appendBuffer / decode error), plays from the
+     plain blob: URL exactly as before. Both are blob: URLs (media-src 'self' blob:, csp_by_trust); the bytes are
+     the same media_read bytes, read at the same moment (after the press on a restricted page). */
+  AUDIO_MSE: { webm: ['audio/webm; codecs="opus"', 'audio/webm; codecs="vorbis"'] },
+  audioUrl(b, rel, a, s, play) {
+    const A = Ed._aud, MS = typeof window !== "undefined" ? window.MediaSource : undefined;
+    const ext = rel.slice(rel.lastIndexOf(".") + 1).toLowerCase();
+    const t = MS && typeof MS.isTypeSupported === "function" ? (Ed.AUDIO_MSE[ext] || []).find(x => MS.isTypeSupported(x)) : undefined;
+    if (!t) return URL.createObjectURL(b);
+    let keep = b, ms, u;                         // keep: the fallback's bytes, dropped once the Media Source holds them all
+    try { ms = new MS(); u = URL.createObjectURL(ms); } catch (_) { return URL.createObjectURL(b); }
+    const back = () => {
+      if (!keep || !A.live.has(u) || a.getAttribute("src") !== u) return;
+      const p = URL.createObjectURL(keep); keep = null;
+      URL.revokeObjectURL(u); A.live.delete(u); A.live.set(p, s);
+      a.src = p;
+      if (play) { const r = a.play(); if (r && r.catch) r.catch(() => {}); }
+      if (typeof updateTitle === "function") updateTitle();
+    };
+    a.addEventListener("error", back, { once: true });
+    ms.addEventListener("sourceopen", () => {
+      let sb;
+      try { sb = ms.addSourceBuffer(t); } catch (_) { back(); return; }
+      sb.addEventListener("error", back, { once: true });
+      sb.addEventListener("updateend", () => {
+        try { if (ms.readyState === "open") ms.endOfStream(); keep = null; } catch (_) { back(); }
+      }, { once: true });
+      keep.arrayBuffer().then(buf => { try { sb.appendBuffer(buf); } catch (_) { back(); } }, back);
+    }, { once: true });
+    return u;
   },
   // object URLs of embeds no longer in the document are revoked (a re-render, a closed tab); so are those of an
   // embed that has been OFF SCREEN (a view a mode left stays connected) and paused for AUDIO_IDLE — it reloads when
@@ -759,9 +801,9 @@ const Ed = {
     const go = play => {
       if (s.dataset.st) return;
       s.dataset.st = "loading";
-      Ed.audioBlob(rel).then(u => {
-        if (!s.isConnected) { URL.revokeObjectURL(u); s.dataset.st = ""; return; }
-        const A = Ed._aud;
+      Ed.audioBlob(rel).then(b => {
+        if (!s.isConnected) { s.dataset.st = ""; return; }
+        const A = Ed._aud, u = Ed.audioUrl(b, rel, a, s, play);   // #197: a MediaSource for a WebM, else a plain blob: URL
         A.live.set(u, s);
         if (!A.timer) A.timer = setInterval(Ed.audioSweep, 2000);
         if (a.preload !== "metadata") a.preload = "metadata";   // restricted: only now, after the user pressed play
@@ -1741,6 +1783,20 @@ Ed.field = function (g) {
   };
   return f;
 };
+/* #241: re-add the DOM caret range after a user edit (see mount) so WebKitGTK
+   repaints the native caret at its new rect and restarts the blink, as stock does
+   after every edit. Only for a focused, non-composing view with an empty
+   selection whose DOM selection already sits inside this editor. */
+Ed.caretRepaint = function (u) {
+  // a USER edit: CM6 input.* / delete.* and the editor's own keys (os.backspace, os.enter, ...)
+  if (!u.docChanged || !u.transactions.some(t => t.annotation(CMs.Transaction.userEvent) != null)) return;
+  const view = u.view;
+  if (!view.hasFocus || view.composing || !view.state.selection.main.empty) return;
+  const sel = view.root.getSelection ? view.root.getSelection() : document.getSelection();
+  if (!sel || sel.rangeCount !== 1 || !sel.isCollapsed || !view.contentDOM.contains(sel.anchorNode)) return;
+  const r = sel.getRangeAt(0).cloneRange();
+  sel.removeAllRanges(); sel.addRange(r);
+};
 /* The FIRST client rect of selectNodeContents(row).getClientRects(), without
    asking for all the others. A range's rects come in document order — a
    top-level child element's border boxes, then the text rects inside it — so
@@ -1835,7 +1891,8 @@ Ed.rvTaskTok = () => {
 /* #128 census -> " [lptaskxy:<line>:<x>,<y>|...] [lpst:<scrollTop>]" for the FOCUSED group's Live Preview:
    the painted centre of every LP task checkbox inside the editor viewport, keyed by its 0-based source
    line, first 40 (Ed.geom's [ecb:] stops at 40-row notes; the task_toggle phase clicks boxes of a
-   5000-line note). lpst = g.lp.scrollTop, the Live Preview scroller (not cm.scrollDOM) (a toggle must not move the view). Census only. */
+   5000-line note). lpst = scrollTop of the note scroller Ed.scOf(g.lp) = cm.scrollDOM since #148 (.lp.cmown is a
+   layout box that never scrolls, so g.lp.scrollTop read 0 in every view) (a toggle must not move the view). Census only. */
 Ed.lpTaskTok = () => {
   const g = typeof fg === "function" ? fg() : null, cm = Ed.cm(g);
   if (!cm || !g.lp || !g.lp.isConnected || (typeof isReading === "function" && isReading(g))) return "";
@@ -1847,7 +1904,7 @@ Ed.lpTaskTok = () => {
     xy.push(l + ":" + Math.round(r.left + r.width / 2) + "," + Math.round(r.top + r.height / 2));
     if (xy.length >= 40) break;
   }
-  return " [lptaskxy:" + (xy.join("|") || "-") + "] [lpst:" + Math.round(g.lp.scrollTop) + "]";
+  return " [lptaskxy:" + (xy.join("|") || "-") + "] [lpst:" + Math.round(Ed.scOf(g.lp).scrollTop) + "]";
 };
 /* rvtask R5: [rvtaskxy:]/[rvtaskst:] are geometry, so the census must follow a
    READING-VIEW scroll (nothing else refreshes the title on one — the same
@@ -2239,6 +2296,16 @@ Object.assign(Ed, {
       Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
+      // #241: this editor paints the NATIVE caret (no drawSelection). When an edit
+      // changes the line's syntax tree (Backspace into `**strong**` / `[[link]]`, the
+      // mark stops parsing), CM6 re-renders the line's inline DOM and re-collapses the
+      // DOM selection into the NEW text node at the same logical offset. WebKitGTK
+      // neither invalidates the old caret rect nor restarts the blink for that
+      // programmatic move: the caret stays drawn at the old x, or invisible, for up
+      // to a blink period. Re-adding the same range is a real selection change for
+      // WebKit (repaint at the new rect + blink restart); CM6 reads it back as equal
+      // to its state, so no transaction follows.
+      CMv.EditorView.updateListener.of(u => Ed.caretRepaint(u)),
       Ed.lpExt ? Ed.lpExt(v, G) : [],
       Ed.hlExt(v),
     ];
@@ -3021,6 +3088,7 @@ Ed.lpExt = function (v, G) {
   });
   return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
           Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
+          Ed.cbHl ? Ed.cbHl(v, G) : [],   // #186: fence bodies coloured by Prism (ui/codehl.js)
           Ed.mathField ? Ed.mathField(v, G, bust) : []];   // #185: $..$ / $$..$$ typeset (ui/mathview.js)
 };
 /* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
@@ -3079,6 +3147,17 @@ Ed.cbRebuild = function (v) {
   v._cbRb = (v._cbRb || 0) + 1;
   try { v.cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
 };
+// a doc that can hold a mermaid fence (native substring search over the rope chunks; cached per doc)
+Ed.cbMm = doc => {
+  if (!window.Merm) return false;
+  if (Ed._cbMmDoc === doc) return Ed._cbMmOut;
+  let hit = false;
+  for (const it = doc.iter(); !it.next().done;) if (it.value.indexOf("mermaid") >= 0) { hit = true; break; }
+  Ed._cbMmDoc = doc; Ed._cbMmOut = hit;
+  return hit;
+};
+// #187: languages the app renders itself in Live Preview (a plugin processor for the same language wins)
+Ed.cbOwn = lang => lang === "mermaid" && !!window.Merm && !(Ed.cbHook && Ed.cbHook.has(lang));
 Ed.cbField = function (v, G, bust) {
   const { Decoration, WidgetType, EditorView } = CMv;
   if (!Ed.cbFx) Ed.cbFx = CMs.StateEffect.define();
@@ -3087,6 +3166,9 @@ Ed.cbField = function (v, G, bust) {
     eq(o) { return o.lang === this.lang && o.src === this.src && o.path === this.path && o.gen === this.gen; }
     toDOM() {
       const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered cm-lang-" + this.lang);
+      // #187: the app's own mermaid renderer (ui/mermaid.js) when no plugin processes the language:
+      // the stock shape is div.cm-preview-code-block > div.mermaid-wrapper (guard or diagram)
+      if (Ed.cbOwn(this.lang)) { try { w.appendChild(Merm.block(this.src)); } catch (e) { console.error("[mermaid]", e); } return w; }
       const el = Ed.el("div", "block-language-" + this.lang);
       w.appendChild(el);
       // the widget ignores editor events (ignoreEvent): its wiki links follow here (dataview file links)
@@ -3103,15 +3185,15 @@ Ed.cbField = function (v, G, bust) {
   }
   const build = st => {
     const h = Ed.cbHook;
-    if (!h || !h.any()) return Decoration.none;
+    if ((!h || !h.any()) && !Ed.cbMm(st.doc)) return Decoration.none;   // #187: no plugin processor: only a doc with a mermaid fence is scanned
     const g = G();
     const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;   // goal mt-fix: the lp a reading view keeps laid out renders none
     if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
     const blocks = Ed.cbFences(st.doc);
     if (!blocks.length) return Decoration.none;
-    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen() + "/" + (v._cbRb || 0), out = [];
+    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = (h ? h.gen() : 0) + "/" + (v._cbRb || 0), out = [];
     for (const b of blocks) {
-      if (!h.has(b.lang)) continue;
+      if (!(h && h.has(b.lang)) && !Ed.cbOwn(b.lang)) continue;
       if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the fence: its source shows
       out.push(Decoration.replace({ widget: new CB(b.lang, b.src, path, gen), block: true }).range(b.from, b.to));
     }

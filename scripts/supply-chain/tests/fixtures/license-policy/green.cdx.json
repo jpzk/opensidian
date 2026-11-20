@@ -1,0 +1,208 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "bom-ref": "release:opensidian@1.2.3",
+      "name": "opensidian",
+      "version": "1.2.3",
+      "purl": "pkg:github/jpzk/opensidian@v1.2.3",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:cargo/opensidian@1.2.3",
+      "name": "opensidian",
+      "purl": "pkg:cargo/opensidian@1.2.3",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/serde@1.0.0",
+      "name": "serde",
+      "purl": "pkg:cargo/serde@1.0.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/legacy@0.1.0",
+      "name": "legacy",
+      "purl": "pkg:cargo/legacy@0.1.0",
+      "licenses": [
+        {
+          "expression": "MIT/Apache-2.0"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/unicode-ident@1.0.0",
+      "name": "unicode-ident",
+      "purl": "pkg:cargo/unicode-ident@1.0.0",
+      "licenses": [
+        {
+          "expression": "(MIT OR Apache-2.0) AND Unicode-3.0"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/wasi@0.11.0",
+      "name": "wasi",
+      "purl": "pkg:cargo/wasi@0.11.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:cargo/memchr@2.0.0",
+      "name": "memchr",
+      "purl": "pkg:cargo/memchr@2.0.0",
+      "scope": "excluded",
+      "licenses": [
+        {
+          "expression": "Unlicense OR MIT"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:npm/d3-array@3.2.4",
+      "name": "d3-array",
+      "purl": "pkg:npm/d3-array@3.2.4",
+      "licenses": [
+        {
+          "license": {
+            "id": "ISC"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:npm/dompurify@3.0.0",
+      "name": "dompurify",
+      "purl": "pkg:npm/dompurify@3.0.0",
+      "licenses": [
+        {
+          "expression": "MPL-2.0 OR Apache-2.0"
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:deb/ubuntu/webkit2gtk@2.50.0?arch=source&distro=resolute",
+      "name": "webkit2gtk",
+      "purl": "pkg:deb/ubuntu/webkit2gtk@2.50.0?arch=source&distro=resolute",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1-or-later"
+          }
+        },
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        },
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:deb/ubuntu/libfoo@1.0?arch=source&distro=resolute",
+      "name": "libfoo",
+      "purl": "pkg:deb/ubuntu/libfoo@1.0?arch=source&distro=resolute",
+      "licenses": [
+        {
+          "license": {
+            "name": "LicenseRef-deb-copyright-unstructured"
+          }
+        }
+      ]
+    },
+    {
+      "type": "platform",
+      "bom-ref": "flatpak-runtime:org.gnome.Platform//49",
+      "name": "org.gnome.Platform",
+      "purl": "pkg:generic/org.gnome.Platform@49?repository_url=https%3A%2F%2Fdl.flathub.org%2Frepo",
+      "licenses": [
+        {
+          "license": {
+            "name": "LicenseRef-flathub-runtime"
+          }
+        }
+      ]
+    },
+    {
+      "bom-ref": "pkg:github/google/brotli@v1.2.1",
+      "name": "brotli",
+      "purl": "pkg:github/google/brotli@v1.2.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "opensidian@1.2.3",
+      "name": "opensidian",
+      "version": "1.2.3",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "opensidian-flatpak",
+      "name": "dev.koto.opensidian",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "opensidian-ui-vendor",
+      "name": "opensidian ui/vendor",
+      "licenses": [
+        {
+          "expression": "GPL-3.0-or-later"
+        }
+      ],
+      "properties": [
+        {
+          "name": "opensidian:aggregate",
+          "value": "aggregate part root: the third-party libraries vendored under ui/vendor, conveyed as part of the opensidian app under its license; each library component carries its own license"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "release:opensidian@1.2.3",
+      "dependsOn": [
+        "opensidian-flatpak",
+        "opensidian-ui-vendor",
+        "opensidian@1.2.3"
+      ]
+    }
+  ]
+}

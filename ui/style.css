@@ -2196,6 +2196,12 @@ span.is-flashing { background: var(--highlight-yellow) }
            text-align: center; user-select: text }
 .unkview[hidden] { display: none }
 .unkview .unkt { font-size: 1.1em; color: var(--text-normal, inherit) }
+/* #242: the empty "New tab" leaf (stock 1.13.7 shot: three accent links, centred, one under the other) */
+.empty-state { flex: 1 1 0; display: flex; align-items: center; justify-content: center; min-width: 0 }
+.empty-state[hidden] { display: none }
+.empty-state-container { display: flex; flex-direction: column; align-items: center; gap: 14px }
+.empty-state-action { color: var(--text-accent); cursor: pointer; font-size: 1.05em }
+.empty-state-action:hover { color: var(--text-accent-hover) }
 /* themematch: text selection paints from --text-selection (the accent
    at .2 light / .33 dark, see the tokens); without this the engine default blue showed */
 ::selection { background-color: var(--text-selection) }
@@ -2523,3 +2529,27 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .props-vrow .props-vname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .props-vrow .scount { color: var(--text-chrome-dim) }
 .props-vrow .props-vrename { flex: 1; min-width: 0; font: inherit; }
+
+/* #187 Mermaid (ui/mermaid.js): the per-vault trust guard, the diagram, inline errors */
+.mermaid-wrapper { margin: 0.5em 0; }
+/* Live Preview: the widget is measured by CodeMirror; a child margin would collapse through it (CodeAnt #232) */
+.cm-preview-code-block > .mermaid-wrapper { margin: 0; padding: 0.5em 0; }
+.mermaid-guard-header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px 6px 0 0;
+  background: var(--background-secondary); }
+.mermaid-guard-title { font-weight: 600; color: var(--text-normal); }
+.mermaid-guard-description { font-size: 0.9em; color: var(--text-muted); }
+.mermaid-wrapper.is-guarded > pre { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.mermaid-wrapper .mermaid { display: flex; justify-content: center; overflow-x: auto; }
+.mermaid-wrapper .mermaid svg { max-width: 100%; height: auto; }
+.mermaid-error { padding: 8px 12px; border: 1px solid var(--text-error, #e93147); border-radius: 6px;
+  color: var(--text-error, #e93147); background: var(--background-secondary); }
+.mermaid-error-detail { margin: 6px 0 0; white-space: pre-wrap; font-size: 0.85em; }
+
+/* macOS port: the window keeps AppKit's own chrome — traffic lights overlaid on the top-left
+   corner (title_bar_style Overlay) and native resize edges — so the app's own window buttons and
+   resize strips go, and the ribbon + left sidebar tabs start below a strip that holds the lights
+   (still a drag region: #stabs / #ribbon, main.js wfDragRegion). 30px clears the 28px title bar. */
+html.os-mac #wframe > button, html.os-mac #wrz { display: none }
+html.os-mac #ribbon { padding-top: 30px }
+html.os-mac #stabs { padding-top: 30px }
