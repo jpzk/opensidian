@@ -42,13 +42,13 @@ Download one from the [0.9.6 release](https://github.com/jpzk/opensidian/release
 
 | Download | Choose it if | Minimum macOS |
 |---|---|---|
-| [universal dmg](https://github.com/jpzk/opensidian/releases/download/v0.9.6/opensidian-0.9.6-universal.dmg) (recommended) | you want one app for both Apple silicon and Intel Macs: open the dmg and drag Opensidian to Applications | 11.0 on Apple silicon, 10.12 on Intel |
-| [Apple silicon zip](https://github.com/jpzk/opensidian/releases/download/v0.9.6/opensidian-0.9.6-macos-aarch64-unsigned.app.zip) | you want an Apple silicon only zip instead of the dmg: unzip it and move `Opensidian.app` to Applications | 11.0 |
-| [Intel zip](https://github.com/jpzk/opensidian/releases/download/v0.9.6/opensidian-0.9.6-macos-x86_64-unsigned.app.zip) | you want an Intel only zip instead of the dmg: unzip it and move `Opensidian.app` to Applications | 10.12 |
+| [universal dmg](https://github.com/jpzk/opensidian/releases/download/v0.9.6/opensidian-0.9.6-universal.dmg) (recommended) | you want one app for both Apple silicon and Intel Macs: open the dmg and drag Opensidian to Applications | 11 on Apple silicon, 10.15 on Intel |
+| [Apple silicon zip](https://github.com/jpzk/opensidian/releases/download/v0.9.6/opensidian-0.9.6-macos-aarch64-unsigned.app.zip) | you want an Apple silicon only zip instead of the dmg: unzip it and move `Opensidian.app` to Applications | 11 (Big Sur) |
+| [Intel zip](https://github.com/jpzk/opensidian/releases/download/v0.9.6/opensidian-0.9.6-macos-x86_64-unsigned.app.zip) | you want an Intel only zip instead of the dmg: unzip it and move `Opensidian.app` to Applications | 10.15 (Catalina) |
 
 Checksums and signature: [SHA256SUMS](https://github.com/jpzk/opensidian/releases/download/v0.9.6/SHA256SUMS),
 [SHA256SUMS.asc](https://github.com/jpzk/opensidian/releases/download/v0.9.6/SHA256SUMS.asc) (see [Verify your download](#verify-your-download)).
-The minimum macOS is the `LSMinimumSystemVersion` in the app's `Info.plist`; the universal app carries the lower one, and each slice still needs its own.
+Tested on macOS 27 (by the maintainer) and macOS 26 (CI launch smoke on Apple silicon and Intel). Older versions down to the minimum are supported by the toolkit but not tested yet.
 
 **Unsigned, first launch:** the macOS builds are not signed or notarized by Apple yet (signing and notarization are coming soon),
 so macOS blocks the first launch of `Opensidian.app` from Applications:
