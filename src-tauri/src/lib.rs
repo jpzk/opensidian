@@ -1251,10 +1251,12 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     audiorec::arm(&parent, &token, std::time::Instant::now())?;
     let b = tauri::WebviewWindowBuilder::new(&app, audiorec::rec_label(&parent), tauri::WebviewUrl::App("recorder.html".into()))
         .title("audio capture")
-        .focused(false)
         .skip_taskbar(true)
         .decorations(false)
         .inner_size(1.0, 1.0);
+    // android merge: WebviewWindowBuilder::focused is desktop-only in tauri 2 (no such method on mobile)
+    #[cfg(not(target_os = "android"))]
+    let b = b.focused(false);
     #[cfg(not(target_os = "macos"))]
     let b = b.visible(false);
     // macOS: WKWebView never answers getUserMedia from a page in a hidden window, and there is no
@@ -8601,17 +8603,20 @@ pub fn run() {
         wc.create = false;
         wc.clone()
     });
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(appid::plugin())
         .manage(vault)
-        .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
-        .on_menu_event(|_app, _ev| {
-            // macOS port: our Quit (mac_menu) asks the UI to flush like a window close
-            #[cfg(target_os = "macos")]
-            if _ev.id().as_ref() == MAC_QUIT && quit_request(_app, "app quit") {
-                _app.exit(0); // not armed: nothing to wait for
-            }
-        })
+        .manage(ZoomLevel(Mutex::new(read_zoom_cfg())));
+    // android merge: Builder::on_menu_event is desktop-only in tauri 2 (no app menu on mobile)
+    #[cfg(not(target_os = "android"))]
+    let builder = builder.on_menu_event(|_app, _ev| {
+        // macOS port: our Quit (mac_menu) asks the UI to flush like a window close
+        #[cfg(target_os = "macos")]
+        if _ev.id().as_ref() == MAC_QUIT && quit_request(_app, "app quit") {
+            _app.exit(0); // not armed: nothing to wait for
+        }
+    });
+    builder
         .setup(move |app| {
             #[cfg(target_os = "android")]
             {
@@ -10335,7 +10340,7 @@ mod tests {
     #[test]
     fn jit_env_is_applied_before_any_child_or_webview() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
-        let m = src.find("\nfn main() {").expect("main");
+        let m = src.find("\npub fn run() {").expect("run (the desktop main() is opensidian_lib::run since the android split)");
         let mb = &src[m..m + src[m..].find("\n}\n").expect("end")];
         let boot = mb.find("security::boot(&sec_cfg)").expect("boot latch");
         let jit = mb.find("sec_jit_env(security::effective(&sec_cfg).sec.jit)").expect("jit env in main");
@@ -10449,7 +10454,7 @@ mod tests {
         assert!(rs.find("restartPending").expect("pending gate") < rs.find(concat!("spawn::restart_", "token()")).expect("token"));
         assert!(src[src.find("generate_handler![").unwrap()..].contains("security_set, security_restart,"), "not registered");
         assert!(body("fn spawn_checked(").contains("spawn::restart_of(&s.token)).is_some_and(spawn::alive)"));
-        let m = body("\nfn main() {");
+        let m = body("\npub fn run() {"); // develop main() == run() since the android split
         assert!(m.contains("bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart)"), "boot does not wait for a restart");
         assert_eq!(src.matches(concat!("spawn::restart_", "token()")).count(), 1, "restart tokens are minted by security_restart only");
     }
