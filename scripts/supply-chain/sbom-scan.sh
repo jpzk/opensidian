@@ -317,15 +317,16 @@ cmd_snapshot() {
 }
 
 cmd_submit() {
-  local f=${1:?submit <snapshot.json>} body code
+  local f=${1:?submit <snapshot.json>} resp code body
   [ -n "${GH_TOKEN:-}" ] || die "GH_TOKEN not set"
   jq -e '.version == 0 and (.manifests | length) > 0' "$f" >/dev/null || die "submit: $f is not a snapshot"
-  body=$(mktemp); trap 'rm -f "$body"' RETURN
-  code=$(curl -sS --proto '=https' --tlsv1.2 -o "$body" -w '%{http_code}' -X POST \
+  # response body on stdout, HTTP status appended as the last line (not a download: nothing is saved)
+  resp=$(curl -sS --proto '=https' --tlsv1.2 -w '\n%{http_code}' -X POST \
     -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
     --data-binary @"$f" "$api/repos/$(repo)/dependency-graph/snapshots") || die "submit: request failed"
-  [ "$code" = 201 ] || die "submit: API answered HTTP $code: $(head -c 600 "$body")"
-  echo "submit: HTTP 201 $(jq -c '{id, result, message, created_at}' "$body")"
+  code=${resp##*$'\n'}; body=${resp%$'\n'*}
+  [ "$code" = 201 ] || die "submit: API answered HTTP $code: ${body:0:600}"
+  echo "submit: HTTP 201 $(jq -c '{id, result, message, created_at}' <<<"$body")"
 }
 
 sub=${1:-}; shift || true

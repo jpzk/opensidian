@@ -50,7 +50,7 @@ eq "summary counts"                               "$("$S" summary x "$t/e.sarif"
 SHA=0123456789abcdef0123456789abcdef01234567
 "$S" snapshot $SHA refs/heads/develop sbom-scan/release-v0.0.0 2026-11-20T00:00:00Z \
   release-v0.0.0/linux-x86_64="$SBOM" >"$t/snap.json" 2>"$t/snap.err"
-eq "snapshot: only npm + cargo purls"             "$(jq -r '[.manifests[].resolved[].package_url | capture("^pkg:(?<t>[a-z]+)/").t] | unique | join(",")' "$t/snap.json")" cargo,npm
+eq "snapshot: only pkg:npm + pkg:cargo purls"             "$(jq -r '[.manifests[].resolved[].package_url | capture("^pkg:(?<t>[a-z]+)/").t] | unique | join(",")' "$t/snap.json")" cargo,npm
 eq "snapshot: 4 packages kept"                    "$(jq '[.manifests[].resolved[]] | length' "$t/snap.json")" 4
 eq "snapshot: deb skipped + counted"              "$(grep -c 'skipped 2 pkg:deb' "$t/snap.err")" 1
 eq "snapshot: generic skipped + counted"          "$(grep -c 'skipped 1 pkg:generic' "$t/snap.err")" 1
@@ -89,7 +89,7 @@ mkdir -p "$t/db/osv-scalibr/npm" "$t/rec"
 echo '{}' >"$t/rec/GHSA-x.json"; touch -d '2026-11-19 12:00:00 UTC' "$t/rec/GHSA-x.json"
 (cd "$t/rec" && TZ=UTC zip -q -X "$t/db/osv-scalibr/npm/all.zip" GHSA-x.json)
 NOW=$(date -u -d '2026-11-20 00:00:00' +%s)
-if NOW=$NOW "$S" dbrev "$t/db" npm >"$t/so" 2>&1; then ok "dbrev: fresh DB accepted ($(grep -o 'newest record [^ ]*' "$t/so"))"; else cat "$t/so"; bad "dbrev: fresh DB refused"; fi
+if NOW=$NOW "$S" dbrev "$t/db" "npm" >"$t/so" 2>&1; then ok "dbrev: fresh DB accepted ($(grep -o 'newest record [^ ]*' "$t/so"))"; else cat "$t/so"; bad "dbrev: fresh DB refused"; fi
 refuses "dbrev: DB not fetched"           env NOW="$NOW" "$S" dbrev "$t/db" crates.io
 refuses "dbrev: DB older than 3 days"     env NOW=$((NOW + 5 * 86400)) "$S" dbrev "$t/db" npm
 
