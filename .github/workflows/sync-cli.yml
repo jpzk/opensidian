@@ -1,0 +1,230 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Sync CLIs — opensidian-sync-server (crates/sync-server) + opensidian-syncd (crates/syncd), released
+# INDEPENDENTLY of the app as plain binaries (for Flatpak / AppImage users; deb/rpm later, not here).
+# Linux only, BOTH arches natively on standard GitHub-hosted runners pinned by label (no cross):
+#   opensidian-sync-<ver>-linux-<arch>.tar.gz   <arch> = x86_64 (ubuntu-26.04) | aarch64 (ubuntu-26.04-arm)
+#     both binaries (libcrypto STATIC) + bin/openssl + lib/ossl-modules/fips.so (OpenSSL 3.5.9 FIPS
+#     provider, CMVP #5586, separate module by design) + launchers + opensidian-sync-fipsinstall
+#     (fipsinstall must run on the target) + README + licences. Layout: packaging/sync/cli-package.sh,
+#     docs/sync/release-cli.md.
+#   SHA256SUMS                                  sha256 of both tarballs
+# macOS is NOT built (follow-up: Keychain keystore, launchd, notarization; docs/sync/release-cli.md).
+#
+# Triggers:
+#   push to feat/sync (sync paths only), workflow_dispatch  -> build + test + smoke + attest + artifacts
+#   tag sync-v<ver>                                         -> the same + a DRAFT GitHub release
+#   The release is never published here; the operator publishes (and decides which tag to push).
+#
+# Per arch: OpenSSL 3.5.9 from the tarball pinned by sha256, its .asc pinned by sha256 and verified
+# with gpgv against the COMMITTED supply-chain/keys/openssl-release-keyring.gpg (primary
+# B146647E45A7B33947AB226B2A2C87D161692D40), ./Configure enable-fips no-shared
+# (packaging/sync/openssl-fips.sh); Rust 1.98.0 by manifest sha256 (scripts/supply-chain/rust-toolchain.sh);
+# cargo build --release --locked + cargo test --locked of sync-proto, sync-crypto (FIPS KATs, refuses
+# without fips), sync-core, syncd, sync-server against it; package; smoke the PACKAGED tarball
+# (fipsinstall, server on loopback, vault create, syncd setup --enroll + status + sync-now, a second
+# client joining with --words; packaging/sync/cli-smoke.sh); glibc baseline into the job summary.
+#
+# Supply chain:
+#   - every action pinned to a full commit SHA (# vX.Y.Z), the SAME pins as release.yml (no new action).
+#   - top-level permissions contents: read; build gets id-token/attestations write (provenance),
+#     only draft-release gets contents: write.
+#   - checkout never persists the token; no secrets beyond github.token; no PR trigger; no caches.
+#   - the build host (runner gcc, perl, make) floats with the ubuntu-26.04 image; follow-up: build in
+#     the digest-pinned container like packaging/ci/appimage-build.sh.
+name: Sync CLI
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['sync-v*']
+    branches: ['feat/sync']
+    paths:
+      - 'crates/sync-*/**'
+      - 'crates/syncd/**'
+      - 'packaging/sync/**'
+      - 'supply-chain/keys/openssl-release-keyring.gpg'
+      - '.github/workflows/sync-cli.yml'
+      - 'src-tauri/Cargo.lock'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-cli-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'     # = rust-toolchain.toml; checked by scripts/supply-chain/rust-toolchain.sh
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: '5'
+
+jobs:
+  build:
+    name: sync CLIs ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64,  runner: ubuntu-26.04 }
+          - { arch: aarch64, runner: ubuntu-26.04-arm }
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: runner arch == matrix arch
+        run: |
+          echo "uname -m: $(uname -m)  matrix: $ARCH  image: ${ImageOS:-?} ${ImageVersion:-?}"; grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          [ "$(uname -m)" = "$ARCH" ] || { echo "runner is $(uname -m), matrix says $ARCH"; exit 1; }
+      - id: ver
+        name: version (sync-server == syncd; tag sync-v<ver> must match)
+        run: |
+          v() { sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$1" | head -1; }
+          V=$(v crates/sync-server/Cargo.toml); VD=$(v crates/syncd/Cargo.toml)
+          [ -n "$V" ] && [ "$V" = "$VD" ] || { echo "sync-server $V != syncd $VD"; exit 1; }
+          case "$GITHUB_REF" in refs/tags/sync-v*) [ "sync-v$V" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version $V"; exit 1; };; esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
+          rustc -vV
+      - name: OpenSSL 3.5.9 + FIPS provider (sha256 + gpgv, enable-fips no-shared)
+        run: |
+          bash packaging/sync/openssl-fips.sh "$RUNNER_TEMP/ossl" "$RUNNER_TEMP/ossl-build"
+          P=$RUNNER_TEMP/ossl
+          {
+            echo "OPENSSL_DIR=$P"; echo "OPENSSL_LIB_DIR=$P/lib"; echo "OPENSSL_INCLUDE_DIR=$P/include"
+            echo "OPENSSL_NO_VENDOR=1"; echo "OPENSSL_STATIC=1"
+            echo "OPENSSL_CONF=$P/ssl/openssl.cnf"; echo "OPENSSL_MODULES=$P/lib/ossl-modules"
+          } >> "$GITHUB_ENV"
+      - name: cargo build --release --locked (opensidian-sync-server, opensidian-syncd)
+        working-directory: src-tauri
+        run: |
+          cargo build --release --locked -p sync-server -p syncd --bin opensidian-sync-server --bin opensidian-syncd
+          for b in opensidian-sync-server opensidian-syncd; do
+            f=target/release/$b; ls -l "$f"; sha256sum "$f"
+            if readelf -d "$f" | grep -E 'NEEDED.*lib(crypto|ssl)\.so'; then echo "::error::$b links libcrypto dynamically"; exit 1; fi
+          done
+      - name: cargo test --locked (sync-proto, sync-crypto, sync-core, syncd, sync-server)
+        working-directory: src-tauri
+        run: |
+          cargo test --locked -p sync-proto -p sync-crypto -p sync-core -p syncd -p sync-server 2>&1 | tee "$RUNNER_TEMP/test.log"
+          grep -E '^test result:' "$RUNNER_TEMP/test.log" | awk '{p+=$4; f+=$6} END {print "total passed", p, "failed", f}'
+          # the FIPS tests must have actually run (not filtered out)
+          for t in openssl_fips_provider_in_approved_mode refuses_without_fips_module; do
+            grep -Eq "^test $t \.\.\. ok$" "$RUNNER_TEMP/test.log" || { echo "::error::$t did not pass"; exit 1; }
+          done
+          grep -Eq '^     Running tests/fips_kat\.rs' "$RUNNER_TEMP/test.log" || { echo "::error::fips_kat did not run"; exit 1; }
+      - name: package opensidian-sync-${{ steps.ver.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: bash packaging/sync/cli-package.sh "$V" "$ARCH" "$RUNNER_TEMP/ossl" src-tauri/target/release dist
+      - name: smoke the packaged tarball (fipsinstall, server + 2 clients on loopback)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          # no build env leaks into the smoke: the tarball must stand on its own
+          env -u OPENSSL_CONF -u OPENSSL_MODULES -u OPENSSL_DIR -u OPENSSL_LIB_DIR -u OPENSSL_INCLUDE_DIR \
+            bash packaging/sync/cli-smoke.sh "dist/opensidian-sync-$V-linux-$ARCH.tar.gz"
+      - name: job summary (glibc baseline, sha256)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          {
+            echo "### opensidian-sync-$V-linux-$ARCH"
+            echo "glibc baseline (max GLIBC_ symbol, objdump -T):"
+            echo '```'; cat "dist/glibc-$ARCH.txt"; echo '```'
+            echo '```'; (cd dist && sha256sum "opensidian-sync-$V-linux-$ARCH.tar.gz"); echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/opensidian-sync-${{ steps.ver.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-sync-${{ steps.ver.outputs.version }}-linux-${{ matrix.arch }}
+          path: |
+            dist/opensidian-sync-${{ steps.ver.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
+            dist/glibc-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  sums:
+    name: SHA256SUMS
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      V: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: opensidian-sync-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS over both tarballs
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for a in x86_64 aarch64; do test -f "opensidian-sync-$V-linux-$a.tar.gz"; done
+          sha256sum "opensidian-sync-$V-linux-x86_64.tar.gz" "opensidian-sync-$V-linux-aarch64.tar.gz" > SHA256SUMS
+          cat SHA256SUMS; sha256sum -c SHA256SUMS
+          { echo "### SHA256SUMS"; echo '```'; cat SHA256SUMS; echo '```'; echo "glibc baseline:"; echo '```'; cat glibc-*.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SHA256SUMS
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+
+  draft-release:
+    name: draft-release
+    needs: [build, sums]
+    # ONLY on a pushed sync-v* tag, and only ever a DRAFT (the operator publishes)
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sync-v') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: opensidian-sync-*
+          path: assets
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: SHA256SUMS
+          path: assets
+      - name: create / update the DRAFT release ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd assets; sha256sum -c SHA256SUMS
+          files="opensidian-sync-$V-linux-x86_64.tar.gz opensidian-sync-$V-linux-aarch64.tar.gz SHA256SUMS"
+          if gh release view "$GITHUB_REF_NAME" --json isDraft > rel.json 2>/dev/null; then
+            [ "$(jq -r .isDraft rel.json)" = true ] || { echo "::error::release $GITHUB_REF_NAME is already published; not touching it"; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" $files --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" $files --draft --verify-tag \
+              --title "Opensidian Sync CLIs $V" \
+              --notes "opensidian-sync-server + opensidian-syncd $V for Linux x86_64 and aarch64. Verify: sha256sum -c SHA256SUMS; gh attestation verify <tarball> --repo $GITHUB_REPOSITORY. Run ./opensidian-sync-fipsinstall once per machine. Linux aarch64 is not a tested operational environment of CMVP #5586. See docs/sync/release-cli.md."
+          fi
+          gh release view "$GITHUB_REF_NAME" --json isDraft,assets | jq -e '.isDraft == true and (.assets | length) == 3'
