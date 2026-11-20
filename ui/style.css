@@ -2239,8 +2239,21 @@ span.is-flashing { background: var(--highlight-yellow) }
   display: flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 0 24px;
   background: var(--bg-base); color: var(--text-chrome-muted); font-size: 14px; line-height: 1.5;
   text-align: center; white-space: pre-line }
+.pdf-embed .pdf-3d { flex-direction: column; gap: 12px }
 .pdf-embed .pdf-3d::before {
   content: "3D model\A This page holds only an interactive 3D model, which cannot be drawn here.\A Open the file in a PDF reader with 3D support to view it." }
+/* its 2D drawing, when one sits next to it (pdf.rs twin_of): a link-styled button */
+.pdf-embed .pdf-3d-twin {
+  max-width: 100%; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg-surface); color: var(--text-accent); font: inherit; font-size: 13px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pdf-embed .pdf-3d-twin:hover { background: var(--bg-sidebar) }
+.pdf-embed .pdf-3d-twin::before { content: "Show the 2D drawing: " attr(data-twin) }
+/* above the drawing's pages once it is shown in the 3D model's frame */
+.pdf-embed .pdf-twin-note {
+  flex: 0 0 auto; align-self: stretch; padding: 4px 8px; color: var(--text-chrome-muted); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pdf-embed .pdf-twin-note::before { content: "2D drawing of this 3D model: " attr(data-name) }
 .pdf-embed.mod-broken .pdf-container::before {
   content: "This PDF could not be rendered."; margin: auto; color: var(--text-chrome-muted); font-size: 14px }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */

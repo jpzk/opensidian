@@ -56,6 +56,47 @@ pub struct Info {
     /// answer for an ordinary document is byte for byte what it was.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub model3d: Vec<usize>,
+    /// For a file with 3D-only pages: the vault-relative path of its 2D drawing
+    /// in the same folder, if there is one (`twin_of`). Filled by main.rs, which
+    /// knows the vault; None everywhere else and then absent from the JSON.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub twin: Option<String>,
+}
+
+/* THE 2D DRAWING NEXT TO A 3D MODEL. A CAD export usually comes as a pair: the
+   drawing sheets ("Chassis - Ind 00.pdf") and the model ("Chassis - Ind 00 -
+   3D.PDF"). The model cannot be drawn here, the drawing can, so the frame of
+   the model offers the drawing.
+   The pairing is by NAME, and deliberately narrow, so it never offers an
+   unrelated file: the 3D file's name must END in "3D" set apart by a space, a
+   dash, an underscore or a dot ("X - 3D", "X 3D", "X_3D"); the twin is the
+   name before that marker, trailing separators trimmed, compared without case,
+   in the SAME folder, and a PDF. "Model3D.pdf" has no separate marker and gets
+   no twin. */
+
+/// the twin's stem for a 3D file's stem, or None if the name does not follow the pattern
+pub fn twin_stem(stem: &str) -> Option<&str> {
+    let t = stem.trim_end();
+    let cut = t.len().checked_sub(2)?;
+    if !t.is_char_boundary(cut) || !t[cut..].eq_ignore_ascii_case("3d") {
+        return None;
+    }
+    let before = &t[..cut];
+    if !before.ends_with([' ', '-', '_', '.']) {
+        return None;
+    }
+    let base = before.trim_end_matches([' ', '-', '_', '.']);
+    (!base.is_empty()).then_some(base)
+}
+
+/// among `names` (one folder's entries), the 2D drawing of the 3D file `name`
+pub fn twin_of<'a>(name: &str, names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let (stem, _) = name.rsplit_once('.')?;
+    let want = twin_stem(stem)?;
+    names.into_iter().find(|n| {
+        *n != name
+            && n.rsplit_once('.').is_some_and(|(s, e)| e.eq_ignore_ascii_case(PDF_EXT) && s.trim_end().eq_ignore_ascii_case(want))
+    })
 }
 
 /* A "3D PDF" (CAD exports: SolidWorks, CATIA, ...) is a page with NO drawing of
@@ -133,7 +174,7 @@ pub fn info(pdf: &Pdf) -> Info {
         .filter(|(_, pg)| catch_unwind(AssertUnwindSafe(|| model_3d(pg))).unwrap_or(false))
         .map(|(i, _)| i + 1)
         .collect();
-    Info { pages: pages.len(), sizes, model3d }
+    Info { pages: pages.len(), sizes, model3d, twin: None }
 }
 
 /// the scale for page (pw x ph) pt rendered `w` px wide, within the caps
@@ -363,6 +404,30 @@ pub mod tests {
         assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"pages":2,"sizes":[[612.0,792.0],[612.0,792.0]]}"#, "an ordinary PDF answers exactly as before");
         let m = info(&load(&tmp("m3-json.pdf", &page_pdf("/Annots [5 0 R]"))).unwrap());
         assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"pages":1,"sizes":[[792.0,612.0]],"model3d":[1]}"#);
+    }
+
+    /// a 3D export is paired with its drawing by name, narrowly: the user's real
+    /// file names pair, and nothing without a separate "3D" marker does
+    #[test]
+    fn pdf_twin_pairs_a_3d_model_with_its_drawing_by_name_only() {
+        let dir = [
+            "00 - Chassis - Ind 00.pdf", "00 - Chassis - Ind 00 - 3D.PDF",
+            "Arbre Potager - Active.pdf", "Arbre Potager - Active 3D.PDF",
+            "07 - Serre.pdf", "07 - Serre - Ind 00 - 3D.PDF",
+            "Part_3D.pdf", "Part.PDF", "Model3D.pdf", "Model.pdf", "Notes.md", "Box.pdf.md", "Lone - 3D.pdf",
+        ];
+        let t = |n: &str| twin_of(n, dir);
+        assert_eq!(t("00 - Chassis - Ind 00 - 3D.PDF"), Some("00 - Chassis - Ind 00.pdf"));
+        assert_eq!(t("Arbre Potager - Active 3D.PDF"), Some("Arbre Potager - Active.pdf"));
+        assert_eq!(t("Part_3D.pdf"), Some("Part.PDF"), "case of the extension does not matter");
+        assert_eq!(t("07 - Serre - Ind 00 - 3D.PDF"), None, "07 - Serre.pdf is a different name: no guess");
+        assert_eq!(t("Model3D.pdf"), None, "no separate marker: no twin");
+        assert_eq!(t("Lone - 3D.pdf"), None, "no drawing in the folder");
+        assert_eq!(t("00 - Chassis - Ind 00.pdf"), None, "a drawing has no twin");
+        assert_eq!(twin_stem("X - 3d"), Some("X"));
+        assert_eq!(twin_stem(" - 3D"), None);
+        assert_eq!(twin_stem("3D"), None);
+        assert_eq!(twin_stem("é 3D"), Some("é"));
     }
 
     #[test]
