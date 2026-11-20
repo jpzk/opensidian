@@ -47,8 +47,6 @@ on:
   workflow_run:
     workflows: [Release]
     types: [completed]
-  push:   # TEMPORARY proof trigger for PR ci/android-sbom: removed before merge
-    branches: [ci/android-sbom]
 
 permissions: {}
 
@@ -215,7 +213,7 @@ jobs:
   # Not on release / workflow_run events and not for a single-release dispatch.
   android-sbom:
     name: android SBOMs (android branch)
-    if: contains(fromJSON('["schedule", "workflow_dispatch", "push"]'), github.event_name) && !inputs.release
+    if: contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event_name) && !inputs.release
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
