@@ -1,0 +1,332 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# macOS build — the FIRST CI build + test of the macOS port (#248), arm64 and x86_64, UNSIGNED.
+# Separate from release.yml on purpose (PR #249 rewrites release.yml); release.yml is meant to call
+# this workflow through workflow_call later (see the wiring note in the PR / goal RESULT.md).
+#
+# Per arch (matrix, native runner, no cross-compile):
+#   build    Rust from rust-toolchain.toml, dist manifest sha256 + rustc commit verified by
+#            scripts/supply-chain/rust-toolchain.sh (the Linux path's script, unchanged);
+#            cargo build --locked --release of src-tauri
+#   bundle   Opensidian.app (Contents/MacOS/opensidian + Info.plist = generated bundle keys merged
+#            with src-tauri/Info.plist + icon.icns) -> opensidian-<ver>-macos-<arch>-unsigned.app.zip
+#            + .sha256, uploaded as a WORKFLOW ARTIFACT only. NO code signing, NO notarization,
+#            NO release / tag (signing needs Apple secrets = operator decision).
+#   test     cargo test --locked --no-fail-fast of src-tauri (= Linux T0 scope). Runs AFTER the bundle
+#            upload so the artifacts exist even when a test fails; a failing test fails the job.
+#   sbom     (ubuntu-26.04, per arch) CycloneDX of the Cargo graph for the apple triple
+#            (cargo metadata --filter-platform) + vendored JS (vendor-sbom.sh) + system WebKit
+#            (WKWebView, OS-provided, not bundled) -> scripts/supply-chain/macos-sbom.sh; then the
+#            Linux path's osv-scanner scan against the VEX (osv-install.sh, live OSV database), fail closed.
+#
+# Runner labels, pinned (never *-latest), newest GA per arch as of 2026-11-19 (actions/runner-images README):
+#   arm64   macos-26        macOS 26 Tahoe Arm64, GA (it is what macos-latest points to today)
+#   x86_64  macos-26-intel  macOS 26 Tahoe x64, GA, the standard (non-large) Intel label
+# Xcode is pinned by path (DEVELOPER_DIR = Xcode_26.6, the default on both images); a missing Xcode
+# fails the job instead of silently picking another one. The image's tools used: Xcode CLT (clang,
+# ld, otool, xcrun), rustup (installs the pinned toolchain), PlistBuddy, plutil, sips, iconutil,
+# ditto, shasum. NO Homebrew, nothing downloaded except the sha256-checked Rust dist.
+#
+# Hardening: permissions contents: read; no secrets (github.token only raises the GitHub API rate
+# limit for osv-install.sh); checkout does not persist the token; no caches; every action pinned
+# to a full commit SHA (same pins as supply-chain.yml / release.yml); bash -eo pipefail everywhere;
+# no continue-on-error.
+name: macOS build
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'ui/**'
+      - '.github/workflows/macos.yml'
+      - 'scripts/supply-chain/macos-sbom.sh'
+      - 'rust-toolchain.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'     # = rust-toolchain.toml; rust-toolchain.sh refuses a mismatch
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: '5'
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  build:
+    name: build + test macOS ${{ matrix.arch }} (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, uname: arm64,  triple: aarch64-apple-darwin, runner: macos-26 }
+          - { arch: x86_64,  uname: x86_64, triple: x86_64-apple-darwin,  runner: macos-26-intel }
+    env:
+      ARCH: ${{ matrix.arch }}
+      UNAME: ${{ matrix.uname }}
+      TRIPLE: ${{ matrix.triple }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: runner, macOS, Xcode + SDK
+        run: |
+          echo "uname -m: $(uname -m)  matrix: $UNAME  image: ${ImageOS:-?} ${ImageVersion:-?}"
+          [ "$(uname -m)" = "$UNAME" ] || { echo "::error::runner is $(uname -m), matrix says $UNAME"; exit 1; }
+          sw_vers
+          [ -d "$DEVELOPER_DIR" ] || { echo "::error::pinned Xcode $DEVELOPER_DIR not on this image"; exit 1; }
+          xcode-select -p
+          xcodebuild -version
+          echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version) at $(xcrun --sdk macosx --show-sdk-path)"
+          clang --version | head -1
+          bash --version | head -1
+      - name: sha256sum (macOS ships shasum; same -c semantics for rust-toolchain.sh)
+        run: |
+          if command -v sha256sum >/dev/null; then
+            echo "sha256sum: $(command -v sha256sum)"
+          else
+            mkdir -p "$RUNNER_TEMP/bin"
+            printf '#!/bin/sh\nexec /usr/bin/shasum -a 256 "$@"\n' > "$RUNNER_TEMP/bin/sha256sum"
+            chmod +x "$RUNNER_TEMP/bin/sha256sum"
+            echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            echo "sha256sum -> /usr/bin/shasum -a 256 ($(/usr/bin/shasum --version))"
+          fi
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }} (manifest sha256 + rustc commit, rust-toolchain.toml)
+        run: |
+          rustup --version
+          bash scripts/supply-chain/rust-toolchain.sh
+          rustc -vV
+          [ "$(rustc -vV | sed -n 's/^host: //p')" = "$TRIPLE" ] || { echo "::error::rustc host is not $TRIPLE"; exit 1; }
+      - id: ver
+        name: version from tauri.conf.json
+        run: |
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          printf '%s' "$V" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::bad version '$V'"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V ($(command -v jq) $(jq --version))"
+      - name: cargo build --locked --release (${{ matrix.triple }})
+        working-directory: src-tauri
+        run: |
+          cargo build --locked --release
+          B=target/release/opensidian
+          file "$B"
+          lipo -archs "$B" | grep -qx "$UNAME" || { echo "::error::$B is $(lipo -archs "$B"), want $UNAME"; exit 1; }
+          otool -L "$B"
+          otool -L "$B" | grep -q '/System/Library/Frameworks/WebKit.framework/' || { echo "::error::binary does not link the system WebKit.framework"; exit 1; }
+          shasum -a 256 "$B"
+      - name: build info (minimum macOS, SDK, Xcode) for the SBOM
+        run: |
+          B=src-tauri/target/release/opensidian
+          # minimum macOS: LC_BUILD_VERSION (minos/sdk) on aarch64 and >= 10.14 targets;
+          # LC_VERSION_MIN_MACOSX (version/sdk) on x86_64, whose rustc default target is 10.12
+          OL=$(otool -l "$B")
+          LOADCMD=$(awk '$1=="cmd"&&($2=="LC_BUILD_VERSION"||$2=="LC_VERSION_MIN_MACOSX"){print $2; exit}' <<<"$OL")
+          MINOS=$(awk '$1=="cmd"{c=$2} c=="LC_BUILD_VERSION"&&$1=="minos"{print $2; exit} c=="LC_VERSION_MIN_MACOSX"&&$1=="version"{print $2; exit}' <<<"$OL")
+          SDKB=$(awk '$1=="cmd"{c=$2} (c=="LC_BUILD_VERSION"||c=="LC_VERSION_MIN_MACOSX")&&$1=="sdk"{print $2; exit}' <<<"$OL")
+          printf '%s' "$MINOS" | grep -Eqx '[0-9]+(\.[0-9]+)+' || { echo "::error::no LC_BUILD_VERSION minos / LC_VERSION_MIN_MACOSX version in $B"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/info"
+          {
+            echo "TRIPLE=$TRIPLE"
+            echo "MINOS=$MINOS"
+            echo "SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)"
+            echo "BINARY_SDK=$SDKB"
+            echo "MINOS_LOAD_COMMAND=$LOADCMD"
+            echo "XCODE_VERSION=$(xcodebuild -version | awk 'NR==1{v=$2} /Build version/{b=$3} END{print v" ("b")"}')"
+            echo "MACOS_BUILD_VERSION=macOS $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
+            echo "RUNNER_LABEL=${{ matrix.runner }}"
+            echo "IMAGE=${ImageOS:-?} ${ImageVersion:-?}"
+            echo "BINARY_SHA256=$(shasum -a 256 "$B" | cut -c1-64)"
+          } | tee "$RUNNER_TEMP/info/build-info-macos-$ARCH.env"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-info-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/info/build-info-macos-${{ matrix.arch }}.env
+          if-no-files-found: error
+          retention-days: 7
+      - name: unsigned Opensidian.app + zip + sha256 (no signing, no notarization)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -u
+          D="$RUNNER_TEMP/dist"; APP="$D/Opensidian.app"; C="$APP/Contents"
+          mkdir -p "$C/MacOS" "$C/Resources"
+          cp src-tauri/target/release/opensidian "$C/MacOS/opensidian"
+          MINOS=$(sed -n 's/^MINOS=//p' "$RUNNER_TEMP/info/build-info-macos-$ARCH.env")
+          # icon: src-tauri/icons/icon.png -> icon.icns with the image's sips + iconutil
+          IS="$RUNNER_TEMP/icon.iconset"; mkdir -p "$IS"
+          for s in 16 32 128 256 512; do
+            sips -z "$s" "$s" src-tauri/icons/icon.png --out "$IS/icon_${s}x${s}.png" > /dev/null
+            sips -z "$((s*2))" "$((s*2))" src-tauri/icons/icon.png --out "$IS/icon_${s}x${s}@2x.png" > /dev/null
+          done
+          iconutil -c icns "$IS" -o "$C/Resources/icon.icns"
+          # Info.plist: the bundle keys tauri's bundler would write, then src-tauri/Info.plist merged in
+          P="$C/Info.plist"; PB=/usr/libexec/PlistBuddy
+          "$PB" -c "Add :CFBundleDevelopmentRegion string en" \
+                -c "Add :CFBundleExecutable string opensidian" \
+                -c "Add :CFBundleIdentifier string $(jq -r .identifier src-tauri/tauri.conf.json)" \
+                -c "Add :CFBundleName string $(jq -r .bundle.macOS.bundleName src-tauri/tauri.conf.json)" \
+                -c "Add :CFBundleDisplayName string $(jq -r .bundle.macOS.bundleName src-tauri/tauri.conf.json)" \
+                -c "Add :CFBundleIconFile string icon.icns" \
+                -c "Add :CFBundleInfoDictionaryVersion string 6.0" \
+                -c "Add :CFBundlePackageType string APPL" \
+                -c "Add :CFBundleShortVersionString string $V" \
+                -c "Add :CFBundleVersion string $V" \
+                -c "Add :LSMinimumSystemVersion string $MINOS" \
+                -c "Add :NSHighResolutionCapable bool true" \
+                -c "Merge src-tauri/Info.plist" "$P"
+          plutil -lint "$P"
+          [ "$(plutil -extract NSMicrophoneUsageDescription raw "$P")" = "$(plutil -extract NSMicrophoneUsageDescription raw src-tauri/Info.plist)" ] \
+            || { echo "::error::src-tauri/Info.plist keys not in the bundle Info.plist"; exit 1; }
+          plutil -p "$P"
+          # NOT signed: report what the linker left (arm64 binaries carry an ad-hoc linker signature)
+          # codesign -dv exits 1 on a binary with no signature at all (x86_64 ld64 adds none);
+          # accept exactly two states: ad-hoc linker signature, or no signature. Anything else fails.
+          echo "codesign -dv (read-only):"
+          if CS=$(codesign -dv "$C/MacOS/opensidian" 2>&1); then
+            printf '%s\n' "$CS" | sed 's/^/  /'
+            grep -q '^Signature=adhoc$' <<<"$CS" || { echo "::error::binary carries a non-ad-hoc signature"; exit 1; }
+            echo "SIGNATURE_STATE=adhoc-linker"
+          else
+            printf '%s\n' "$CS" | sed 's/^/  /'
+            grep -q 'code object is not signed at all' <<<"$CS" || { echo "::error::codesign -dv failed unexpectedly"; exit 1; }
+            echo "SIGNATURE_STATE=none"
+          fi
+          Z="opensidian-$V-macos-$ARCH-unsigned.app.zip"
+          (cd "$D" && ditto -c -k --sequesterRsrc --keepParent Opensidian.app "$Z" && shasum -a 256 "$Z" | tee "$Z.sha256")
+          rm -rf "$APP"
+          # round trip: the zip unpacks to the same binary
+          mkdir "$RUNNER_TEMP/chk" && ditto -x -k "$D/$Z" "$RUNNER_TEMP/chk"
+          cmp "$RUNNER_TEMP/chk/Opensidian.app/Contents/MacOS/opensidian" src-tauri/target/release/opensidian
+          ls -l "$D"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-${{ steps.ver.outputs.version }}-macos-${{ matrix.arch }}-unsigned.app.zip
+          path: |
+            ${{ runner.temp }}/dist/opensidian-${{ steps.ver.outputs.version }}-macos-${{ matrix.arch }}-unsigned.app.zip
+            ${{ runner.temp }}/dist/opensidian-${{ steps.ver.outputs.version }}-macos-${{ matrix.arch }}-unsigned.app.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: cargo test --locked (src-tauri, Linux T0 scope)
+        working-directory: src-tauri
+        run: |
+          L="$RUNNER_TEMP/cargo-test-macos-$ARCH.log"
+          rc=0
+          cargo test --locked --no-fail-fast > "$L" 2>&1 || rc=$?
+          cat "$L"
+          {
+            echo "### cargo test macOS $ARCH (rc=$rc)"
+            echo '```'
+            grep -E '^test result|^     Running|FAILED|panicked' "$L" | head -200
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "cargo test rc=$rc"
+          exit "$rc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # the log of the step above, also when it failed (the job stays red)
+        if: ${{ !cancelled() }}
+        with:
+          name: cargo-test-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/cargo-test-macos-${{ matrix.arch }}.log
+          if-no-files-found: error
+          retention-days: 14
+
+  sbom:
+    name: macOS SBOM + CVE scan ${{ matrix.arch }}
+    needs: build
+    # build-info is uploaded before the test step: a red test must not hide the SBOM. A missing
+    # build-info (the build itself failed) fails the download below -> fail closed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, triple: aarch64-apple-darwin }
+          - { arch: x86_64,  triple: x86_64-apple-darwin }
+    env:
+      ARCH: ${{ matrix.arch }}
+      TRIPLE: ${{ matrix.triple }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: build-info-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/info
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }} (manifest sha256 + rustc commit, rust-toolchain.toml)
+        run: bash scripts/supply-chain/rust-toolchain.sh
+      - name: cargo metadata --filter-platform ${{ matrix.triple }}
+        working-directory: src-tauri
+        run: |
+          cargo metadata --locked --format-version 1 --filter-platform "$TRIPLE" > "$RUNNER_TEMP/metadata-$ARCH.json"
+          echo "resolved packages for $TRIPLE: $(jq '.resolve.nodes | length' "$RUNNER_TEMP/metadata-$ARCH.json")"
+      - name: SBOM parts (rust-sbom.sh, vendor-sbom.sh) + macos-sbom.sh
+        id: sbom
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          P="$RUNNER_TEMP/parts"; mkdir -p "$P" "$RUNNER_TEMP/out"
+          cat "$RUNNER_TEMP/info/build-info-macos-$ARCH.env"
+          scripts/supply-chain/rust-sbom.sh > "$P/rust.cdx.json"
+          scripts/supply-chain/vendor-sbom.sh > "$P/vendor.cdx.json"
+          F=$(scripts/supply-chain/macos-sbom.sh -t "$TRIPLE" -m "$RUNNER_TEMP/metadata-$ARCH.json" \
+                -r "$P/rust.cdx.json" -j "$P/vendor.cdx.json" -b "$RUNNER_TEMP/info/build-info-macos-$ARCH.env" \
+                -o "$RUNNER_TEMP/out" -v "$V")
+          echo "components: $(jq '.components | length' "$F")  (Cargo.lock: $(jq '.components | length' "$P/rust.cdx.json"), cargo for $TRIPLE: $(jq '[.components[] | select(.purl // "" | startswith("pkg:cargo/"))] | length' "$F"), npm: $(jq '[.components[] | select(.purl // "" | startswith("pkg:npm/"))] | length' "$F"))"
+          jq -c '.components[] | select(."bom-ref" | startswith("os:"))' "$F"
+          (cd "$RUNNER_TEMP/out" && sha256sum "$(basename "$F")" | tee "$(basename "$F").sha256")
+          echo "file=$(basename "$F")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-macos-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/out/${{ steps.sbom.outputs.file }}
+            ${{ runner.temp }}/out/${{ steps.sbom.outputs.file }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: osv-scanner (latest release, digest-verified, unpinned by design)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: osv scan macOS SBOM against the VEX (live OSV database, fail closed)
+        env:
+          F: ${{ steps.sbom.outputs.file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          # osv-json.sh: osv-scanner rc must be 0 (clean) or 1 (findings) and the JSON must carry
+          # .results; anything else (127/128, no network, bad SBOM) fails this step
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-macos-$ARCH.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
+            -L "$RUNNER_TEMP/out/$F" 2> "$RUNNER_TEMP/osv.err" \
+            || { cat "$RUNNER_TEMP/osv.err" >&2; exit 1; }
+          cat "$RUNNER_TEMP/osv.err" >&2
+          # the JSON lists only packages WITH (unfiltered) vulnerabilities, so prove coverage from
+          # osv-scanner's own "found N packages" line: it must equal the SBOM's cargo + npm purls
+          # (the WKWebView OS component has no purl and is not OSV-scannable, see its description)
+          n=$(sed -n 's/^Scanned .* file and found \([0-9][0-9]*\) packages$/\1/p' "$RUNNER_TEMP/osv.err")
+          want=$(jq '[.components[] | select(.purl // "" | test("^pkg:(cargo|npm)/"))] | length' "$RUNNER_TEMP/out/$F")
+          echo "osv-scanner read ${n:-?} packages from the SBOM; SBOM cargo + npm purls: $want"
+          [ -n "$n" ] && [ "$want" -gt 0 ] && [ "$n" -eq "$want" ] \
+            || { echo "::error::osv-scanner did not read every SBOM package (${n:-none} != $want)"; exit 1; }
+          echo "packages listed with vulnerabilities after the VEX filter: $(jq '[.results[].packages[]?] | length' "$RUNNER_TEMP/osv-macos-$ARCH.json")"
+          jq -r '.results[].packages[]? | select((.vulnerabilities // []) | length > 0)
+                 | "\(.package.ecosystem) \(.package.name)@\(.package.version): \([.vulnerabilities[].id] | join(", "))"' \
+            "$RUNNER_TEMP/osv-macos-$ARCH.json" | tee "$RUNNER_TEMP/findings.txt"
+          bad=$(jq '[.results[].packages[]? | select((.vulnerabilities // []) | length > 0)] | length' "$RUNNER_TEMP/osv-macos-$ARCH.json")
+          echo "packages with findings not covered by the VEX: $bad"
+          [ "$bad" -eq 0 ] || { echo "::error::$bad package(s) with CVEs not covered by the VEX"; exit 1; }
