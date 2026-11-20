@@ -1,32 +1,53 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# macOS build — the FIRST CI build + test of the macOS port (#248), arm64 and x86_64, UNSIGNED.
-# release.yml calls this workflow (job `macos`, workflow_call): its zips + SBOMs go into the DRAFT
-# release and SHA256SUMS, and draft-release needs every job here green (build, test, CVE scan).
+# macOS build — CI build + test of the macOS port (#248), arm64 and x86_64, UNSIGNED. Shipped two
+# ways (operator 2026-11-20): ONE UNIVERSAL app (a fat Mach-O with both slices; macOS runs the native
+# slice by itself) as opensidian-<ver>-universal.dmg, the recommended download; AND, as before, the
+# two per-arch opensidian-<ver>-macos-<arch>-unsigned.app.zip with their per-arch SBOMs.
+# release.yml calls this workflow (job `macos`, workflow_call): the universal .dmg, the per-arch zips
+# and every macOS SBOM go into the DRAFT release and SHA256SUMS, and draft-release needs every job
+# here green (per-arch build + full test, universal assembly, launch smoke on both arches, CVE scans).
 # It also runs alone on PRs (paths below) and by workflow_dispatch.
 #
-# Per arch (matrix, native runner, no cross-compile):
+# Per arch (matrix `build`, native runner, no cross-compile):
 #   build    Rust from rust-toolchain.toml, dist manifest sha256 + rustc commit verified by
 #            scripts/supply-chain/rust-toolchain.sh (the Linux path's script, unchanged);
-#            cargo build --locked --release of src-tauri
-#   bundle   Opensidian.app (Contents/MacOS/opensidian + Info.plist = generated bundle keys merged
-#            with src-tauri/Info.plist + icon.icns) -> opensidian-<ver>-macos-<arch>-unsigned.app.zip
-#            + .sha256, uploaded as a WORKFLOW ARTIFACT only. NO code signing, NO notarization,
-#            NO release / tag (signing needs Apple secrets = operator decision).
-#   test     cargo test --locked --no-fail-fast of src-tauri (= Linux T0 scope). Runs AFTER the bundle
-#            upload so the artifacts exist even when a test fails; a failing test fails the job.
-#   sbom     (ubuntu-26.04, per arch) CycloneDX of the Cargo graph for the apple triple
-#            (cargo metadata --filter-platform) + vendored JS (vendor-sbom.sh) + system WebKit
-#            (WKWebView, OS-provided, not bundled) -> scripts/supply-chain/macos-sbom.sh; then the
-#            Linux path's osv-scanner scan against the VEX (osv-install.sh, live OSV database), fail closed.
+#            cargo build --locked --release of src-tauri; the per-arch unsigned Opensidian.app ->
+#            opensidian-<ver>-macos-<arch>-unsigned.app.zip + .sha256 (unchanged); the thin release
+#            binary + its sha256 (also recorded in build-info) uploaded as artifact bin-macos-<arch>
+#   test     cargo test --locked --no-fail-fast of src-tauri (= Linux T0 scope), on BOTH runners.
+#            Runs AFTER the binary upload so the artifacts exist even when a test fails; a failing
+#            test fails the job (and so this workflow and the release).
+# universal (macos-26): both thin binaries, each sha256-checked against its .sha256 AND the
+#            BINARY_SHA256 its build job recorded -> lipo -create (Xcode CLT) -> fat binary; fail
+#            closed unless lipo -archs is exactly "x86_64 arm64" and each slice is byte-identical to
+#            the tested thin binary. Opensidian.app (Contents/MacOS/opensidian + Info.plist =
+#            generated bundle keys merged with src-tauri/Info.plist + icon.icns; LSMinimumSystemVersion
+#            = the lower slice minimum) -> opensidian-<ver>-universal.dmg (hdiutil UDZO, volume
+#            "Opensidian", Applications symlink for drag-install) + .sha256. NO code signing beyond the
+#            linker's ad-hoc slice signature, NO notarization (signing needs Apple secrets = operator).
+# smoke     (matrix, macos-26 arm64 AND macos-26-intel x86_64): the .dmg (sha256 = the universal
+#            job's output) mounted read-only, Applications link checked, the app copied out like a
+#            drag-install; then the universal binary is started on its native slice
+#            (arch -arm64 / arch -x86_64) and by plain exec (macOS picks the slice): spawner-mode
+#            start (proves dyld loads the slice + every linked framework and main runs) and a GUI
+#            launch (process must stay up past window/WebKit start), both fail closed.
+# sbom     (matrix, ubuntu-26.04, unchanged) per-arch CycloneDX opensidian-<ver>-macos-<arch>.cdx.json
+#            for the per-arch zips (Cargo graph for the apple triple + vendored JS + WKWebView).
+# sbom-universal (ubuntu-26.04) ONE CycloneDX for the universal binary = union of the Cargo graphs for
+#            aarch64-apple-darwin + x86_64-apple-darwin (cargo metadata --filter-platform, dedup by
+#            purl) + vendored JS (vendor-sbom.sh) + system WebKit (WKWebView, OS-provided, not
+#            bundled) -> scripts/supply-chain/macos-sbom.sh -> opensidian-<ver>-macos-universal.cdx.json.
+#            Every macOS SBOM gets the Linux path's osv-scanner scan against the VEX (osv-install.sh,
+#            live OSV database), fail closed.
 #
 # Runner labels, pinned (never *-latest), newest GA per arch as of 2026-11-19 (actions/runner-images README):
 #   arm64   macos-26        macOS 26 Tahoe Arm64, GA (it is what macos-latest points to today)
 #   x86_64  macos-26-intel  macOS 26 Tahoe x64, GA, the standard (non-large) Intel label
 # Xcode is pinned by path (DEVELOPER_DIR = Xcode_26.6, the default on both images); a missing Xcode
 # fails the job instead of silently picking another one. The image's tools used: Xcode CLT (clang,
-# ld, otool, xcrun), rustup (installs the pinned toolchain), PlistBuddy, plutil, sips, iconutil,
-# ditto, shasum. NO Homebrew, nothing downloaded except the sha256-checked Rust dist.
+# ld, lipo, otool, xcrun), rustup (installs the pinned toolchain), PlistBuddy, plutil, sips, iconutil,
+# hdiutil, ditto, shasum. NO Homebrew, nothing downloaded except the sha256-checked Rust dist.
 #
 # Hardening: permissions contents: read; no secrets (github.token only raises the GitHub API rate
 # limit for osv-install.sh); checkout does not persist the token; no caches; every action pinned
@@ -37,12 +58,20 @@ name: macOS build
 on:
   workflow_dispatch:
   workflow_call:
+    outputs:
+      dmg:
+        description: 'file name of the universal dmg (artifact of the same name: the .dmg + its .sha256)'
+        value: ${{ jobs.universal.outputs.dmg }}
+      dmg_sha256:
+        description: 'sha256 of the universal dmg (from the job that built it)'
+        value: ${{ jobs.universal.outputs.dmg_sha256 }}
   pull_request:
     paths:
       - 'src-tauri/**'
       - 'ui/**'
       - '.github/workflows/macos.yml'
       - 'scripts/supply-chain/macos-sbom.sh'
+      - 'scripts/supply-chain/tests/macos-sbom.test.sh'
       - 'rust-toolchain.toml'
 
 permissions:
@@ -218,6 +247,23 @@ jobs:
             ${{ runner.temp }}/dist/opensidian-${{ steps.ver.outputs.version }}-macos-${{ matrix.arch }}-unsigned.app.zip.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: thin release binary + sha256 (input of the universal job)
+        run: |
+          set -u
+          mkdir -p "$RUNNER_TEMP/bin"
+          N="opensidian-macos-$ARCH"
+          cp src-tauri/target/release/opensidian "$RUNNER_TEMP/bin/$N"
+          (cd "$RUNNER_TEMP/bin" && shasum -a 256 "$N" | tee "$N.sha256")
+          [ "$(cut -c1-64 "$RUNNER_TEMP/bin/$N.sha256")" = "$(sed -n 's/^BINARY_SHA256=//p' "$RUNNER_TEMP/info/build-info-macos-$ARCH.env")" ] \
+            || { echo "::error::binary sha256 != build-info BINARY_SHA256"; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bin-macos-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/bin/opensidian-macos-${{ matrix.arch }}
+            ${{ runner.temp }}/bin/opensidian-macos-${{ matrix.arch }}.sha256
+          if-no-files-found: error
+          retention-days: 7
       - name: cargo test --locked (src-tauri, Linux T0 scope)
         working-directory: src-tauri
         run: |
@@ -240,6 +286,276 @@ jobs:
           name: cargo-test-macos-${{ matrix.arch }}
           path: ${{ runner.temp }}/cargo-test-macos-${{ matrix.arch }}.log
           if-no-files-found: error
+          retention-days: 14
+
+
+  universal:
+    name: universal app (lipo) + dmg
+    needs: build
+    # the thin binaries are uploaded before the test step: a red test must not hide the dmg (the
+    # workflow, and with it the release, still fails). A missing binary (the build itself failed)
+    # fails the download below -> fail closed.
+    if: ${{ !cancelled() }}
+    runs-on: macos-26
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      dmg: ${{ steps.dmg.outputs.dmg }}
+      dmg_sha256: ${{ steps.dmg.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bin-macos-*
+          path: ${{ runner.temp }}/bin
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: build-info-macos-*
+          path: ${{ runner.temp }}/info
+          merge-multiple: true
+      - name: runner + Xcode lipo
+        run: |
+          echo "uname -m: $(uname -m)  image: ${ImageOS:-?} ${ImageVersion:-?}"; sw_vers
+          [ -d "$DEVELOPER_DIR" ] || { echo "::error::pinned Xcode $DEVELOPER_DIR not on this image"; exit 1; }
+          xcodebuild -version; xcrun --find lipo
+      - id: ver
+        name: version from tauri.conf.json
+        run: |
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          printf '%s' "$V" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::bad version '$V'"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V"
+      - name: thin binaries = the ones the build jobs built and tested (sha256, arch)
+        working-directory: ${{ runner.temp }}/bin
+        run: |
+          set -u
+          ls -l . ../info
+          for A in aarch64:arm64 x86_64:x86_64; do
+            ARCH=${A%%:*} U=${A##*:} N="opensidian-macos-${A%%:*}"
+            shasum -a 256 -c "$N.sha256"
+            want=$(sed -n 's/^BINARY_SHA256=//p' "../info/build-info-macos-$ARCH.env")
+            got=$(shasum -a 256 "$N" | cut -c1-64)
+            [ -n "$want" ] && [ "$got" = "$want" ] || { echo "::error::$N sha256 $got != build job BINARY_SHA256 '$want'"; exit 1; }
+            [ "$(lipo -archs "$N")" = "$U" ] || { echo "::error::$N is $(lipo -archs "$N"), want $U"; exit 1; }
+            echo "$N: $U, sha256 $got = build-info-macos-$ARCH BINARY_SHA256"
+          done
+      - name: lipo -create -> universal binary (fail closed unless exactly x86_64 + arm64)
+        working-directory: ${{ runner.temp }}/bin
+        run: |
+          set -u
+          lipo -create opensidian-macos-x86_64 opensidian-macos-aarch64 -output opensidian
+          chmod 755 opensidian
+          file opensidian
+          lipo -detailed_info opensidian
+          ARCHS=$(lipo -archs opensidian)
+          echo "lipo -archs: $ARCHS"
+          [ "$ARCHS" = "x86_64 arm64" ] || { echo "::error::lipo -archs is '$ARCHS', want 'x86_64 arm64'"; exit 1; }
+          # each slice must be the exact tested thin binary
+          for A in x86_64:x86_64 arm64:aarch64; do
+            lipo opensidian -thin "${A%%:*}" -output "slice-${A%%:*}"
+            [ "$(shasum -a 256 < "slice-${A%%:*}")" = "$(shasum -a 256 < "opensidian-macos-${A##*:}")" ] \
+              || { echo "::error::${A%%:*} slice differs from opensidian-macos-${A##*:}"; exit 1; }
+            echo "slice ${A%%:*} == opensidian-macos-${A##*:} (sha256 $(shasum -a 256 < "slice-${A%%:*}" | cut -c1-64))"
+            rm "slice-${A%%:*}"
+          done
+          otool -L opensidian | grep -q '/System/Library/Frameworks/WebKit.framework/' || { echo "::error::no system WebKit.framework link"; exit 1; }
+          # NOT signed: report what the linker left per slice. arm64 must carry the ld64 ad-hoc signature
+          # (an arm64 binary without one is killed at exec); x86_64: ad-hoc or none. Anything else fails.
+          for A in arm64 x86_64; do
+            echo "codesign -dv -a $A (read-only):"
+            if CS=$(codesign -dv -a "$A" opensidian 2>&1); then
+              printf '%s\n' "$CS" | sed 's/^/  /'
+              grep -q '^Signature=adhoc$' <<<"$CS" || { echo "::error::$A slice carries a non-ad-hoc signature"; exit 1; }
+              echo "SIGNATURE_STATE[$A]=adhoc-linker"
+            else
+              printf '%s\n' "$CS" | sed 's/^/  /'
+              [ "$A" = x86_64 ] && grep -q 'code object is not signed at all' <<<"$CS" || { echo "::error::codesign -dv -a $A failed unexpectedly"; exit 1; }
+              echo "SIGNATURE_STATE[$A]=none"
+            fi
+          done
+          { echo "### universal binary"; echo '```'; echo "lipo -archs: $ARCHS"; file opensidian; shasum -a 256 opensidian; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Opensidian.app (universal, unsigned, no notarization)
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -u
+          D="$RUNNER_TEMP/dmgroot"; APP="$D/Opensidian.app"; C="$APP/Contents"
+          mkdir -p "$C/MacOS" "$C/Resources"
+          cp "$RUNNER_TEMP/bin/opensidian" "$C/MacOS/opensidian"
+          # LSMinimumSystemVersion: as per arch before = each slice's own minimum (LC_BUILD_VERSION minos /
+          # LC_VERSION_MIN_MACOSX); one bundle -> the LOWER of the two (x86_64). dyld still enforces each
+          # slice's own minimum, and every Apple-silicon Mac runs macOS >= 11.0 (the arm64 minimum).
+          MA=$(sed -n 's/^MINOS=//p' "$RUNNER_TEMP/info/build-info-macos-aarch64.env")
+          MX=$(sed -n 's/^MINOS=//p' "$RUNNER_TEMP/info/build-info-macos-x86_64.env")
+          for m in "$MA" "$MX"; do printf '%s' "$m" | grep -Eqx '[0-9]+(\.[0-9]+)+' || { echo "::error::bad MINOS '$m'"; exit 1; }; done
+          MINOS=$(printf '%s\n%s\n' "$MA" "$MX" | awk -F. '{printf "%05d%05d%05d %s\n", $1, $2, $3, $0}' | sort | head -1 | cut -d' ' -f2)
+          echo "slice minimums: arm64 $MA, x86_64 $MX -> LSMinimumSystemVersion $MINOS"
+          # icon: src-tauri/icons/icon.png -> icon.icns with the image's sips + iconutil
+          IS="$RUNNER_TEMP/icon.iconset"; mkdir -p "$IS"
+          for s in 16 32 128 256 512; do
+            sips -z "$s" "$s" src-tauri/icons/icon.png --out "$IS/icon_${s}x${s}.png" > /dev/null
+            sips -z "$((s*2))" "$((s*2))" src-tauri/icons/icon.png --out "$IS/icon_${s}x${s}@2x.png" > /dev/null
+          done
+          iconutil -c icns "$IS" -o "$C/Resources/icon.icns"
+          # Info.plist: the bundle keys tauri's bundler would write, then src-tauri/Info.plist merged in
+          P="$C/Info.plist"; PB=/usr/libexec/PlistBuddy
+          "$PB" -c "Add :CFBundleDevelopmentRegion string en" \
+                -c "Add :CFBundleExecutable string opensidian" \
+                -c "Add :CFBundleIdentifier string $(jq -r .identifier src-tauri/tauri.conf.json)" \
+                -c "Add :CFBundleName string $(jq -r .bundle.macOS.bundleName src-tauri/tauri.conf.json)" \
+                -c "Add :CFBundleDisplayName string $(jq -r .bundle.macOS.bundleName src-tauri/tauri.conf.json)" \
+                -c "Add :CFBundleIconFile string icon.icns" \
+                -c "Add :CFBundleInfoDictionaryVersion string 6.0" \
+                -c "Add :CFBundlePackageType string APPL" \
+                -c "Add :CFBundleShortVersionString string $V" \
+                -c "Add :CFBundleVersion string $V" \
+                -c "Add :LSMinimumSystemVersion string $MINOS" \
+                -c "Add :NSHighResolutionCapable bool true" \
+                -c "Merge src-tauri/Info.plist" "$P"
+          plutil -lint "$P"
+          [ "$(plutil -extract NSMicrophoneUsageDescription raw "$P")" = "$(plutil -extract NSMicrophoneUsageDescription raw src-tauri/Info.plist)" ] \
+            || { echo "::error::src-tauri/Info.plist keys not in the bundle Info.plist"; exit 1; }
+          plutil -p "$P"
+          ln -s /Applications "$D/Applications"
+          ls -la "$D" "$C" "$C/MacOS"
+      - id: dmg
+        name: opensidian-<ver>-universal.dmg (hdiutil UDZO, volume Opensidian, Applications link) + sha256
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -u
+          O="$RUNNER_TEMP/out"; mkdir -p "$O"
+          DMG="opensidian-$V-universal.dmg"
+          hdiutil create -volname Opensidian -srcfolder "$RUNNER_TEMP/dmgroot" -fs HFS+ -format UDZO -ov "$O/$DMG"
+          hdiutil verify "$O/$DMG"
+          FMT=$(hdiutil imageinfo "$O/$DMG" | sed -n 's/^Format: //p')
+          [ "$FMT" = UDZO ] || { echo "::error::dmg format '$FMT', want UDZO"; exit 1; }
+          # round trip: mount read-only, check the layout, the binary is the universal one
+          M="$RUNNER_TEMP/mnt"; mkdir -p "$M"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$M" "$O/$DMG"
+          ls -la "$M"
+          rc=0
+          [ "$(readlink "$M/Applications")" = /Applications ] || { echo "::error::no Applications -> /Applications symlink"; rc=1; }
+          [ "$(shasum -a 256 < "$M/Opensidian.app/Contents/MacOS/opensidian")" = "$(shasum -a 256 < "$RUNNER_TEMP/bin/opensidian")" ] \
+            || { echo "::error::dmg binary != universal binary"; rc=1; }
+          [ "$(ls -1A "$M" | grep -v '^\.' | sort | tr '\n' ' ')" = "Applications Opensidian.app " ] || { echo "::error::unexpected dmg top level"; rc=1; }
+          diskutil info "$M" | grep -E 'Volume Name|File System Personality' || true
+          [ "$(diskutil info "$M" | sed -n 's/^ *Volume Name: *//p')" = Opensidian ] || { echo "::error::volume name is not Opensidian"; rc=1; }
+          hdiutil detach "$M"
+          [ "$rc" -eq 0 ] || exit 1
+          (cd "$O" && shasum -a 256 "$DMG" | tee "$DMG.sha256")
+          S=$(cut -c1-64 "$O/$DMG.sha256")
+          echo "dmg=$DMG" >> "$GITHUB_OUTPUT"; echo "sha256=$S" >> "$GITHUB_OUTPUT"
+          ls -l "$O"
+          { echo "### $DMG"; echo '```'; echo "format $FMT, $(stat -f %z "$O/$DMG") bytes"; cat "$O/$DMG.sha256"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.dmg.outputs.dmg }}
+          path: |
+            ${{ runner.temp }}/out/${{ steps.dmg.outputs.dmg }}
+            ${{ runner.temp }}/out/${{ steps.dmg.outputs.dmg }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    name: launch smoke universal app on ${{ matrix.uname }} (${{ matrix.runner }})
+    needs: universal
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { uname: arm64,  runner: macos-26 }
+          - { uname: x86_64, runner: macos-26-intel }
+    env:
+      UNAME: ${{ matrix.uname }}
+      DMG: ${{ needs.universal.outputs.dmg }}
+      DMG_SHA256: ${{ needs.universal.outputs.dmg_sha256 }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.universal.outputs.dmg }}
+          path: ${{ runner.temp }}/dmg
+      - name: dmg = the universal job's (sha256 via job output AND .sha256), drag-install
+        run: |
+          set -u
+          echo "uname -m: $(uname -m)  matrix: $UNAME  image: ${ImageOS:-?} ${ImageVersion:-?}"; sw_vers
+          [ "$(uname -m)" = "$UNAME" ] || { echo "::error::runner is $(uname -m), matrix says $UNAME"; exit 1; }
+          cd "$RUNNER_TEMP/dmg"
+          shasum -a 256 -c "$DMG.sha256"
+          got=$(shasum -a 256 "$DMG" | cut -c1-64)
+          [ -n "$DMG_SHA256" ] && [ "$got" = "$DMG_SHA256" ] || { echo "::error::$DMG sha256 $got != universal job output '$DMG_SHA256'"; exit 1; }
+          M="$RUNNER_TEMP/mnt"; mkdir -p "$M"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$M" "$DMG"
+          ls -la "$M"
+          [ "$(readlink "$M/Applications")" = /Applications ] || { echo "::error::no Applications link"; exit 1; }
+          # drag-install equivalent: copy the bundle out of the image, then eject it
+          mkdir -p "$RUNNER_TEMP/Applications"
+          ditto "$M/Opensidian.app" "$RUNNER_TEMP/Applications/Opensidian.app"
+          hdiutil detach "$M"
+          B="$RUNNER_TEMP/Applications/Opensidian.app/Contents/MacOS/opensidian"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$RUNNER_TEMP/Applications/Opensidian.app/Contents/Info.plist")" = opensidian ] \
+            || { echo "::error::CFBundleExecutable is not opensidian"; exit 1; }
+          file "$B"
+          ARCHS=$(lipo -archs "$B"); echo "lipo -archs: $ARCHS"
+          [ "$ARCHS" = "x86_64 arm64" ] || { echo "::error::lipo -archs is '$ARCHS', want 'x86_64 arm64'"; exit 1; }
+          echo "B=$B" >> "$GITHUB_ENV"
+      - name: slice load (arch -${{ matrix.uname }} and plain exec, spawner mode)
+        run: |
+          set -u
+          # `opensidian --opensidian-spawner` (spawner.rs) is the first branch of main(): it needs dyld
+          # to map the slice and bind every linked library/framework (WebKit, AppKit, ...) and the Rust
+          # runtime to start; with stdin at EOF it serves nothing and exits 0. Any load failure (wrong
+          # slice, missing symbol, killed for a bad signature) is a non-zero exit.
+          L="$RUNNER_TEMP/smoke-$UNAME.log"; : > "$L"
+          for how in "arch -$UNAME" "plain"; do
+            if [ "$how" = plain ]; then cmd=("$B" --opensidian-spawner); else cmd=(arch "-$UNAME" "$B" --opensidian-spawner); fi
+            rc=0; "${cmd[@]}" < /dev/null > "$RUNNER_TEMP/out.txt" 2>&1 || rc=$?
+            echo "[$how] ${cmd[*]} < /dev/null -> rc=$rc $(head -c 300 "$RUNNER_TEMP/out.txt")" | tee -a "$L"
+            [ "$rc" -eq 0 ] || { echo "::error::$UNAME slice did not start ($how, rc=$rc)"; exit 1; }
+          done
+          # the other slice under Rosetta 2 on arm64, only if the image has Rosetta (informational
+          # coverage; the x86_64 slice's real gate is the macos-26-intel leg of this matrix)
+          if [ "$UNAME" = arm64 ] && arch -x86_64 /usr/bin/true 2>/dev/null; then
+            rc=0; arch -x86_64 "$B" --opensidian-spawner < /dev/null > "$RUNNER_TEMP/out.txt" 2>&1 || rc=$?
+            echo "[arch -x86_64 under Rosetta] rc=$rc $(head -c 300 "$RUNNER_TEMP/out.txt")" | tee -a "$L"
+            [ "$rc" -eq 0 ] || { echo "::error::x86_64 slice failed under Rosetta (rc=$rc)"; exit 1; }
+          fi
+      - name: GUI launch smoke (arch -${{ matrix.uname }}, window + WKWebView start, must stay up)
+        run: |
+          set -u
+          # private HOME + an empty vault: no runner state is read or written
+          H="$RUNNER_TEMP/home"; V="$RUNNER_TEMP/vault"; mkdir -p "$H" "$V"; echo "# smoke" > "$V/smoke.md"
+          E="$RUNNER_TEMP/gui-$UNAME.err"
+          HOME="$H" VAULT_DIR="$V" arch "-$UNAME" "$B" > "$RUNNER_TEMP/gui-$UNAME.out" 2> "$E" &
+          pid=$!
+          # bounded wait for the boot line main() prints before the window opens
+          for i in $(seq 1 60); do
+            grep -q '^\[sec\] boot ' "$E" && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          booted=0; grep -q '^\[sec\] boot ' "$E" && booted=1
+          # then it has to survive window creation + WebKit start-up
+          sleep 20
+          alive=0; kill -0 "$pid" 2>/dev/null && alive=1
+          ps -o pid,stat,etime,command -p "$pid" || true
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          echo "--- stderr (head) ---"; head -40 "$E"
+          echo "GUI smoke $UNAME: booted=$booted alive_after_20s=$alive" | tee -a "$RUNNER_TEMP/smoke-$UNAME.log"
+          { echo "### launch smoke $UNAME"; echo '```'; cat "$RUNNER_TEMP/smoke-$UNAME.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$booted" -eq 1 ] && [ "$alive" -eq 1 ] || { echo "::error::universal app did not boot and stay up on $UNAME"; exit 1; }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: smoke-macos-${{ matrix.uname }}
+          path: |
+            ${{ runner.temp }}/smoke-${{ matrix.uname }}.log
+            ${{ runner.temp }}/gui-${{ matrix.uname }}.err
+          if-no-files-found: warn
           retention-days: 14
 
   sbom:
@@ -330,5 +646,97 @@ jobs:
                  | "\(.package.ecosystem) \(.package.name)@\(.package.version): \([.vulnerabilities[].id] | join(", "))"' \
             "$RUNNER_TEMP/osv-macos-$ARCH.json" | tee "$RUNNER_TEMP/findings.txt"
           bad=$(jq '[.results[].packages[]? | select((.vulnerabilities // []) | length > 0)] | length' "$RUNNER_TEMP/osv-macos-$ARCH.json")
+          echo "packages with findings not covered by the VEX: $bad"
+          [ "$bad" -eq 0 ] || { echo "::error::$bad package(s) with CVEs not covered by the VEX"; exit 1; }
+
+
+  sbom-universal:
+    name: macOS universal SBOM + CVE scan
+    needs: build
+    # build-info is uploaded before the test step: a red test must not hide the SBOM. A missing
+    # build-info (a build itself failed) fails the checks below -> fail closed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: build-info-macos-*
+          path: ${{ runner.temp }}/info
+          merge-multiple: true
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }} (manifest sha256 + rustc commit, rust-toolchain.toml)
+        run: bash scripts/supply-chain/rust-toolchain.sh
+      - name: cargo metadata --filter-platform (aarch64 + x86_64 apple-darwin)
+        working-directory: src-tauri
+        run: |
+          for T in aarch64-apple-darwin x86_64-apple-darwin; do
+            [ -s "$RUNNER_TEMP/info/build-info-macos-${T%%-*}.env" ] || { echo "::error::no build-info for $T"; exit 1; }
+            cargo metadata --locked --format-version 1 --filter-platform "$T" > "$RUNNER_TEMP/metadata-${T%%-*}.json"
+            echo "resolved packages for $T: $(jq '.resolve.nodes | length' "$RUNNER_TEMP/metadata-${T%%-*}.json")"
+          done
+      - name: SBOM parts (rust-sbom.sh, vendor-sbom.sh) + macos-sbom.sh (universal = union of both slices)
+        id: sbom
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          P="$RUNNER_TEMP/parts"; I="$RUNNER_TEMP/info"; mkdir -p "$P" "$RUNNER_TEMP/out"
+          cat "$I"/build-info-macos-*.env
+          scripts/supply-chain/rust-sbom.sh > "$P/rust.cdx.json"
+          scripts/supply-chain/vendor-sbom.sh > "$P/vendor.cdx.json"
+          F=$(scripts/supply-chain/macos-sbom.sh \
+                -t aarch64-apple-darwin -m "$RUNNER_TEMP/metadata-aarch64.json" -b "$I/build-info-macos-aarch64.env" \
+                -t x86_64-apple-darwin  -m "$RUNNER_TEMP/metadata-x86_64.json"  -b "$I/build-info-macos-x86_64.env" \
+                -r "$P/rust.cdx.json" -j "$P/vendor.cdx.json" -o "$RUNNER_TEMP/out" -v "$V")
+          [ "$(basename "$F")" = "opensidian-$V-macos-universal.cdx.json" ] || { echo "::error::unexpected SBOM name $F"; exit 1; }
+          for A in aarch64 x86_64; do
+            echo "cargo for $A: $(jq '.resolve.nodes | length' "$RUNNER_TEMP/metadata-$A.json") resolved"
+          done
+          echo "components: $(jq '.components | length' "$F")  (Cargo.lock: $(jq '.components | length' "$P/rust.cdx.json"), cargo union aarch64+x86_64: $(jq '[.components[] | select(.purl // "" | startswith("pkg:cargo/"))] | length' "$F"), npm: $(jq '[.components[] | select(.purl // "" | startswith("pkg:npm/"))] | length' "$F"), distinct purls: $(jq '[.components[] | .purl // empty] | unique | length' "$F"))"
+          jq -c '.components[] | select(."bom-ref" | startswith("os:"))' "$F"
+          (cd "$RUNNER_TEMP/out" && sha256sum "$(basename "$F")" | tee "$(basename "$F").sha256")
+          echo "file=$(basename "$F")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-macos-universal
+          path: |
+            ${{ runner.temp }}/out/${{ steps.sbom.outputs.file }}
+            ${{ runner.temp }}/out/${{ steps.sbom.outputs.file }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: osv-scanner (latest release, digest-verified, unpinned by design)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bin=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")
+          echo "OSV=$bin" >> "$GITHUB_ENV"
+      - name: osv scan macOS SBOM against the VEX (live OSV database, fail closed)
+        env:
+          F: ${{ steps.sbom.outputs.file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/osvcfg"
+          scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
+          # osv-json.sh: osv-scanner rc must be 0 (clean) or 1 (findings) and the JSON must carry
+          # .results; anything else (127/128, no network, bad SBOM) fails this step
+          scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-macos-universal.json" \
+            "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json \
+            -L "$RUNNER_TEMP/out/$F" 2> "$RUNNER_TEMP/osv.err" \
+            || { cat "$RUNNER_TEMP/osv.err" >&2; exit 1; }
+          cat "$RUNNER_TEMP/osv.err" >&2
+          # the JSON lists only packages WITH (unfiltered) vulnerabilities, so prove coverage from
+          # osv-scanner's own "found N packages" line: it must equal the SBOM's cargo + npm purls
+          # (the WKWebView OS component has no purl and is not OSV-scannable, see its description)
+          n=$(sed -n 's/^Scanned .* file and found \([0-9][0-9]*\) packages$/\1/p' "$RUNNER_TEMP/osv.err")
+          want=$(jq '[.components[] | select(.purl // "" | test("^pkg:(cargo|npm)/"))] | length' "$RUNNER_TEMP/out/$F")
+          echo "osv-scanner read ${n:-?} packages from the SBOM; SBOM cargo + npm purls: $want"
+          [ -n "$n" ] && [ "$want" -gt 0 ] && [ "$n" -eq "$want" ] \
+            || { echo "::error::osv-scanner did not read every SBOM package (${n:-none} != $want)"; exit 1; }
+          echo "packages listed with vulnerabilities after the VEX filter: $(jq '[.results[].packages[]?] | length' "$RUNNER_TEMP/osv-macos-universal.json")"
+          jq -r '.results[].packages[]? | select((.vulnerabilities // []) | length > 0)
+                 | "\(.package.ecosystem) \(.package.name)@\(.package.version): \([.vulnerabilities[].id] | join(", "))"' \
+            "$RUNNER_TEMP/osv-macos-universal.json" | tee "$RUNNER_TEMP/findings.txt"
+          bad=$(jq '[.results[].packages[]? | select((.vulnerabilities // []) | length > 0)] | length' "$RUNNER_TEMP/osv-macos-universal.json")
           echo "packages with findings not covered by the VEX: $bad"
           [ "$bad" -eq 0 ] || { echo "::error::$bad package(s) with CVEs not covered by the VEX"; exit 1; }
