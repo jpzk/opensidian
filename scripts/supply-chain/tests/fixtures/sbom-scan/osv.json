@@ -1,0 +1,16 @@
+{"results":[{"source":{"path":"x.cdx.json","type":"sbom"},"packages":[
+ {"package":{"name":"katex","version":"0.16.47","ecosystem":"npm"},
+  "vulnerabilities":[{"id":"GHSA-238p-pmpm-9mq7","aliases":["CVE-2026-103923"],"affected":[{"package":{"name":"katex","ecosystem":"npm"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"0.18.2"}]}]}]}],
+  "groups":[{"ids":["GHSA-238p-pmpm-9mq7"],"aliases":["CVE-2026-103923","GHSA-238p-pmpm-9mq7"],"max_severity":"2.1"}]},
+ {"package":{"name":"js-yaml","version":"4.3.0","ecosystem":"npm"},
+  "vulnerabilities":[{"id":"GHSA-2883-xcg3-v3hh","aliases":["CVE-2026-84375"],"affected":[{"package":{"name":"js-yaml","ecosystem":"npm"},"ranges":[{"type":"SEMVER","events":[{"introduced":"4.0.0"},{"fixed":"4.3.2"}]}]},{"package":{"name":"other","ecosystem":"npm"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"},{"fixed":"9.9.9"}]}]}]},
+                     {"id":"GHSA-crit-crit-crit","aliases":["CVE-2026-1"],"affected":[{"package":{"name":"js-yaml","ecosystem":"npm"},"ranges":[{"type":"SEMVER","events":[{"introduced":"0"}]}]}]}],
+  "groups":[{"ids":["GHSA-2883-xcg3-v3hh"],"aliases":["CVE-2026-84375","GHSA-2883-xcg3-v3hh"],"max_severity":"7.5"},
+            {"ids":["GHSA-crit-crit-crit"],"aliases":["CVE-2026-1","GHSA-crit-crit-crit"],"max_severity":"9.8"}]},
+ {"package":{"name":"libxml2","version":"2.9.13","ecosystem":"Ubuntu:22.04:LTS"},
+  "vulnerabilities":[{"id":"UBUNTU-CVE-2025-7425","aliases":["CVE-2025-7425"],"severity":[{"type":"Ubuntu","score":"medium"}],"affected":[{"package":{"name":"libxml2","ecosystem":"Ubuntu:22.04:LTS"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"}]}]}]}],
+  "groups":[{"ids":["UBUNTU-CVE-2025-7425"],"aliases":["CVE-2025-7425","UBUNTU-CVE-2025-7425"],"max_severity":""}]},
+ {"package":{"name":"libwebkit2gtk-4.1-0","version":"2.48.0","ecosystem":"Ubuntu:22.04:LTS"},
+  "vulnerabilities":[{"id":"UBUNTU-CVE-2026-9","aliases":[],"affected":[]}],
+  "groups":[{"ids":["UBUNTU-CVE-2026-9"],"aliases":["UBUNTU-CVE-2026-9"],"max_severity":""}]}
+]}]}
