@@ -1057,19 +1057,36 @@ const Ed = {
     return c + 1 < n && hi(t.charCodeAt(c)) && lo(t.charCodeAt(c + 1)) ? c + 2 : c + 1;
   },
   /* #274: where ONE Backspace at column c stops. Stock 1.13.7 (black-box, goal
-     fix-274 evidence): a ZWJ sequence (🤦‍♂️, family) or a flag goes whole, but a
-     cluster that is a base plus trailing modifiers WITHOUT a joiner (👍🏽) loses
-     only its last code point, leaving the base. Delete / arrows / Shift+arrows
-     still take the whole cluster (Ed.cluster). Never splits a surrogate pair. Pure. */
+     fix-274 evidence logs stock-1/4/5): the cluster goes whole (🤦‍♂️, family, flag,
+     ❤️, 🏳️‍🌈, 😀) UNLESS it carries a "stop" extender after its first code point — a
+     combining/enclosing mark (U+0301, keycap U+20E3) or a skin-tone modifier
+     (U+1F3FB..1F3FF); then Backspace removes from the LAST such extender to c
+     (é -> e, 👍🏽 -> 👍, 🤦🏽‍♂️ -> 🤦, 1️⃣ -> 1️). Variation selectors (U+FE00..FE0F)
+     and the joiner are not stops. Delete / arrows / Shift+arrows still take the
+     whole cluster (Ed.cluster). Never splits a surrogate pair. Pure. */
+  _mark: undefined,
+  isStop(u) {
+    if (u >= 0x1f3fb && u <= 0x1f3ff) return true;            // skin-tone modifier
+    if (u >= 0xfe00 && u <= 0xfe0f) return false;             // variation selector: never a stop
+    if (Ed._mark === undefined) {
+      try { Ed._mark = new RegExp("^\\p{M}$", "u"); } catch (_) { Ed._mark = null; }
+    }
+    if (Ed._mark) return Ed._mark.test(String.fromCodePoint(u));
+    return (u >= 0x300 && u <= 0x36f) || (u >= 0x1ab0 && u <= 0x1aff) || (u >= 0x1dc0 && u <= 0x1dff) ||
+           (u >= 0x20d0 && u <= 0x20ff) || (u >= 0xfe20 && u <= 0xfe2f);   // engines without \p{}: the common mark blocks
+  },
   backDel(t, c, seg) {
     t = String(t || "");
     c = Math.max(0, Math.min(c, t.length));
     const k = Ed.cluster(t, c, true, seg);
-    const cp = Ed.cluster(t, c, true, null);                 // one code point back
-    if (k >= cp) return k;                                    // a single code point: nothing to choose
-    const s = t.slice(k, c);
-    if (s.includes("‍") || /^(?:\ud83c[\udde6-\uddff]){2}$/.test(s)) return k;   // joiner sequence / flag: whole
-    return cp;
+    if (k >= c) return k;
+    let stop = -1;
+    for (let i = k, first = true; i < c; first = false) {
+      const u = t.codePointAt(i), w = u > 0xffff ? 2 : 1;
+      if (!first && Ed.isStop(u)) stop = i;
+      i += w;
+    }
+    return stop > k ? stop : k;
   },
   // one CHARACTER left/right (a grapheme cluster, #274), crossing the line edge
   // (R17.5 M69-M71). Pure: covered by Ed.selfTest. null = the document edge,
@@ -1655,12 +1672,18 @@ const Ed = {
       ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2]);
     for (const [t, c, back, want, seg] of gc)
       if (Ed.cluster(t, c, back, seg) !== want) fail("cluster:" + c + (back ? "<" : ">") + (seg === null ? "cp" : "") + ":" + t.length);
-    // #274 Backspace stop [text, col, want, seg]: joiner sequences and flags whole, a
-    // modifier without a joiner alone (stock), a surrogate pair whole on any engine
+    // #274 Backspace stop [text, col, want, seg] (stock 1.13.7 oracle): a cluster goes whole unless it
+    // carries a mark / skin-tone modifier, then from the last one; a surrogate pair whole on any engine
     const bd = [["a\u{1F600}b", 3, 1, null], ["a" + FP + "b", 6, 5, null], ["ab", 0, 0, null], ["", 0, 0, null], ["a\uDE00", 2, 1, null]];
     if (Ed.gseg()) bd.push(["a" + FP + "b", 6, 1], ["x" + FAM, 9, 1], ["a\u{1F1E9}\u{1F1EA}b", 5, 1],
       ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, 4], ["a\u{1F44D}\u{1F3FD}b", 5, 3], ["a\u{1F44D}\u{1F3FD}b", 3, 1],
-      ["a\u{1F600}b", 3, 1], ["ab", 1, 0]);
+      ["a\u{1F600}b", 3, 1], ["ab", 1, 0],
+      ["a\u2764\uFE0Fb", 3, 1], ["a\u{1F926}\u{1F3FD}\u200D\u2642\uFE0Fb", 8, 3], ["ae\u0301b", 3, 2],
+      ["a1\uFE0F\u20E3b", 4, 3], ["a1\uFE0Fb", 3, 1], ["a\u{1F3F3}\uFE0F\u200D\u{1F308}b", 7, 1], ["ae\u0301\u0323b", 4, 3]);
+    bd.push(["ae\u0301b", 3, 2, null], ["a\u{1F44D}\u{1F3FD}b", 5, 3, null]);   // fallback: one code point
+    for (const [u, want] of [[0x1F3FB, true], [0x1F3FF, true], [0x0301, true], [0x20E3, true], [0xFE0F, false],
+                             [0xFE00, false], [0x200D, false], [0x41, false], [0x1F44D, false]])
+      if (Ed.isStop(u) !== want) fail("isStop:" + u.toString(16));
     for (const [t, c, want, seg] of bd)
       if (Ed.backDel(t, c, seg) !== want) fail("backDel:" + c + (seg === null ? "cp" : "") + ":" + t.length);
     const eg2 = { view: { lines: ["a" + FP, "b"] } };
