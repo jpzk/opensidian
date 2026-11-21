@@ -46,7 +46,7 @@ var document = { addEventListener() {}, createElement(t) { return new ENode(t); 
 
 /// A row as a compact string: each child of the row (or of `sel` inside it) as
 /// "tag.classes[text]" joined by " | ", text nodes as "#text[...]".
-const SHAPE: &str = r#"
+const SHAPE: &str = r##"
 function shape(n) { return n.childNodes.map(function (c) {
   return c.nodeType === 3 ? "#text[" + c.nodeValue + "]" : c.nodeName.toLowerCase() + "." + c.className.split(" ").join(".") + "[" + c.textContent + "]"; }).join(" | "); }
 function find(n, cls) { if (n.nodeType === 1 && n.className.split(" ").indexOf(cls) >= 0) return n;
@@ -58,7 +58,7 @@ function probe(line) { var r = Ed.row(null, line, 0), pre = find(r, "lpre"), bod
     // lpre directly under the row (not inside a quote's span.bq)
     top: !!(pre && pre.parentNode === r),
     tok: (r._tok || []).map(function (t) { return t.s + "-" + t.e + ":" + t.kind; }).join(",") }); }
-"#;
+"##;
 
 #[derive(serde::Deserialize, Debug)]
 struct Probe { cls: String, text: String, row: String, pre: Option<String>, flex: bool, top: bool, tok: String }
