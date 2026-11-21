@@ -1056,6 +1056,21 @@ const Ed = {
     if (back) return c >= 2 && lo(t.charCodeAt(c - 1)) && hi(t.charCodeAt(c - 2)) ? c - 2 : c - 1;
     return c + 1 < n && hi(t.charCodeAt(c)) && lo(t.charCodeAt(c + 1)) ? c + 2 : c + 1;
   },
+  /* #274: where ONE Backspace at column c stops. Stock 1.13.7 (black-box, goal
+     fix-274 evidence): a ZWJ sequence (🤦‍♂️, family) or a flag goes whole, but a
+     cluster that is a base plus trailing modifiers WITHOUT a joiner (👍🏽) loses
+     only its last code point, leaving the base. Delete / arrows / Shift+arrows
+     still take the whole cluster (Ed.cluster). Never splits a surrogate pair. Pure. */
+  backDel(t, c, seg) {
+    t = String(t || "");
+    c = Math.max(0, Math.min(c, t.length));
+    const k = Ed.cluster(t, c, true, seg);
+    const cp = Ed.cluster(t, c, true, null);                 // one code point back
+    if (k >= cp) return k;                                    // a single code point: nothing to choose
+    const s = t.slice(k, c);
+    if (s.includes("‍") || /^(?:\ud83c[\udde6-\uddff]){2}$/.test(s)) return k;   // joiner sequence / flag: whole
+    return cp;
+  },
   // one CHARACTER left/right (a grapheme cluster, #274), crossing the line edge
   // (R17.5 M69-M71). Pure: covered by Ed.selfTest. null = the document edge,
   // leave it to the browser.
@@ -1254,7 +1269,7 @@ const Ed = {
     const L = Ed.lines(g), { l, c } = s.a;
     if (!forward) {
       if (c > 0) {
-        let k = Ed.cluster(L[l], c, true);                // #274: a whole character, not one code unit
+        let k = Ed.backDel(L[l], c);                      // #274: a whole character, not one code unit
         if (word) { k = c; while (k > 0 && /\s/.test(L[l][k - 1])) k--; while (k > 0 && !/\s/.test(L[l][k - 1])) k--; }
         return Ed.replace(g, { a: { l, c: k }, b: { l, c }, empty: false }, "", "del");
       }
@@ -1640,6 +1655,14 @@ const Ed = {
       ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2]);
     for (const [t, c, back, want, seg] of gc)
       if (Ed.cluster(t, c, back, seg) !== want) fail("cluster:" + c + (back ? "<" : ">") + (seg === null ? "cp" : "") + ":" + t.length);
+    // #274 Backspace stop [text, col, want, seg]: joiner sequences and flags whole, a
+    // modifier without a joiner alone (stock), a surrogate pair whole on any engine
+    const bd = [["a\u{1F600}b", 3, 1, null], ["a" + FP + "b", 6, 5, null], ["ab", 0, 0, null], ["", 0, 0, null], ["a\uDE00", 2, 1, null]];
+    if (Ed.gseg()) bd.push(["a" + FP + "b", 6, 1], ["x" + FAM, 9, 1], ["a\u{1F1E9}\u{1F1EA}b", 5, 1],
+      ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, 4], ["a\u{1F44D}\u{1F3FD}b", 5, 3], ["a\u{1F44D}\u{1F3FD}b", 3, 1],
+      ["a\u{1F600}b", 3, 1], ["ab", 1, 0]);
+    for (const [t, c, want, seg] of bd)
+      if (Ed.backDel(t, c, seg) !== want) fail("backDel:" + c + (seg === null ? "cp" : "") + ":" + t.length);
     const eg2 = { view: { lines: ["a" + FP, "b"] } };
     const sw2 = Ed.gseg() ? [[1, 0, true, "0.6"], [0, 6, true, "0.1"], [0, 1, false, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]]
                           : [[1, 0, true, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]];
@@ -1735,6 +1758,7 @@ const Ed = {
           ["a\u{1F926}‍♂️b", 0, 1, "del", "ab", 0, 1],
           ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, 8, "bs", "\u{1F1E9}\u{1F1EA}", 0, 4], // one flag of two
           ["\u{1F44D}\u{1F3FD}!", 0, 0, "del", "!", 0, 0],                               // skin tone
+          ["a\u{1F44D}\u{1F3FD}b", 0, 5, "bs", "a\u{1F44D}b", 0, 3],                     // Backspace: only the modifier (stock)
         ] : []),
         ["a\u{1F600}b", 0, 3, "bs", "ab", 0, 1],                                         // a surrogate pair, any engine
         ["a\u{1F600}b", 0, 1, "del", "ab", 0, 1],
