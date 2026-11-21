@@ -614,6 +614,7 @@
           if (svsProbe && svsProbe.leaf === this) { svsProbe.see(vs); return; }   // PV.openAs: the type the wrappers picked
           const type = vs && vs.type;
           if (type && types.has(type)) return openTyped(this, type, (vs && vs.state) || {}, vs.active);
+          if (type === "empty" && !this._side && this._t && this._t.kind === "unk") return emptyTab(this);
           if (this._side && (type === "empty" || !type)) return;
           const p = vs && vs.state && vs.state.file; const f = p && d.vault().getAbstractFileByPath(p);
           if (!(f instanceof d.TFile())) return;
@@ -783,6 +784,23 @@
         }
         else await openTabView(g, t, at, true);
         await r.opened;
+        d.touch();
+      }
+      /* #277: setViewState({type:"empty"}) on a plugin-view tab REPLACES its view with the empty view, as stock:
+         the old view is closed (onClose/unload) and the leaf keeps its tab. Excalidraw relies on it: a drawing
+         restored before layout-ready shows "waiting for Obsidian to initialize all of your plugins" and, once
+         layout is ready, rebuilds its leaf with setViewState empty -> excalidraw. Ignoring "empty" kept the
+         waiting view, the next same-type setViewState only re-set its state, and the board never painted. */
+      async function emptyTab(leaf) {
+        const t = leaf._t, g = groupOfTab(t);
+        const r = recs.get(t); if (r) closeRec(r);
+        t.utype = "empty";
+        if (!t.lid) t.lid = (t.raw && t.raw.id) || newId();
+        const raw = { id: t.lid, type: "leaf", state: { type: "empty", state: {}, icon: "lucide-file", title: "New tab" } };
+        if (t.raw && t.raw.group) raw.group = t.raw.group;
+        t.raw = raw; t.name = "New tab";
+        if (g && activeTab(g) === t && typeof loadActive === "function") await loadActive(g);
+        else if (g && typeof renderTabs === "function") renderTabs(g);
         d.touch();
       }
       async function reveal(leaf) {

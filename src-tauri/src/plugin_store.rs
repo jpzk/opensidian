@@ -860,6 +860,29 @@ mod tests {
         assert_eq!(br.matches("closeTab(").count(), 1, "the note tab is closed only through the guarded drop");
     }
 
+    /// #277: setViewState({type:"empty"}) on a plugin-view tab replaces its view with the empty view, as
+    /// stock. Excalidraw rebuilds a drawing restored before layout-ready with setViewState empty ->
+    /// excalidraw; ignoring "empty" kept the "waiting for Obsidian" view and the board never painted.
+    #[test]
+    fn views_set_view_state_empty_closes_plugin_view() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let svs_at = pos(js, "async setViewState(vs, eState) {");
+        let svs = &js[svs_at..svs_at + pos(&js[svs_at..], "\n        }\n")];
+        let typed = pos(svs, "if (type && types.has(type)) return openTyped(");
+        let empty = pos(svs, "if (type === \"empty\" && !this._side && this._t && this._t.kind === \"unk\") return emptyTab(this);");
+        let side = pos(svs, "if (this._side && (type === \"empty\" || !type)) return;");
+        assert!(typed < empty && empty < side, "a registered type opens first; side leaves keep their no-op");
+        let e = js_fn(js, "emptyTab");
+        let close = pos(e, "const r = recs.get(t); if (r) closeRec(r);");
+        let ut = pos(e, "t.utype = \"empty\";");
+        assert!(close < ut, "the old view is closed before the tab turns empty");
+        assert!(e.contains("state: { type: \"empty\", state: {}"), "the persisted leaf is stock's empty leaf");
+        assert!(!e.contains("closeTab"), "the leaf keeps its tab");
+        // the next setViewState of a plugin type then builds a fresh view (no rec -> makeView, onOpen, setState)
+        let o = js_fn(js, "openTyped");
+        assert!(o.contains("if (r && r.type === type && !inst) {"), "same type re-sets state only while a view exists");
+    }
+
     #[test]
     fn list_merges_stats_and_drops_bad_rows() {
         let l = br#"[{"id":"a-plug","name":"A","author":"x","description":"d","repo":"o/a"},
