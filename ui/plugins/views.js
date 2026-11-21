@@ -774,6 +774,7 @@
           const drop = own && !t0.pinned && (was
             ? saved && activeTab(g) === t0 && !(typeof bufDirty === "function" && bufDirty(g))
             : t0.base === undefined && activeTab(g) !== t0);
+          try { (window.__x277dbg = window.__x277dbg || []).push({ own, was, saved, drop, pinned: !!t0.pinned, act: activeTab(g) === t0, dirty: typeof bufDirty === "function" ? bufDirty(g) : "nf", baseU: t0.base === undefined, armed: !!g.saveT, ls: (() => { try { return JSON.stringify(d.leafState(leaf)); } catch (e) { return "err " + e; } })() }); } catch (_) {}
           g.tabs.push(t);
           if (at < g.tabs.length - 1) { g.tabs.copyWithin(at + 1, at); g.tabs[at] = t; }
           g.active = g.tabs.indexOf(was ? t : cur);
