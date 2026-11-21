@@ -456,8 +456,12 @@ body {
    wrote (themelight BEFORE: Minimal's light text and links lost to ours).
    Ours now ties the dark block (body, 0,0,1) and wins it on order; every
    theme rule (.theme-light, body.theme-light, or body after this sheet)
-   beats it. :where() keeps the lint-colors selector shape (^body). */
-body:where(.theme-light) {
+   beats it. :where() keeps the lint-colors selector shape (^body).
+   #281: the second branch is the BOOT state: before main.js runs, body has no mode class
+   and the theme init script (main.rs theme_init_js) has already put the boot decision on
+   <html data-theme>. Without it the pre-JS shell painted dark on a light desktop. Still
+   (0,0,1): everything inside :where() counts zero. */
+body:where(.theme-light, :root[data-theme="light"] > :not(.theme-dark)) {
   /* ---- layer 1: Obsidian's theme names ---- */
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
