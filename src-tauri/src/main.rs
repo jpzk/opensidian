@@ -9980,7 +9980,9 @@ mod tests {
         for junk in ["", "Dark", "LIGHT", "system", "\"};alert(1);//", "</script><script>x()</script>", "light ", " dark"] {
             let js = theme_init_js(Some(junk));
             assert_eq!(js, none, "stored {junk:?} was not treated as 'no choice'");
-            assert!(junk.is_empty() || !js.contains(junk), "stored {junk:?} leaked into the init script");
+            // the equality above is the guarantee; this names a leak directly. Skip values that
+            // are already text of the no-choice script (" dark" is in "prefers-color-scheme: dark").
+            assert!(junk.is_empty() || none.contains(junk) || !js.contains(junk), "stored {junk:?} leaked into the init script");
         }
     }
 
