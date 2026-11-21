@@ -1022,15 +1022,50 @@ const Ed = {
     const m = /^(\s*(?:> )*(?:[-*+] \[[ xX]\] |[-*+] |\d+\. ))/.exec(t) || /^(\s*(?:> )+)/.exec(t);
     return m ? m[0].length : 0;
   },
-  // one RAW column left/right, crossing the line edge (R17.5 M69-M71). Pure:
-  // covered by Ed.selfTest. null = the document edge, leave it to the browser.
+  /* #274: the next USER-PERCEIVED character boundary in line text t from column c
+     (a UTF-16 index), going back or forward. One step crosses a whole grapheme
+     cluster — a ZWJ emoji sequence (🤦‍♂️ is 5 code units), a flag (two regional
+     indicators), a skin-tone modifier, a base + combining marks — as stock 1.13.7
+     does. Intl.Segmenter (UAX #29) when the engine has it; otherwise one CODE
+     POINT, never half a surrogate pair. seg === null forces that fallback (selfTest).
+     Returns c itself only at the text edge. Pure. */
+  _gseg: undefined,
+  gseg() {
+    if (Ed._gseg === undefined) {
+      try { Ed._gseg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null; }
+      catch (_) { Ed._gseg = null; }
+    }
+    return Ed._gseg;
+  },
+  cluster(t, c, back, seg) {
+    t = String(t || "");
+    const n = t.length;
+    c = Math.max(0, Math.min(c, n));
+    if (back ? c === 0 : c === n) return c;
+    const S = seg === undefined ? Ed.gseg() : seg;
+    if (S) {
+      try {
+        const cur = S.segment(t).containing(back ? c - 1 : c);
+        if (cur) {
+          const k = back ? cur.index : cur.index + cur.segment.length;
+          if (back ? k < c : k > c) return k;
+        }
+      } catch (_) { /* fall through to code points */ }
+    }
+    const hi = u => u >= 0xd800 && u <= 0xdbff, lo = u => u >= 0xdc00 && u <= 0xdfff;
+    if (back) return c >= 2 && lo(t.charCodeAt(c - 1)) && hi(t.charCodeAt(c - 2)) ? c - 2 : c - 1;
+    return c + 1 < n && hi(t.charCodeAt(c)) && lo(t.charCodeAt(c + 1)) ? c + 2 : c + 1;
+  },
+  // one CHARACTER left/right (a grapheme cluster, #274), crossing the line edge
+  // (R17.5 M69-M71). Pure: covered by Ed.selfTest. null = the document edge,
+  // leave it to the browser.
   step(g, l, c, back) {
-    const L = Ed.lines(g);
+    const L = Ed.lines(g), t = L[l] || "";
     if (back) {
-      if (c > 0) return { l, c: c - 1 };
+      if (c > 0) return { l, c: Ed.cluster(t, c, true) };
       return l > 0 ? { l: l - 1, c: L[l - 1].length } : null;
     }
-    if (c < (L[l] || "").length) return { l, c: c + 1 };
+    if (c < t.length) return { l, c: Ed.cluster(t, c, false) };
     return l < L.length - 1 ? { l: l + 1, c: 0 } : null;
   },
   /* R17.6 / R17.7 REVEAL — PER TOKEN, not per row.
@@ -1219,7 +1254,7 @@ const Ed = {
     const L = Ed.lines(g), { l, c } = s.a;
     if (!forward) {
       if (c > 0) {
-        let k = c - 1;
+        let k = Ed.cluster(L[l], c, true);                // #274: a whole character, not one code unit
         if (word) { k = c; while (k > 0 && /\s/.test(L[l][k - 1])) k--; while (k > 0 && !/\s/.test(L[l][k - 1])) k--; }
         return Ed.replace(g, { a: { l, c: k }, b: { l, c }, empty: false }, "", "del");
       }
@@ -1227,7 +1262,7 @@ const Ed = {
       return Ed.replace(g, { a: { l: l - 1, c: L[l - 1].length }, b: { l, c: 0 }, empty: false }, "", "del");
     }
     if (c < L[l].length) {
-      let k = c + 1;
+      let k = Ed.cluster(L[l], c, false);                 // #274
       if (word) { k = c; while (k < L[l].length && /\s/.test(L[l][k])) k++; while (k < L[l].length && !/\s/.test(L[l][k])) k++; }
       return Ed.replace(g, { a: { l, c }, b: { l, c: k }, empty: false }, "", "del");
     }
@@ -1590,6 +1625,28 @@ const Ed = {
       const n = Ed.step(sg, l, c, back);
       if ((n ? n.l + "." + n.c : "-") !== want) fail("step:" + l + "." + c + (back ? "<" : ">"));
     }
+    // #274: a step crosses a whole grapheme cluster. [text, col, back, want, seg]:
+    // seg null = the code-point fallback (no Intl.Segmenter), which never splits a
+    // surrogate pair; the cluster rows run only where the engine has a segmenter.
+    const FP = "\u{1F926}‍♂️", FAM = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    const gc = [["a\u{1F600}b", 3, true, 1, null], ["a\u{1F600}b", 1, false, 3, null],
+                ["a\uD83Db", 2, true, 1, null], ["a\uDE00b", 1, false, 2, null],          // lone surrogates: one unit
+                ["a" + FP + "b", 6, true, 5, null], ["ab", 0, true, 0, null], ["ab", 2, false, 2, null], ["", 0, false, 0, null]];
+    if (Ed.gseg()) gc.push(
+      ["a" + FP + "b", 6, true, 1], ["a" + FP + "b", 1, false, 6], ["a" + FP + "b", 3, true, 1], ["a" + FP + "b", 3, false, 6],
+      ["x" + FAM, 9, true, 1], ["x" + FAM, 1, false, 9],
+      ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, true, 4], ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, false, 4],
+      ["\u{1F44D}\u{1F3FD}", 4, true, 0], ["éx", 0, false, 2], ["éx", 2, true, 0],
+      ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2]);
+    for (const [t, c, back, want, seg] of gc)
+      if (Ed.cluster(t, c, back, seg) !== want) fail("cluster:" + c + (back ? "<" : ">") + (seg === null ? "cp" : "") + ":" + t.length);
+    const eg2 = { view: { lines: ["a" + FP, "b"] } };
+    const sw2 = Ed.gseg() ? [[1, 0, true, "0.6"], [0, 6, true, "0.1"], [0, 1, false, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]]
+                          : [[1, 0, true, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]];
+    for (const [l, c, back, want] of sw2) {
+      const n = Ed.step(eg2, l, c, back);
+      if ((n ? n.l + "." + n.c : "-") !== want) fail("step274:" + l + "." + c + (back ? "<" : ">"));
+    }
     // R17.1 Enter / Shift+Enter, asserted on the MODEL (no DOM, no view): each
     // case is [before, caret l.c, op, after, caret l.c] straight off the MUST
     // list. `enter` is where list semantics live, so it is checked in-app on
@@ -1672,6 +1729,16 @@ const Ed = {
         ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
         ["- [/] doing", 0, 11, "ctrl-l", "- [ ] doing", 0, 11],                          // #153 custom status resets
         ["- [>] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // #153
+        // #274: Backspace / Delete remove a whole character, never one code unit of it
+        ...(Ed.gseg() ? [
+          ["a\u{1F926}‍♂️b", 0, 6, "bs", "ab", 0, 1],                     // ZWJ + VS16, 5 units
+          ["a\u{1F926}‍♂️b", 0, 1, "del", "ab", 0, 1],
+          ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, 8, "bs", "\u{1F1E9}\u{1F1EA}", 0, 4], // one flag of two
+          ["\u{1F44D}\u{1F3FD}!", 0, 0, "del", "!", 0, 0],                               // skin tone
+        ] : []),
+        ["a\u{1F600}b", 0, 3, "bs", "ab", 0, 1],                                         // a surrogate pair, any engine
+        ["a\u{1F600}b", 0, 1, "del", "ab", 0, 1],
+        ["a\n\u{1F600}", 1, 0, "bs", "a\u{1F600}", 0, 1],                                // line join unchanged
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
