@@ -758,12 +758,28 @@
           // (the insert shifts the tabs after `at`: the shown tab is re-found by identity BEFORE anything
           // renders, else a render in between sees the index on a neighbour and makes that the active leaf)
           const cur = activeTab(g), was = !cur || cur === t0;
+          // #277: a NOTE leaf switched to a view of its OWN file (Excalidraw turns a drawing's markdown leaf into its
+          // "excalidraw" view with setViewState and no active, on first open and again on every layout-ready) is that
+          // leaf changing view, as stock: the view takes the note's place and the note tab goes (one tab, not two).
+          // Kept the note would be restored next start as a markdown leaf, converted again, and the board shown would
+          // be a stale detached one. Data safety as the active branch: never a pinned note; a shown note goes only if
+          // saved and still clean at the switch; a hidden one only if it was never loaded (no buffer to lose).
+          let own = false;
+          if (!t0.kind && !t0.pinned && state && typeof state.file === "string" && state.file) {
+            try { const ls = d.leafState(leaf); own = !!(ls && ls.type === "markdown" && ls.state && ls.state.file === state.file); } catch (_) {}
+          }
+          const saved = own && was ? await noteSaved(g, t0) : false;
           if (was && typeof flushSave === "function") try { await flushSave(g); } catch (_) {}
+          // the guard runs after the last await before the switch (nothing can type in between)
+          const drop = own && !t0.pinned && (was
+            ? saved && activeTab(g) === t0 && !(typeof bufDirty === "function" && bufDirty(g))
+            : t0.base === undefined && activeTab(g) !== t0);
           g.tabs.push(t);
           if (at < g.tabs.length - 1) { g.tabs.copyWithin(at + 1, at); g.tabs[at] = t; }
           g.active = g.tabs.indexOf(was ? t : cur);
           if (was && typeof loadActive === "function") await loadActive(g);
           else if (typeof renderTabs === "function") renderTabs(g);
+          if (drop) { const j = g.tabs.indexOf(t0); if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true); }
         }
         else await openTabView(g, t, at, true);
         await r.opened;

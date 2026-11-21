@@ -832,6 +832,30 @@ mod tests {
         assert!(host[..200].contains("holdRestore, mountHeld"), "views host exports the hold");
     }
 
+    /// #277: a note leaf switched (no active) to a view of its own file replaces the note tab, as stock
+    /// (one tab): the leftover note tab was restored as a markdown leaf next start, converted again by
+    /// Excalidraw, and the board on screen was a stale detached view stuck on "waiting". Data safety:
+    /// never a pinned note, a shown one only saved + still clean after the last await, a hidden one only
+    /// if never loaded; a view of another file (or a non-note tab) keeps the note as before.
+    #[test]
+    fn views_own_file_conversion_replaces_note_tab() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let o = js_fn(js, "openTyped");
+        let br = &o[pos(o, "else if (t0 && !active && !leaf._nt) {")..pos(o, "else await openTabView(g, t, at, true);")];
+        let own = pos(br, "if (!t0.kind && !t0.pinned && state && typeof state.file === \"string\" && state.file) {");
+        assert!(br.contains("ls.type === \"markdown\" && ls.state && ls.state.file === state.file"), "only the note's OWN file converts in place");
+        let saved = pos(br, "const saved = own && was ? await noteSaved(g, t0) : false;");
+        let flush = pos(br, "if (was && typeof flushSave === \"function\") try { await flushSave(g); } catch (_) {}");
+        let guard = pos(br, "const drop = own && !t0.pinned && (was");
+        assert!(br.contains("? saved && activeTab(g) === t0 && !(typeof bufDirty === \"function\" && bufDirty(g))"), "a shown note goes only saved and clean");
+        assert!(br.contains(": t0.base === undefined && activeTab(g) !== t0);"), "a hidden note goes only if never loaded");
+        let ins = pos(br, "g.tabs.push(t);");
+        let close = pos(br, "if (drop) { const j = g.tabs.indexOf(t0); if (j >= 0 && typeof closeTab === \"function\") await closeTab(g, j, \"plugin-detach\", \"plugin\", true); }");
+        assert!(own < saved && saved < flush && flush < guard && guard < ins && ins < close, "guard after the last await, before the switch; close last");
+        assert!(!br[guard..ins].contains("await"), "nothing awaits between the dirty guard and the switch");
+        assert_eq!(br.matches("closeTab(").count(), 1, "the note tab is closed only through the guarded drop");
+    }
+
     #[test]
     fn list_merges_stats_and_drops_bad_rows() {
         let l = br#"[{"id":"a-plug","name":"A","author":"x","description":"d","repo":"o/a"},
