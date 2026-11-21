@@ -841,10 +841,34 @@
         // main.js mounts a plugin-view tab only through PVHOST: a type registered here (by a plugin or straight
         // on the registry) arms it
         try { if (typeof PVHOST !== "undefined" && !PVHOST) PVHOST = PV; } catch (_) {}
-        // tabs restored from workspace.json (kind unk) of this type come alive; a SHOWING one re-mounts now
-        for (const g of M().groups()) { const t = activeTab(g); if (t && t.kind === "unk" && t.utype === type && typeof loadActive === "function") safe("remount " + type, () => loadActive(g)); }
+        // tabs restored from workspace.json (kind unk) of this type come alive; a SHOWING one re-mounts now —
+        // except during the startup plugin load (#277): stock builds the restored layout's views only after every
+        // enabled plugin's onload, so a view never runs inside its own plugin's half-done onload. holdMount
+        // (api-core.js boot) parks the remount; mountHeld() runs it once the load is done, before layout-ready.
+        if (!holdMount) for (const g of M().groups()) { const t = activeTab(g); if (t && t.kind === "unk" && t.utype === type && typeof loadActive === "function") safe("remount " + type, () => loadActive(g)); }
         viewRegistry.trigger("view-registered", type);
         d.touch();
+      }
+      /* #277: startup plugin load. holdRestore() parks addView's remount of showing restored tabs; mountHeld()
+         lifts the hold and mounts every group's SHOWING restored tab whose type is now registered (the views
+         stock builds when it loads the layout), awaiting each view's onOpen + setState so layout-ready fires
+         after them, as stock's does. A type nobody registered stays "No view for" (nothing to mount); a
+         background restored tab still mounts on its first show (switchTab -> loadActive). Fail closed: a
+         throwing remount is logged and the next group still mounts; the hold is lifted whatever happens. */
+      let holdMount = false;
+      function holdRestore() { holdMount = true; }
+      async function mountHeld() {
+        if (!holdMount) return 0;
+        holdMount = false;
+        let n = 0;
+        for (const g of M().groups()) {
+          const t = activeTab(g);
+          if (!(t && t.kind === "unk" && types.has(t.utype) && typeof loadActive === "function")) continue;
+          try { await loadActive(g); } catch (e) { console.error("[plugin] remount " + t.utype + ":", e); continue; }
+          const r = recs.get(t);
+          if (r && r.opened) { try { await r.opened; } catch (_) {} n++; }
+        }
+        return n;
       }
       function dropView(type) {         // the registry forgets now; the type's leaves detach after (Obsidian detaches them)
         type = String(type);
@@ -1061,7 +1085,7 @@
         const one = r => cs(r.type) + "@" + (r.side ? r.side[0] : "t" + gs.indexOf(groupOfTab(r.t))) + (r.view.containerEl.isConnected && !r.view.containerEl.hidden && r.view.containerEl.getClientRects().length ? "+" : "-");
         return " [pview:" + nt + "|" + [...recs.values(), ...sides].map(one).join(",") + "]";
       }
-      const host = { PV, sweep, censusTok, registerView, unregisterView, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
+      const host = { PV, sweep, censusTok, registerView, unregisterView, holdRestore, mountHeld, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
                      reveal, leafOfGroup, leafOfTab, bindLeaf, activeTab, groupOfTab, typeOfTab, isPvTab, recs, types, sideHide, sideShowing,
                      mainRoot, newRoot() { rootGen++; }, dock, ribbon, floating };
       const layout = { WorkspaceItem, WorkspaceParent, WorkspaceSplit, WorkspaceContainer, WorkspaceRoot, WorkspaceWindow,

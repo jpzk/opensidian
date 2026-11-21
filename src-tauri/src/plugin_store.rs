@@ -769,6 +769,68 @@ mod tests {
         assert!(nd.contains(&format!("const appVersion = () => \"{COMPAT_APP_VERSION}\";")), "node-desktop.js appVersion drifted from COMPAT_APP_VERSION");
     }
 
+    /// the body of `async function <name>(` in js, up to the next line that closes it at the same indent
+    fn js_fn<'a>(js: &'a str, name: &str) -> &'a str {
+        let head = format!("async function {name}(");
+        let at = js.find(&head).unwrap_or_else(|| panic!("{name} not found"));
+        let line0 = js[..at].rfind('\n').map_or(0, |n| n + 1);
+        let indent = &js[line0..at];
+        let close = format!("\n{indent}}}\n");
+        let end = js[at..].find(&close).unwrap_or_else(|| panic!("{name}: no closing brace")) + at;
+        &js[at..end]
+    }
+    fn pos(body: &str, needle: &str) -> usize {
+        body.find(needle).unwrap_or_else(|| panic!("missing {needle:?}"))
+    }
+
+    /// #277: stock's startup order. The restored layout's showing plugin views are built only after
+    /// every enabled plugin's onload (never inside it), with layoutReady false while plugins load,
+    /// and layout-ready fires after those views exist.
+    #[test]
+    fn boot_builds_restored_views_after_plugin_onloads_then_layout_ready() {
+        let js = include_str!("../../ui/plugins/api-core.js");
+        let b = js_fn(js, "boot");
+        let hold = pos(b, "views.holdRestore();");
+        let load = pos(b, "for (const id of K.st.enabledIds) await enable(id);");
+        let mount = pos(b, "await views.mountHeld();");
+        let ready = pos(b, "K.st.layoutReady = true; workspace.layoutReady = true;");
+        let fire = pos(b, "workspace.trigger(\"layout-ready\");");
+        assert!(hold < load, "the remount hold must be on before any plugin loads");
+        assert!(load < mount, "restored views are built after every plugin's onload");
+        assert!(mount < ready, "layoutReady stays false until the restored views are built");
+        assert!(ready < fire, "layout-ready fires once layoutReady is true");
+        // negative: layoutReady is never set before the plugins load, and only once in the file
+        assert!(!b[..load].contains("layoutReady = true"), "layoutReady set true before plugin onloads (#277)");
+        assert_eq!(js.matches("layoutReady = true").count(), 1);
+        // fail closed: a throwing plugin load still lifts the hold and readies the layout
+        let fin = pos(b, "} finally {");
+        assert!(load < fin && fin < mount && mount < ready, "mountHeld + layoutReady must sit in the finally");
+    }
+
+    /// #277: views.js side of the hold. While held, registerView does not mount a showing restored tab
+    /// (the plugin's onload is still running); mountHeld lifts the hold FIRST (a type registered after
+    /// boot remounts at once, as before), mounts only showing restored tabs of a registered type, awaits
+    /// each view's onOpen/setState, survives a throwing remount, and is a no-op without a hold.
+    #[test]
+    fn views_hold_restored_remount_during_startup_load() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let add = &js[pos(js, "function addView(pid, type, factory) {")..pos(js, "function dropView(type) {")];
+        assert!(add.contains("if (!holdMount) for (const g of M().groups())"), "addView must not remount while held");
+        assert!(add.contains("safe(\"remount \" + type, () => loadActive(g))"), "post-boot registerView still remounts a showing tab");
+        assert!(js.contains("let holdMount = false;"), "no hold unless boot asks for it");
+        let m = js_fn(js, "mountHeld");
+        let early = pos(m, "if (!holdMount) return 0;");
+        let lift = pos(m, "holdMount = false;");
+        let each = pos(m, "for (const g of M().groups())");
+        assert!(early < lift && lift < each, "the hold is lifted before any remount");
+        assert!(m.contains("t.kind === \"unk\" && types.has(t.utype)"), "only showing restored tabs of a registered type mount");
+        let la = pos(m, "try { await loadActive(g); } catch (e)");
+        assert!(m[la..].contains("continue;"), "a throwing remount must not stop the next group");
+        assert!(m.contains("await r.opened;"), "layout-ready waits for the view's onOpen + setState");
+        let host = &js[pos(js, "const host = {")..];
+        assert!(host[..200].contains("holdRestore, mountHeld"), "views host exports the hold");
+    }
+
     #[test]
     fn list_merges_stats_and_drops_bad_rows() {
         let l = br#"[{"id":"a-plug","name":"A","author":"x","description":"d","repo":"o/a"},

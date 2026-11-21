@@ -760,8 +760,18 @@
         K.st.vaultName = String(vaultPathArg || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
         app.appId = String(vaultPathArg || "").split("").reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7).toString(16);
         await refresh();
-        K.st.layoutReady = true; workspace.layoutReady = true;
-        if (K.st.trusted) for (const id of K.st.enabledIds) await enable(id);
+        /* #277: stock's startup order — every enabled plugin's onload runs with layoutReady false
+           (onLayoutReady callbacks queue); then the restored layout's showing views are built
+           (views.mountHeld: factory, onOpen, setState — never inside a plugin's own onload); then
+           layoutReady and layout-ready. A failing plugin or remount never keeps the layout from
+           going ready (finally). */
+        views.holdRestore();
+        try {
+          if (K.st.trusted) for (const id of K.st.enabledIds) await enable(id);
+        } finally {
+          try { await views.mountHeld(); } catch (e) { console.error("[plugin] restore views:", e); }
+          K.st.layoutReady = true; workspace.layoutReady = true;
+        }
         workspace.trigger("layout-ready");
       } catch (e) { console.error("[plugin] boot:", e); }
       touch();
