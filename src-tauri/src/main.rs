@@ -4633,9 +4633,15 @@ fn engine_off_response(why: &str) -> PageResponse {
         .expect("engine off response")
 }
 
+/// PROBE #281 (not for merge): unix-ms boot marks on stderr, aligned with the startup frame timeline
+fn f281_mark(what: &str) {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    eprintln!("[f281] {what} {ms}");
+}
 /// the app window, from the config entry, with page_csp on its responses
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
+    f281_mark("page_window_start");
     let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
     // #220: translations are ready before the first script runs (ui/i18n.js)
     let b = b.initialization_script(&i18n_init_js());
@@ -8133,6 +8139,7 @@ fn nav_allowed(u: &tauri::Url) -> bool {
 }
 
 fn main() {
+    f281_mark("main_start");
     // FIRST STATEMENT IN THE PROCESS, deliberately: the warm-up window (perf.rs,
     // WARMUP_MS) is measured from here, so anything that runs before this stamp
     // would be judged against a start time it predates.
@@ -8241,7 +8248,10 @@ fn main() {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
         let restart = switched.as_ref().and_then(|s| spawn::restart_of(&s.token));
-        match bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart) {
+        f281_mark("bind_boot_start");
+        let f281r = bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart);
+        f281_mark("bind_boot_end");
+        match f281r {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
                 eprintln!("opensidian: {e}; not starting a second backend on it (exit {})", vaultlock::DUP_EXIT);

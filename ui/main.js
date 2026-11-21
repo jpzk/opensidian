@@ -10,6 +10,17 @@ const OS_MAC = /Mac/.test(navigator.platform);
 const modKey = e => !!(e && (OS_MAC ? e.metaKey : e.ctrlKey));
 const MODNAME = OS_MAC ? "Cmd" : "Ctrl";
 if (OS_MAC) document.documentElement.classList.add("os-mac");   // style.css: native traffic lights, no own window buttons
+/* PROBE #281 (not for merge): unix-ms boot marks as otel spans (OPENSIDIAN_PERF file), aligned with the frame timeline */
+const F281 = (n, a) => { try { const t = performance.timeOrigin + performance.now(); if (window.otel) window.otel.span("f281_" + n, Object.assign({ abs_ms: Math.round(t), body_cls: document.body ? document.body.className : "-", bg: document.body ? getComputedStyle(document.body).backgroundColor : "-" }, a || {}), 0); } catch (e) {} };
+const F281P = n => requestAnimationFrame(() => setTimeout(() => F281(n), 0));
+F281("mainjs_start", { origin_ms: Math.round(performance.timeOrigin), rs: document.readyState });
+setTimeout(() => { try {
+  for (const e of performance.getEntriesByType("resource")) if (/(style\.css|main\.js|fluent-bundle\.js|census\.js|keychain\.js|cm6\.js)$/.test(e.name))
+    F281("res", { n: e.name.replace(/^.*\//, ""), s_ms: Math.round(performance.timeOrigin + e.startTime), e_ms: Math.round(performance.timeOrigin + e.responseEnd) });
+  for (const e of performance.getEntriesByType("paint")) F281("paint", { n: e.name, s_ms: Math.round(performance.timeOrigin + e.startTime) });
+  const nv = performance.getEntriesByType("navigation")[0]; if (nv) F281("nav", { dcl_ms: Math.round(performance.timeOrigin + nv.domContentLoadedEventStart), resp_ms: Math.round(performance.timeOrigin + nv.responseEnd) });
+  window.otel && window.otel.flush && window.otel.flush();
+} catch (e) {} }, 8000);
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
@@ -10347,9 +10358,10 @@ if (MQ_DARK.addEventListener) {
    one, replace it as the first await of the boot sequence, before any vault
    content is on screen. */
 async function bootTheme() {
-  applyTheme(systemTheme());
+  applyTheme(systemTheme()); F281("theme_applied", { mode: themeMode }); F281P("theme_painted");
   const st = await inv("get_theme").catch(() => null);
   if (st === "dark" || st === "light") { themeStored = true; applyTheme(st); }
+  F281("theme_stored", { st: String(st) });
 }
 /* ---------- THE SECOND AXIS IS GONE (themeone items 7/8, R1/R2) ----------
    Fifty lines lived here: PALETTES, applyPalette (the data-palette write),
@@ -13723,15 +13735,17 @@ function sgearTok() {
   SAVE_MS = await inv("save_debounce_ms").catch(() => 250);   // F2 smoke hook
   const sw = await inv("get_sidebar_w").catch(() => null);   // ux-4
   if (sw >= 150) $("side").style.width = Math.min(600, sw) + "px";
+  F281("sidebar_w", { sw: String(sw) });
   const rt = await inv("get_rside_tab").catch(() => null);   // rsidebar
   await hkLoad();                                             // R14 custom hotkeys
   await setRTab(RPANES[rt] ? rt : "bl", false);
+  F281("rtab_done"); F281P("rtab_painted");
   // vaultarg (README §5): a rejected `opensidian <dir>` argument is shown ONCE —
   // the notice banner when a vault opened, the picker's error line otherwise.
   // textContent only (say / p-err), never HTML.
   bootNote = await inv("boot_notice").catch(() => null);
   vaultPath = await inv("vault_get");
-  if (vaultPath) await enterVault(); else showPicker();
+  F281("enter_start"); if (vaultPath) await enterVault(); else showPicker(); F281("enter_end"); F281P("enter_painted");
   if (bootNote) { if (vaultPath) say(bootNote, "vaultarg"); else {
     // the BOOT picker's window stays untitled by the census (no 'panes:', see
     // loadRecent) — so the reason is published as "opensidian [vault:-]
