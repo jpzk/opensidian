@@ -801,7 +801,8 @@ mod tests {
         assert!(ready < fire, "layout-ready fires once layoutReady is true");
         // negative: layoutReady is never set before the plugins load, and only once in the file
         assert!(!b[..load].contains("layoutReady = true"), "layoutReady set true before plugin onloads (#277)");
-        assert_eq!(js.matches("layoutReady = true").count(), 1);
+        assert_eq!(js.matches("K.st.layoutReady = true").count(), 1, "one place readies the layout");
+        assert_eq!(js.matches("workspace.layoutReady = true").count(), 1);
         // fail closed: a throwing plugin load still lifts the hold and readies the layout
         let fin = pos(b, "} finally {");
         assert!(load < fin && fin < mount && mount < ready, "mountHeld + layoutReady must sit in the finally");
