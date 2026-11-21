@@ -349,7 +349,78 @@ pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> 
     Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Windows: reqwest (blocking, rustls) — same egress rules as the libsoup client: check_url on
+/// every hop, NO automatic redirect (next_hop re-checks each Location), per-I/O timeout, a whole-
+/// request deadline, the byte cap enforced again while the body is read. Anonymous.
+#[cfg(windows)]
+pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> {
+    crate::net_allowed(what)?; // #144 toggle 3: the choke point, before any client exists
+    let base = mirror_base();
+    let mut cur = check_url(logical)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(IO_TIMEOUT_S as u64))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("opensidian/", env!("CARGO_PKG_VERSION"), " plugin-browser"))
+        .build()
+        .map_err(|e| format!("{what}: http client: {e}"))?;
+    let deadline = Instant::now() + DEADLINE;
+    for _ in 0..=MAX_REDIRECTS {
+        if Instant::now() > deadline {
+            return Err(format!("{what}: timed out"));
+        }
+        let wire = wire_url(&cur, base.as_ref());
+        let mut req = client.get(&wire);
+        if cur.host_str() == Some("api.github.com") {
+            req = req.header("Accept", "application/vnd.github+json");
+        }
+        let resp = req.send().map_err(|e| format!("{what}: {} — {e}", cur.host_str().unwrap_or("?")))?;
+        let code = resp.status().as_u16();
+        if (300..400).contains(&code) && code != 304 {
+            let loc = resp
+                .headers()
+                .get("Location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| format!("{what}: HTTP {code} without a Location"))?
+                .to_string();
+            cur = next_hop(&cur, &loc, base.as_ref()).map_err(|e| format!("{what}: redirect {e}"))?;
+            continue;
+        }
+        if code != 200 {
+            let hint = if (code == 403 || code == 429) && cur.host_str() == Some("api.github.com") {
+                " (GitHub's anonymous API rate limit; try again later)"
+            } else {
+                ""
+            };
+            return Err(format!("{what}: HTTP {code} from {}{hint}", cur.host_str().unwrap_or("?")));
+        }
+        if let Some(cl) = resp.content_length() {
+            if cl > cap {
+                return Err(format!("refused: {what} is {cl} bytes, over the {cap}-byte cap"));
+            }
+        }
+        let mut out = Vec::new();
+        let mut stream = resp;
+        let mut buf = [0u8; 64 * 1024];
+        use std::io::Read;
+        loop {
+            if Instant::now() > deadline {
+                return Err(format!("{what}: timed out"));
+            }
+            let n = stream.read(&mut buf).map_err(|e| format!("{what}: read: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            if out.len() as u64 > cap {
+                return Err(format!("refused: {what} is larger than the {cap}-byte cap"));
+            }
+        }
+        return Ok(out);
+    }
+    Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn http_get(logical: &str, _cap: u64, what: &str) -> Result<Vec<u8>, String> {
     crate::net_allowed(what)?; // #144 toggle 3
     check_url(logical)?;
@@ -915,6 +986,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn uninstall_refuses_a_symlinked_plugin_dir() {
         let root = vault("unsym");

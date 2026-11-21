@@ -34,7 +34,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// MRU cap of the recent-vaults list
@@ -141,14 +140,27 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
 
 /// the file the bytes really live in (a symlinked config is followed)
 fn target(cfg: &Path) -> PathBuf {
-    fs::canonicalize(cfg).unwrap_or_else(|_| cfg.to_path_buf())
+    let t = fs::canonicalize(cfg).unwrap_or_else(|_| cfg.to_path_buf());
+    // Windows: canonicalize adds the `\\?\` prefix only once the file EXISTS, so the lock file's name
+    // (hashed from this path) would differ between the first writer and every later one and they would
+    // not exclude each other. One spelling: the plain form, whether or not the file is there yet.
+    #[cfg(windows)]
+    {
+        let s = t.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if !rest.starts_with(r"UNC\") {
+                return PathBuf::from(rest.to_string());
+            }
+        }
+    }
+    t
 }
 
 /// lock file for the config at `cfg`, inside `lock_dir`
 pub fn lock_file(lock_dir: &Path, cfg: &Path) -> PathBuf {
     let t = target(cfg);
     let mut h: u64 = 0xcbf29ce484222325;
-    for &b in t.as_os_str().as_bytes() {
+    for &b in t.as_os_str().as_encoded_bytes() {
         h ^= b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -188,7 +200,13 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, t)?;
-        File::open(dir).and_then(|d| d.sync_all())
+        // fsync the directory so the rename is durable; Windows cannot open a directory as a File
+        // (ERROR_ACCESS_DENIED) and NTFS journals the rename itself
+        #[cfg(unix)]
+        File::open(dir).and_then(|d| d.sync_all())?;
+        #[cfg(not(unix))]
+        let _ = dir;
+        Ok(())
     })();
     if r.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -223,6 +241,7 @@ pub fn update_in(lock_dir: &Path, cfg: &Path, ops: &[Op]) -> Result<Wrote, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn tmp(tag: &str) -> PathBuf {
@@ -282,6 +301,7 @@ mod tests {
         assert_eq!(v, serde_json::json!({"windows":{"/b":{"x":1}}}));
     }
 
+    #[cfg(unix)]
     #[test]
     fn cfgstore_symlinked_config_stays_a_symlink() {
         let d = tmp("link");

@@ -251,6 +251,7 @@ mod tests {
         assert_eq!(g[0].program, "/bin/p3");
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_allow_plugin_fingerprint_changes_with_main_js_or_manifest() {
         let base = std::env::temp_dir().join(format!("spawnallow-fp-{}", std::process::id()));
@@ -283,6 +284,7 @@ mod tests {
     /* #74: the program hash is of the pinned file's bytes: a rewrite in place (same size,
        mtime set back) or a replace by rename gives another hash, so a grant for the old
        program no longer matches and the spawn is asked again; unchanged = same hash (cached). */
+    #[cfg(unix)]
     #[test]
     fn spawn_allow_program_hash_change_asks_again() {
         // canonical: pin() takes the canonical path (macOS: $TMPDIR is under /var -> /private/var)

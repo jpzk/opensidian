@@ -315,6 +315,7 @@ mod tests {
         assert_eq!(names(&mutate_in(&root, |d| op_save(d, "A", &lay("a.md"))).unwrap()), ["A"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinked_obsidian_is_refused() {
         let root = tmp("sym");

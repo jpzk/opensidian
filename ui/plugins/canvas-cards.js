@@ -44,7 +44,12 @@
 
   const extOf = p => { const n = String(p || "").split("/").pop(); const d = n.lastIndexOf("."); return d > 0 ? n.slice(d + 1).toLowerCase() : ""; };
   const nameOf = p => String(p || "").split("/").pop();
-  const mediaUrl = p => "opensidian-img://localhost/" + String(p).split("/").map(encodeURIComponent).join("/");
+  const mediaUrl = p => {
+    const path = String(p).split("/").map(encodeURIComponent).join("/");
+    return typeof window.__osCustomSchemeUrl === "function"
+      ? window.__osCustomSchemeUrl("opensidian-img", path)
+      : "opensidian-img://localhost/" + path;
+  };
   // goal cvf-mediasrv: WebKitGTK's media player reads http(s) and blob: only (no handler for the
   // image scheme), so an audio/video card gets a Blob built from bounded media_read slices.
   // Lazy: the bytes are read only once the card has been on screen for a moment (or on play),
