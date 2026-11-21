@@ -725,6 +725,9 @@
         const split = leaf._split;
         // the leaf moves to the new tab: a pending leaf lands, a note/graph tab's leaf follows its view
         // (the note tab stays, as before; it gets a leaf of its own on next use); a stale group leaf mirrors
+        // #277: the note's own file, read while the leaf still IS the note tab (after bindLeaf it reads the new tab)
+        let noteFile0 = null;
+        if (t0 && !t0.kind) try { const ls = d.leafState(leaf); if (ls && ls.type === "markdown" && ls.state && typeof ls.state.file === "string") noteFile0 = ls.state.file; } catch (_) {}
         if (t0 || leaf._nt || split || !g.tabs.length) bindLeaf(leaf, t);
         const r = makeView(t, type, state, inst); if (!r) return;
         if (split && typeof splitWith === "function") {
@@ -764,10 +767,7 @@
           // Kept the note would be restored next start as a markdown leaf, converted again, and the board shown would
           // be a stale detached one. Data safety as the active branch: never a pinned note; a shown note goes only if
           // saved and still clean at the switch; a hidden one only if it was never loaded (no buffer to lose).
-          let own = false;
-          if (!t0.kind && !t0.pinned && state && typeof state.file === "string" && state.file) {
-            try { const ls = d.leafState(leaf); own = !!(ls && ls.type === "markdown" && ls.state && ls.state.file === state.file); } catch (_) {}
-          }
+          const own = !t0.kind && !t0.pinned && !!state && typeof state.file === "string" && !!state.file && noteFile0 === state.file;
           const saved = own && was ? await noteSaved(g, t0) : false;
           if (was && typeof flushSave === "function") try { await flushSave(g); } catch (_) {}
           // the guard runs after the last await before the switch (nothing can type in between)

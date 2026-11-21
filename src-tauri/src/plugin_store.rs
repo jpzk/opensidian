@@ -841,9 +841,13 @@ mod tests {
     fn views_own_file_conversion_replaces_note_tab() {
         let js = include_str!("../../ui/plugins/views.js");
         let o = js_fn(js, "openTyped");
+        // the note's file is read while the leaf is still the note tab (bindLeaf rebinds it to the new tab)
+        let nf = pos(o, "if (t0 && !t0.kind) try { const ls = d.leafState(leaf); if (ls && ls.type === \"markdown\" && ls.state && typeof ls.state.file === \"string\") noteFile0 = ls.state.file; } catch (_) {}");
+        let bind = pos(o, "if (t0 || leaf._nt || split || !g.tabs.length) bindLeaf(leaf, t);");
+        assert!(nf < bind, "noteFile0 must be read before bindLeaf");
         let br = &o[pos(o, "else if (t0 && !active && !leaf._nt) {")..pos(o, "else await openTabView(g, t, at, true);")];
-        let own = pos(br, "if (!t0.kind && !t0.pinned && state && typeof state.file === \"string\" && state.file) {");
-        assert!(br.contains("ls.type === \"markdown\" && ls.state && ls.state.file === state.file"), "only the note's OWN file converts in place");
+        let own = pos(br, "const own = !t0.kind && !t0.pinned && !!state && typeof state.file === \"string\" && !!state.file && noteFile0 === state.file;");
+        assert!(!br.contains("d.leafState(leaf)"), "the branch runs after bindLeaf: the leaf no longer reads the note");
         let saved = pos(br, "const saved = own && was ? await noteSaved(g, t0) : false;");
         let flush = pos(br, "if (was && typeof flushSave === \"function\") try { await flushSave(g); } catch (_) {}");
         let guard = pos(br, "const drop = own && !t0.pinned && (was");
