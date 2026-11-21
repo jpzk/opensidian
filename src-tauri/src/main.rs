@@ -350,6 +350,18 @@ const IMG_TYPES: [(&str, &str); 6] = [
 /// and fonts, which Illustrator-style exports embed.
 const SVG_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox";
 
+/// #276: the headers EVERY vault-image response carries, in one place so a
+/// unit test can pin them. `mime` is IMG_TYPES' Content-Type; an SVG (a
+/// document format) additionally gets SVG_CSP, so it stays inert even if it
+/// is ever opened as a document instead of through `<img>`.
+fn img_headers(mime: &'static str) -> Vec<(&'static str, &'static str)> {
+    let mut h = vec![("Content-Type", mime), ("X-Content-Type-Options", "nosniff"), ("Cache-Control", "no-store")];
+    if mime == "image/svg+xml" {
+        h.push(("Content-Security-Policy", SVG_CSP));
+    }
+    h
+}
+
 /// the scheme our images are served on; the CSP names it exactly (R29 / S1)
 const IMG_SCHEME: &str = "opensidian-img";
 
@@ -8444,13 +8456,11 @@ fn main() {
             }
             let res = match root.as_deref().and_then(|r| serve_image(r, &target)) {
                 Some((mime, body)) => {
-                    let b = tauri::http::Response::builder()
-                        .status(200)
-                        .header("Content-Type", mime)
-                        .header("X-Content-Type-Options", "nosniff")
-                        .header("Cache-Control", "no-store");
-                    // an SVG is a document format: inert even if opened as one
-                    let b = if mime == "image/svg+xml" { b.header("Content-Security-Policy", SVG_CSP) } else { b };
+                    // an SVG is a document format: inert even if opened as one (img_headers)
+                    let mut b = tauri::http::Response::builder().status(200);
+                    for (k, v) in img_headers(mime) {
+                        b = b.header(k, v);
+                    }
                     b.body(body)
                 }
                 None => tauri::http::Response::builder().status(404).body(Vec::new()),
@@ -12236,6 +12246,100 @@ mod tests {
         assert!(d.contains(&"default-src 'none'") && d.contains(&"sandbox"), "{SVG_CSP}");
         assert!(!SVG_CSP.contains("script-src") && !SVG_CSP.contains("connect-src") && !SVG_CSP.contains("http"), "{SVG_CSP}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #276: both stock embed syntaxes of a vault SVG render as ONE <img> on our
+    /// scheme, in reading view and in the editing render, and the URL round-trips
+    /// to the SVG bytes with Content-Type image/svg+xml. Case of the extension
+    /// does not matter (as for png); a sizing suffix keeps it an <img>.
+    #[test]
+    fn svg_embeds_render_as_img_in_both_syntaxes_and_round_trip() {
+        let root = tmp_vault("svg276");
+        fs::create_dir_all(root.join("art")).unwrap();
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'><rect width='100' height='100' fill='#1971c2'/></svg>";
+        for p in ["logo.svg", "art/UP.SVG"] {
+            fs::write(root.join(p), svg).unwrap();
+        }
+        let ix = Index::build(&root);
+        assert_eq!(ix.images(), ["art/UP.SVG", "logo.svg"], "{:?}", ix.images());
+        for reading in [true, false] {
+            for md in ["![[logo.svg]]", "![](logo.svg)", "![[logo.svg|120]]", "![[UP.SVG]]", "![](art/UP.SVG)"] {
+                let h = render_with(md, &[], ix.images(), reading);
+                assert_eq!(h.matches("<img ").count(), 1, "{md} reading={reading}: {h}");
+                assert!(!h.contains("could not be found"), "{md}: {h}");
+                for tag in ["<svg", "<object", "<iframe", "<embed", "<script"] {
+                    assert!(!h.contains(tag), "{md}: {tag} in {h}");
+                }
+                let i = h.find("src=\"").unwrap() + 5;
+                let url = h[i..].split('"').next().unwrap();
+                let target = url.strip_prefix(&format!("{IMG_SCHEME}://localhost/")).expect(url);
+                let (mime, bytes) = serve_image(&root, target).unwrap_or_else(|| panic!("{md} -> {url} served nothing"));
+                assert_eq!((mime, bytes.as_slice()), ("image/svg+xml", &svg[..]), "{md}");
+            }
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #276 negative half: an SVG is served only as a vault member. A missing
+    /// one is R29.4's banner (no URL); traversal, a symlink out of the vault and
+    /// look-alike extensions (svgz, svg.html, a note named x.svg.md) serve nothing.
+    #[test]
+    fn svg_serving_stays_vault_confined_and_exact() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("svg276neg");
+        let outside = std::env::temp_dir().join(format!("opensidian-svgout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.svg"), b"<svg/>").unwrap();
+        symlink(outside.join("secret.svg"), root.join("link.svg")).unwrap();
+        for p in ["z.svgz", "page.svg.html", "n.svg.md"] {
+            fs::write(root.join(p), b"<svg/>").unwrap();
+        }
+        let ix = Index::build(&root);
+        assert!(ix.images().is_empty(), "{:?}", ix.images());
+        let h = image_html(ix.images(), "missing.svg", "");
+        assert!(h.contains("could not be found") && !h.contains(IMG_SCHEME), "{h}");
+        for t in ["link.svg", "z.svgz", "page.svg.html", "n.svg.md", "../secret.svg", "%2e%2e/secret.svg", "missing.svg"] {
+            assert!(serve_image(&root, t).is_none(), "{t} was served");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// #276: the response headers. Every image gets its exact type + nosniff +
+    /// no-store; an SVG additionally gets SVG_CSP (no script, no network, sandbox).
+    /// Raster types keep exactly the three headers they had.
+    #[test]
+    fn img_headers_make_svg_inert_and_leave_raster_unchanged() {
+        let svg = img_headers("image/svg+xml");
+        assert!(svg.contains(&("Content-Type", "image/svg+xml")) && svg.contains(&("X-Content-Type-Options", "nosniff")), "{svg:?}");
+        assert!(svg.contains(&("Content-Security-Policy", SVG_CSP)), "{svg:?}");
+        for (_, mime) in IMG_TYPES.iter().filter(|(e, _)| *e != "svg") {
+            assert_eq!(
+                img_headers(mime),
+                vec![("Content-Type", *mime), ("X-Content-Type-Options", "nosniff"), ("Cache-Control", "no-store")]
+            );
+        }
+        let d: Vec<&str> = SVG_CSP.split(';').map(str::trim).collect();
+        for need in ["default-src 'none'", "sandbox"] {
+            assert!(d.contains(&need), "{need} missing: {SVG_CSP}");
+        }
+        for bad in ["script", "connect", "http", "*", "'self'", "unsafe-eval", "frame", "object"] {
+            assert!(!SVG_CSP.contains(bad), "{bad} in {SVG_CSP}");
+        }
+    }
+
+    /// #276 root cause guard: live preview (ui/editor.js Ed.IMG_EXTS) and the
+    /// reading view / byte server (index::IMG_EXTS) must name the SAME image set,
+    /// or one view draws an embed the other calls missing.
+    #[test]
+    fn live_preview_image_exts_match_the_index() {
+        let js = include_str!("../../ui/editor.js");
+        let line = js.lines().find(|l| l.trim_start().starts_with("IMG_EXTS: [")).expect("Ed.IMG_EXTS");
+        let inner = line.split('[').nth(1).and_then(|s| s.split(']').next()).expect(line);
+        let exts: Vec<&str> = inner.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
+        assert_eq!(exts, index::IMG_EXTS.to_vec(), "ui/editor.js Ed.IMG_EXTS vs index::IMG_EXTS");
+        assert!(exts.contains(&"svg"));
     }
 
     /// R29 images, POSITIVE half: the shapes that MUST serve bytes. Kept next
