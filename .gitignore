@@ -28,3 +28,7 @@ dist/
 /x
 # committed launcher icons: renders of packaging/linux/opensidian.svg (render-icons.sh)
 !packaging/linux/icons/*.png
+build.ps1
+/old
+deploy.ps1
+release.ps1

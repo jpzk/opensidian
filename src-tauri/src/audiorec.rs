@@ -86,9 +86,8 @@ fn with_slot<T>(label: &str, f: impl FnOnce(&mut Slot) -> T) -> T {
 }
 
 fn mint() -> Option<String> {
-    use std::io::Read;
     let mut b = [0u8; 16];
-    std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
+    crate::vaultfs::os_random(&mut b).ok()?;
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
@@ -582,6 +581,7 @@ mod tests {
         let _ = fs::remove_dir_all(&r); // reason: test cleanup
     }
 
+    #[cfg(unix)]
     #[test]
     fn audiorec_save_refusals_write_nothing() {
         let r = vault("refuse");

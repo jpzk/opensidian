@@ -190,6 +190,7 @@ pub fn await_ready(ready: impl Fn() -> bool, alive: impl Fn() -> bool, timeout: 
 /// the old window stayed beside the new one). A missing entry is therefore
 /// only "dead" if kill(pid, 0) agrees: ESRCH = gone; 0 / EPERM = it exists.
 /// (The sandbox's ruleset sets no signal scope, so kill 0 is not scoped.)
+#[cfg(unix)]
 pub fn alive(pid: u32) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         // "pid (comm) S ..." — comm may hold spaces/parens: state follows the LAST ')'
@@ -199,6 +200,7 @@ pub fn alive(pid: u32) -> bool {
 }
 
 /// /proc gave no answer for `pid`: ask the kernel by signal 0 (no signal sent).
+#[cfg(unix)]
 fn hidden_alive(pid: u32) -> bool {
     let Ok(p) = libc::pid_t::try_from(pid) else { return false };
     if p <= 0 {
@@ -209,6 +211,28 @@ fn hidden_alive(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+pub fn alive(pid: u32) -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+        fn CloseHandle(h: *mut core::ffi::c_void) -> i32;
+        fn GetExitCodeProcess(h: *mut core::ffi::c_void, code: *mut u32) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code) != 0;
+        CloseHandle(h);
+        ok && code == STILL_ACTIVE
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,10 +283,14 @@ pub fn current() -> Result<Launcher, String> {
 
 /// build the Command (not spawned) — split out so the env scrub is testable.
 pub fn command(l: &Launcher, vault: &Path, sw: Option<&Switch>) -> std::process::Command {
-    use std::os::unix::process::CommandExt;
     let (prog, args) = argv(l, vault, sw);
     let mut c = std::process::Command::new(prog);
-    c.args(args).env_remove("VAULT_DIR").stdin(std::process::Stdio::null()).process_group(0);
+    c.args(args).env_remove("VAULT_DIR").stdin(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
     c
 }
 
@@ -416,6 +444,7 @@ mod tests {
     /// rt-wm: a pid /proc does not show (hidepid + landlock) is judged by kill 0:
     /// an absent pid stays dead, and pid 0 / overflow never address a process group.
     #[test]
+    #[cfg(unix)]
     fn switch_alive_hidden_pid_falls_back_to_kill0() {
         assert!(hidden_alive(std::process::id()), "kill 0 on ourselves must see us");
         assert!(!hidden_alive(0));

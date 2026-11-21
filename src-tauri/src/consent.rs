@@ -141,25 +141,81 @@ fn check_run(sp: &Spec) -> Result<(), String> {
    candidate that does not canonicalize is not a candidate. The cwd is canonicalized the
    same way by resolve() before the program is looked up against it. */
 pub fn resolve_program(sp: &Spec) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let exe = |p: &Path| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+    #[cfg(unix)]
+    let exe = {
+        use std::os::unix::fs::PermissionsExt;
+        |p: &Path| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    };
+    #[cfg(not(unix))]
+    let exe = |p: &Path| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false);
     let canon = |p: PathBuf| p.canonicalize().ok().filter(|c| c.is_absolute() && exe(c) && !magic(c));
+    // Windows: CreateProcess resolves bare names with PATHEXT (.exe, .cmd, …). Try the
+    // same suffixes so the dialog names the file that will actually run.
+    #[cfg(windows)]
+    let candidates = |dir: &Path, name: &str| -> Vec<PathBuf> {
+        let mut out = vec![dir.join(name)];
+        if Path::new(name).extension().is_some() {
+            return out;
+        }
+        let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+        for ext in pathext.to_string_lossy().split(';') {
+            let ext = ext.trim();
+            if ext.is_empty() {
+                continue;
+            }
+            let e = if ext.starts_with('.') { ext.to_string() } else { format!(".{ext}") };
+            out.push(dir.join(format!("{name}{e}")));
+        }
+        out
+    };
+    #[cfg(not(windows))]
+    let candidates = |dir: &Path, name: &str| -> Vec<PathBuf> { vec![dir.join(name)] };
     if sp.file.is_empty() {
         return None;
     }
-    if sp.file.contains('/') {
+    #[cfg(windows)]
+    let pathy = sp.file.contains('/') || sp.file.contains('\\') || Path::new(&sp.file).is_absolute();
+    #[cfg(not(windows))]
+    let pathy = sp.file.contains('/');
+    if pathy {
         let p = Path::new(&sp.file);
         let p = if p.is_absolute() { p.to_path_buf() } else { sp.cwd.join(p) };
-        return (p.is_absolute() && exe(&p)).then_some(p).and_then(canon);
+        if !p.is_absolute() {
+            return None;
+        }
+        #[cfg(not(windows))]
+        return exe(&p).then_some(p).and_then(canon);
+        #[cfg(windows)]
+        {
+            if let Some(c) = canon(p.clone()) {
+                return Some(c);
+            }
+            // no extension: also try PATHEXT against cwd/name
+            let parent = p.parent()?;
+            let name = p.file_name()?.to_string_lossy();
+            return candidates(parent, &name).into_iter().find_map(canon);
+        }
     }
     let path = sp.env.iter().rev().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).or_else(|| std::env::var("PATH").ok())?;
-    path.split(':').map(Path::new).filter(|d| d.is_absolute()).map(|d| d.join(&sp.file)).filter(|p| exe(p)).find_map(canon)
+    #[cfg(windows)]
+    let sep = ';';
+    #[cfg(not(windows))]
+    let sep = ':';
+    path.split(sep).map(Path::new).filter(|d| d.is_absolute()).flat_map(|d| candidates(d, &sp.file)).filter(|p| exe(p)).find_map(canon)
 }
 
 /// X1: a canonical path that still names a per-process object (it could mean another
 /// file in the child): anything under /proc or /dev/fd
 fn magic(c: &Path) -> bool {
-    c.starts_with("/proc") || c.starts_with("/dev/fd")
+    #[cfg(unix)]
+    {
+        c.starts_with("/proc") || c.starts_with("/dev/fd")
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = c;
+        false
+    }
 }
 
 /// X1: the cwd the child runs in, canonical (what the dialog shows); a cwd that does not
@@ -594,10 +650,366 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     });
 }
 
+/// Windows: a real modal prompt, the same question as the GTK / AppKit ones: head + body in a
+/// read-only multiline edit (nothing is cut, F2), the any-arguments note above the buttons only
+/// where Always is offered, the refusing button first and default so Enter answers it.
+#[cfg(windows)]
+fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
+    let (title, no, yes) = match kind {
+        Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
+        Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
+        Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
+        Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+    };
+    // GTK mnemonics ("_Trust") are "&Trust" in Win32
+    let mn = |s: &str| s.replace('_', "&");
+    eprintln!("[consent] dialog text: {:?}", q.log);
+    let parent = win.hwnd().ok().map(|h| h.0 as *mut core::ffi::c_void);
+    let body = format!("{}\r\n\r\n{}", q.head, q.text.replace("\r\n", "\n").replace('\n', "\r\n"));
+    let always = q.always.then(|| mn(ALWAYS_LABEL));
+    let note = q.always.then_some(ALWAYS_NOTE);
+    let ans = win32::ask(parent, title, &body, note, &mn(yes), &mn(no), always.as_deref());
+    let _ = tx.send(ans);
+}
+
 /// no native prompt on this platform = NO (nothing is trusted or started)
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
     let _ = tx.send(Answer::No);
+}
+
+#[cfg(windows)]
+mod win32 {
+    use super::Answer;
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    type Hwnd = *mut core::ffi::c_void;
+
+    const WS_OVERLAPPED: u32 = 0x0000_0000;
+    const WS_CAPTION: u32 = 0x00C0_0000;
+    const WS_SYSMENU: u32 = 0x0008_0000;
+    const WS_VISIBLE: u32 = 0x1000_0000;
+    const WS_POPUP: u32 = 0x8000_0000;
+    const WS_CHILD: u32 = 0x4000_0000;
+    const WS_TABSTOP: u32 = 0x0001_0000;
+    const WS_VSCROLL: u32 = 0x0020_0000;
+    const WS_BORDER: u32 = 0x0080_0000;
+    const ES_MULTILINE: u32 = 0x0004;
+    const ES_READONLY: u32 = 0x0800;
+    const ES_AUTOVSCROLL: u32 = 0x0040;
+    const BS_DEFPUSHBUTTON: u32 = 0x1;
+    const SS_LEFT: u32 = 0x0;
+    const WM_COMMAND: u32 = 0x0111;
+    const WM_CLOSE: u32 = 0x0010;
+    const WM_SETFONT: u32 = 0x0030;
+    const BN_CLICKED: u16 = 0;
+    const ID_CANCEL: isize = 2; // IsDialogMessage sends IDCANCEL for Esc
+    const ID_NO: isize = 1001;
+    const ID_YES: isize = 1002;
+    const ID_BODY: isize = 1003;
+    const ID_ALWAYS: isize = 1004;
+    const ID_NOTE: isize = 1005;
+    const SW_SHOW: i32 = 5;
+
+    #[repr(C)]
+    struct WndClassW {
+        style: u32,
+        wnd_proc: Option<unsafe extern "system" fn(Hwnd, u32, usize, isize) -> isize>,
+        cls_extra: i32,
+        wnd_extra: i32,
+        instance: *mut core::ffi::c_void,
+        icon: *mut core::ffi::c_void,
+        cursor: *mut core::ffi::c_void,
+        background: *mut core::ffi::c_void,
+        menu_name: *const u16,
+        class_name: *const u16,
+    }
+
+    #[repr(C)]
+    struct Msg {
+        hwnd: Hwnd,
+        message: u32,
+        w_param: usize,
+        l_param: isize,
+        time: u32,
+        pt_x: i32,
+        pt_y: i32,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn RegisterClassW(c: *const WndClassW) -> u16;
+        fn CreateWindowExW(
+            ex: u32,
+            class: *const u16,
+            name: *const u16,
+            style: u32,
+            x: i32,
+            y: i32,
+            w: i32,
+            h: i32,
+            parent: Hwnd,
+            menu: *mut core::ffi::c_void,
+            instance: *mut core::ffi::c_void,
+            param: *mut core::ffi::c_void,
+        ) -> Hwnd;
+        fn DestroyWindow(h: Hwnd) -> i32;
+        fn ShowWindow(h: Hwnd, cmd: i32) -> i32;
+        fn UpdateWindow(h: Hwnd) -> i32;
+        fn GetMessageW(m: *mut Msg, h: Hwnd, min: u32, max: u32) -> i32;
+        fn TranslateMessage(m: *const Msg) -> i32;
+        fn DispatchMessageW(m: *const Msg) -> isize;
+        fn DefWindowProcW(h: Hwnd, msg: u32, w: usize, l: isize) -> isize;
+        fn SetWindowLongPtrW(h: Hwnd, idx: i32, val: isize) -> isize;
+        fn GetWindowLongPtrW(h: Hwnd, idx: i32) -> isize;
+        fn EnableWindow(h: Hwnd, enable: i32) -> i32;
+        fn SetFocus(h: Hwnd) -> Hwnd;
+        fn SetForegroundWindow(h: Hwnd) -> i32;
+        fn GetSystemMetrics(i: i32) -> i32;
+        fn SendMessageW(h: Hwnd, msg: u32, w: usize, l: isize) -> isize;
+        fn IsDialogMessageW(h: Hwnd, m: *mut Msg) -> i32;
+        fn PostQuitMessage(code: i32);
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleW(n: *const u16) -> *mut core::ffi::c_void;
+    }
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn GetStockObject(i: i32) -> *mut core::ffi::c_void;
+    }
+
+    const GWLP_USERDATA: i32 = -21;
+    const DEFAULT_GUI_FONT: i32 = 17;
+    const COLOR_WINDOW: isize = 5;
+    const SM_CXSCREEN: i32 = 0;
+    const SM_CYSCREEN: i32 = 1;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    struct State {
+        answer: Answer,
+        done: bool,
+    }
+
+    static CLASS_ATOM: AtomicIsize = AtomicIsize::new(0);
+
+    /// close = answer (once), then destroy. The nested loop in `ask` ends on `done`; no
+    /// WM_QUIT is posted here, it would outlive this loop and quit the app's own event loop.
+    unsafe fn finish(hwnd: Hwnd, st: *mut State, a: Answer) -> isize {
+        if !st.is_null() && !(*st).done {
+            (*st).answer = a;
+            (*st).done = true;
+        }
+        DestroyWindow(hwnd);
+        0
+    }
+
+    unsafe extern "system" fn wnd_proc(hwnd: Hwnd, msg: u32, w: usize, l: isize) -> isize {
+        let st = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
+        match msg {
+            WM_COMMAND => {
+                let id = (w & 0xffff) as isize;
+                let code = ((w >> 16) & 0xffff) as u16;
+                // Esc arrives as IDCANCEL with code 0 from IsDialogMessage
+                if code == BN_CLICKED {
+                    match id {
+                        ID_YES => return finish(hwnd, st, Answer::Once),
+                        ID_ALWAYS => return finish(hwnd, st, Answer::Always),
+                        ID_NO | ID_CANCEL => return finish(hwnd, st, Answer::No),
+                        _ => {}
+                    }
+                }
+            }
+            // the window's X: a refusal
+            WM_CLOSE => return finish(hwnd, st, Answer::No),
+            _ => {}
+        }
+        DefWindowProcW(hwnd, msg, w, l)
+    }
+
+    fn ensure_class(instance: *mut core::ffi::c_void) -> Vec<u16> {
+        let name = wide("opensidian_consent_dialog");
+        if CLASS_ATOM.load(Ordering::SeqCst) == 0 {
+            let wc = WndClassW {
+                style: 0,
+                wnd_proc: Some(wnd_proc),
+                cls_extra: 0,
+                wnd_extra: 0,
+                instance,
+                icon: std::ptr::null_mut(),
+                cursor: std::ptr::null_mut(),
+                background: (COLOR_WINDOW + 1) as *mut core::ffi::c_void,
+                menu_name: std::ptr::null(),
+                class_name: name.as_ptr(),
+            };
+            let atom = unsafe { RegisterClassW(&wc) };
+            if atom != 0 {
+                CLASS_ATOM.store(atom as isize, Ordering::SeqCst);
+            }
+        }
+        name
+    }
+
+    /// Blocks in a nested message loop until the user answers. `no` is the default button
+    /// (Enter, Esc and the X all refuse); `always` adds the third button, `note` the plain-text
+    /// any-arguments note above the buttons. The body is plain text in a read-only edit: a page
+    /// value cannot style or hide part of the prompt.
+    pub fn ask(parent: Option<Hwnd>, title: &str, body: &str, note: Option<&str>, yes: &str, no: &str, always: Option<&str>) -> Answer {
+        unsafe {
+            let instance = GetModuleHandleW(std::ptr::null());
+            let class = ensure_class(instance);
+            let mut state = State { answer: Answer::No, done: false };
+
+            let sw = GetSystemMetrics(SM_CXSCREEN);
+            let sh = GetSystemMetrics(SM_CYSCREEN);
+            let ww = 680i32.min(sw.saturating_sub(40));
+            let wh = (if note.is_some() { 560i32 } else { 480i32 }).min(sh.saturating_sub(80));
+            let x = (sw - ww) / 2;
+            let y = (sh - wh) / 2;
+
+            let title_w = wide(title);
+            let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_POPUP;
+            let hwnd = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title_w.as_ptr(),
+                style,
+                x,
+                y,
+                ww,
+                wh,
+                parent.unwrap_or(std::ptr::null_mut()),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null_mut(),
+            );
+            if hwnd.is_null() {
+                return Answer::No;
+            }
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut state as *mut State as isize);
+
+            let font = GetStockObject(DEFAULT_GUI_FONT);
+            let edit_class = wide("EDIT");
+            let btn_class = wide("BUTTON");
+            let static_class = wide("STATIC");
+            // layout (client area ~ ww-16 x wh-39): body, optional note, one button row
+            let note_h = if note.is_some() { 84 } else { 0 };
+            let edit_style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL;
+            let body_w = wide(body);
+            let edit = CreateWindowExW(
+                0,
+                edit_class.as_ptr(),
+                body_w.as_ptr(),
+                edit_style,
+                12,
+                12,
+                ww - 40,
+                wh - 100 - note_h,
+                hwnd,
+                ID_BODY as *mut core::ffi::c_void,
+                instance,
+                std::ptr::null_mut(),
+            );
+            if !edit.is_null() {
+                SendMessageW(edit, WM_SETFONT, font as usize, 1);
+            }
+            if let Some(n) = note {
+                let note_w = wide(n);
+                let lbl = CreateWindowExW(
+                    0,
+                    static_class.as_ptr(),
+                    note_w.as_ptr(),
+                    WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    12,
+                    wh - 100 - note_h + 20,
+                    ww - 40,
+                    note_h - 8,
+                    hwnd,
+                    ID_NOTE as *mut core::ffi::c_void,
+                    instance,
+                    std::ptr::null_mut(),
+                );
+                if !lbl.is_null() {
+                    SendMessageW(lbl, WM_SETFONT, font as usize, 1);
+                }
+            }
+
+            // buttons right to left: [No (default)] [Allow once] [Always]; Always is wider (its label)
+            let btn_y = wh - 70;
+            let btn_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+            let mut right = ww - 28;
+            let mut place = |text: &str, id: isize, w: i32, extra: u32| -> Hwnd {
+                let t = wide(text);
+                let left = right - w;
+                right = left - 10;
+                CreateWindowExW(
+                    0,
+                    btn_class.as_ptr(),
+                    t.as_ptr(),
+                    btn_style | extra,
+                    left,
+                    btn_y,
+                    w,
+                    28,
+                    hwnd,
+                    id as *mut core::ffi::c_void,
+                    instance,
+                    std::ptr::null_mut(),
+                )
+            };
+            let mut all: Vec<Hwnd> = Vec::new();
+            if let Some(a) = always {
+                all.push(place(a, ID_ALWAYS, (a.chars().count() as i32 * 8 + 24).max(120), 0));
+            }
+            all.push(place(yes, ID_YES, 130, 0));
+            let btn_no = place(no, ID_NO, 130, BS_DEFPUSHBUTTON);
+            all.push(btn_no);
+            for b in all {
+                if !b.is_null() {
+                    SendMessageW(b, WM_SETFONT, font as usize, 1);
+                }
+            }
+            if let Some(p) = parent {
+                EnableWindow(p, 0);
+            }
+            ShowWindow(hwnd, SW_SHOW);
+            UpdateWindow(hwnd);
+            SetForegroundWindow(hwnd);
+            // Enter / Esc / X answer the refusal even though the edit can take focus
+            if !btn_no.is_null() {
+                SetFocus(btn_no);
+            }
+
+            let mut msg = std::mem::MaybeUninit::<Msg>::zeroed();
+            while !state.done {
+                let r = GetMessageW(msg.as_mut_ptr(), std::ptr::null_mut(), 0, 0);
+                if r < 0 {
+                    break;
+                }
+                if r == 0 {
+                    // a WM_QUIT for the app's own loop: put it back and refuse
+                    PostQuitMessage((*msg.as_ptr()).w_param as i32);
+                    break;
+                }
+                let m = msg.as_mut_ptr();
+                if IsDialogMessageW(hwnd, m) == 0 {
+                    TranslateMessage(m);
+                    DispatchMessageW(m);
+                }
+            }
+            // re-enable the owner BEFORE the dialog is gone (else the owner loses activation)
+            if let Some(p) = parent {
+                EnableWindow(p, 1);
+            }
+            if !state.done {
+                DestroyWindow(hwnd);
+            }
+            state.answer
+        }
+    }
 }
 
 #[cfg(test)]
@@ -610,6 +1022,7 @@ mod tests {
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
     /// `fakeprog`), base/link -> vault. Each script prints where it lives.
+    #[cfg(unix)]
     fn tree(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!("consent-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -668,6 +1081,7 @@ mod tests {
 
     // F1: an empty PATH entry, "." or a relative entry would be resolved by exec against
     // the child's cwd (the vault): skipped, so vault/fakeprog is never what resolves
+    #[cfg(unix)]
     #[test]
     fn f1_relative_path_entries_never_resolve_into_the_cwd() {
         let b = tree("f1");
@@ -731,6 +1145,7 @@ mod tests {
        name as argv0), so a request just under the cap became a run over it — shown and
        exec'd. resolve now checks the cap on the Spec it returns: E2BIG, before the
        question is built or asked (desk_proc_spawn / desk_shell: resolve < ask). */
+    #[cfg(unix)]
     #[test]
     fn v2_a_run_pushed_over_the_size_cap_by_resolve_is_refused_before_anything_is_asked() {
         let d = std::env::temp_dir().join(format!("consent-v2-{}", std::process::id()));
@@ -1087,6 +1502,7 @@ mod tests {
        The replacement must never run: the original runs, or the run is refused (EPERM: the
        pinned file changed: rename/unlink and rewrite both move its ctime). A control round
        with nothing replaced runs the original. */
+    #[cfg(unix)]
     #[test]
     fn y1_a_program_replaced_while_the_dialog_is_open_is_never_the_one_run() {
         let base = std::env::temp_dir().join(format!("consent-y1-{}", std::process::id()));
@@ -1129,6 +1545,7 @@ mod tests {
        found by name on PATH like any plugin program, runs with its args and cwd. Only that it
        runs is asserted, not how ($0 is /proc/self/fd/N under the fd exec, the program path
        under an exec by name), so this test pins #! support and nothing else. */
+    #[cfg(unix)]
     #[test]
     fn y1_a_hash_bang_script_program_still_runs() {
         let base = std::env::temp_dir().join(format!("consent-y1s-{}", std::process::id()));
@@ -1152,6 +1569,7 @@ mod tests {
        directory is made at the same path, with its own files. After Allow the child must run
        in the original directory (now at the new name) or be refused (EPERM), never in the
        replacement. A control round with nothing replaced runs in the cwd as named. */
+    #[cfg(unix)]
     #[test]
     fn aa2_a_cwd_replaced_while_the_dialog_is_open_is_never_the_one_entered() {
         let base = std::env::temp_dir().join(format!("consent-aa2-{}", std::process::id()));
