@@ -122,14 +122,29 @@ const Ed = {
     const lm = /^([-*+]|\d+\.) /.exec(t);
     if (lm) {
       const rest = t.slice(lm[0].length);
-      if (ind) row.appendChild(Ed.t(ind));
+      // #272: the item is TWO boxes, span.lpre (indent + marker [+ checkbox + "[ ] "]) and
+      // span.lbody (the text). style.css lays a row holding both side by side (flex), so a
+      // wrapped continuation line starts under the item TEXT (hanging indent), as stock does;
+      // without the split every wrapped line restarted at the row's left edge. Wrapping
+      // changes no textContent (token ranges, caret mapping and the census are per character).
+      const pre = Ed.el("span", "lpre");
+      if (ind) pre.appendChild(Ed.t(ind));
       // the marker glyphs and their trailing space are SEPARATE hidden spans:
       // R15.10 gives .lim a fixed marker advance as a box (bullet drawn
       // inside it), and the space must not sit in that box or a wide "10."
       // would push the text right by its width. textContent is unchanged.
       const li0 = Ed.mk(lm[1], "lim"), li1 = Ed.mk(" ", "lisp");
-      row.appendChild(li0);
-      row.appendChild(li1);
+      pre.appendChild(li0);
+      pre.appendChild(li1);
+      row.appendChild(pre);
+      // the body box; a body that renders no text (an embed-only item) stays unwrapped: a
+      // text-less span would become a CM6 widget leaf (lpParse), so that row keeps today's flow
+      const body = s => {
+        const b = Ed.el("span", "lbody");
+        Ed.inline(g, b, s);
+        if (b.textContent.length) row.appendChild(b);
+        else while (b.firstChild) row.appendChild(b.firstChild);
+      };
       row.classList.add("li");
       if (/\d/.test(lm[1])) row.classList.add("ord");
       // deep-tasks: any one status character is a task (Obsidian Tasks "[/]" "[-]" ...); only a BULLET
@@ -144,9 +159,9 @@ const Ed = {
         cb.type = "checkbox"; cb.checked = task[1] !== " ";
         cb.contentEditable = "false";
         Ed.taskBox(cb);
-        row.appendChild(cb);
+        pre.appendChild(cb);
         const tm = Ed.mk("[" + task[1] + "] ", "task");
-        row.appendChild(tm);
+        pre.appendChild(tm);
         // R17.6 lists "- [ ] " as ONE token: the bullet marker and the
         // checkbox are the same widget, so they reveal together.
         Ed.tok([li0, li1, cb, tm], [li0, li1, tm], "task");
@@ -158,12 +173,19 @@ const Ed = {
         // ln.from + t.e, side 1). Without it the caret at the marker end (#46 keeps the box
         // there) only maps into the hidden "[ ] " marker, which has no box, and WebKit paints
         // it at the row start, LEFT of the checkbox.
-        const body = rest.slice(4);
-        if (body) { const tt = Ed.el("span", "tkt"); Ed.inline(g, tt, body); row.appendChild(tt); }
+        const tb = rest.slice(4);
+        if (tb) {
+          // #272: the strike span IS the body box (one element, not two marks over the
+          // same range, whose nesting CM6 would be free to pick); text-less: plain tkt
+          const tt = Ed.el("span", "tkt");
+          Ed.inline(g, tt, tb);
+          if (tt.textContent.length) tt.classList.add("lbody");
+          row.appendChild(tt);
+        }
         else row.appendChild(Ed.el("span", "tcar"));
       } else {
         Ed.tok([li0, li1], [li0, li1], "li");
-        Ed.inline(g, row, rest);
+        body(rest);
       }
       return;
     }
