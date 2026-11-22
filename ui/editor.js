@@ -1011,6 +1011,8 @@ const Ed = {
         if (!info || !info.pages) return;     // gone or unreadable: the 3D sheet stays
         box.replaceChildren();
         pages = [];
+        // the 3D sheet was complete; the drawing is not until its first page arrives
+        s.classList.remove("is-loaded");
         s.classList.add("is-twin");
         s.dataset.shown = twin;
         build(info, src);
