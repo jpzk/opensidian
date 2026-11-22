@@ -89,14 +89,23 @@ pub fn twin_stem(stem: &str) -> Option<&str> {
     (!base.is_empty()).then_some(base)
 }
 
-/// among `names` (one folder's entries), the 2D drawing of the 3D file `name`
+/// among `names` (one folder's entries), the 2D drawing of the 3D file `name`.
+/// Where case matters (Linux) a folder can hold "Part.pdf" and "part.PDF" side
+/// by side; the answer must not depend on the order the folder is listed in, so
+/// the stem written exactly as in the 3D file's name wins, then the first name
+/// in byte order.
 pub fn twin_of<'a>(name: &str, names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let (stem, _) = name.rsplit_once('.')?;
     let want = twin_stem(stem)?;
-    names.into_iter().find(|n| {
-        *n != name
-            && n.rsplit_once('.').is_some_and(|(s, e)| e.eq_ignore_ascii_case(PDF_EXT) && s.trim_end().eq_ignore_ascii_case(want))
-    })
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let (s, e) = n.rsplit_once('.')?;
+            let s = s.trim_end();
+            (n != name && e.eq_ignore_ascii_case(PDF_EXT) && s.eq_ignore_ascii_case(want)).then_some((s != want, n))
+        })
+        .min()
+        .map(|(_, n)| n)
 }
 
 /* A "3D PDF" (CAD exports: SolidWorks, CATIA, ...) is a page with NO drawing of
@@ -109,11 +118,19 @@ pub fn twin_of<'a>(name: &str, names: impl IntoIterator<Item = &'a str>) -> Opti
    attempted.
    Only a page with an EMPTY content stream is reported. A page that draws
    something (a title block, or the poster image some exporters add) is rendered
-   as usual: showing what is there beats replacing it with a notice. */
+   as usual: showing what is there beats replacing it with a notice.
+   A /RichMedia annotation (PDF 1.7 ext. 3) also carries video, sound or Flash;
+   it counts only when one of its configurations is /3D. */
 fn model_3d(pg: &hayro::hayro_syntax::page::Page) -> bool {
     use hayro::hayro_syntax::object::{Array, Dict, Name};
+    let is = |d: &Dict, t: &[u8]| d.get::<Name>("Subtype").is_some_and(|n| n.as_ref() == t);
+    let rich_3d = |a: &Dict| {
+        a.get::<Dict>("RichMediaContent")
+            .and_then(|c| c.get::<Array>("Configurations"))
+            .is_some_and(|cs| cs.iter::<Dict>().any(|c| is(&c, b"3D")))
+    };
     let Some(annots) = pg.raw().get::<Array>("Annots") else { return false };
-    let has_model = annots.iter::<Dict>().any(|a| a.get::<Name>("Subtype").is_some_and(|n| matches!(n.as_ref(), b"3D" | b"RichMedia")));
+    let has_model = annots.iter::<Dict>().any(|a| is(&a, b"3D") || (is(&a, b"RichMedia") && rich_3d(&a)));
     has_model && pg.page_stream().is_none_or(|s| s.iter().all(u8::is_ascii_whitespace))
 }
 
@@ -373,6 +390,9 @@ pub mod tests {
             format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
             "<< /Type /Annot /Subtype /3D /Rect [50 50 750 550] /Contents (3D Model) >>".to_string(),
             "<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>".to_string(),
+            // 7: rich media holding a video; 8: rich media holding a 3D model
+            "<< /Type /Annot /Subtype /RichMedia /Rect [50 50 750 550] /RichMediaContent << /Configurations [<< /Type /RichMediaConfiguration /Subtype /Video >>] >> >>".to_string(),
+            "<< /Type /Annot /Subtype /RichMedia /Rect [50 50 750 550] /RichMediaContent << /Configurations [<< /Type /RichMediaConfiguration /Subtype /Sound >> << /Type /RichMediaConfiguration /Subtype /3D >>] >> >>".to_string(),
         ];
         let mut out = b"%PDF-1.6\n".to_vec();
         let mut offs = Vec::new();
@@ -399,6 +419,8 @@ pub mod tests {
         assert_eq!(of("m3-drawn.pdf", "/Annots [5 0 R] /Contents 4 0 R"), Vec::<usize>::new(), "the page draws something: render it");
         assert_eq!(of("m3-link.pdf", "/Annots [6 0 R]"), Vec::<usize>::new(), "an empty page with a link is just an empty page");
         assert_eq!(of("m3-none.pdf", ""), Vec::<usize>::new());
+        assert_eq!(of("m3-video.pdf", "/Annots [7 0 R]"), Vec::<usize>::new(), "rich media that is a video is not a 3D model");
+        assert_eq!(of("m3-rich3d.pdf", "/Annots [8 0 R]"), vec![1], "rich media with a 3D configuration is");
         let plain = info(&load(&tmp("m3-plain.pdf", &mini_pdf(2))).unwrap());
         assert!(plain.model3d.is_empty());
         assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"pages":2,"sizes":[[612.0,792.0],[612.0,792.0]]}"#, "an ordinary PDF answers exactly as before");
@@ -424,6 +446,14 @@ pub mod tests {
         assert_eq!(t("Model3D.pdf"), None, "no separate marker: no twin");
         assert_eq!(t("Lone - 3D.pdf"), None, "no drawing in the folder");
         assert_eq!(t("00 - Chassis - Ind 00.pdf"), None, "a drawing has no twin");
+        // where case matters both may sit side by side: the same answer in any listing order
+        let both = ["part.PDF", "Part.pdf", "Part - 3D.pdf", "Part.pdf.bak"];
+        let mut rev = both;
+        rev.reverse();
+        assert_eq!(twin_of("Part - 3D.pdf", both), Some("Part.pdf"), "the stem as written in the 3D name wins");
+        assert_eq!(twin_of("Part - 3D.pdf", rev), Some("Part.pdf"));
+        assert_eq!(twin_of("PART - 3D.pdf", both), Some("Part.pdf"), "no exact stem: first in byte order");
+        assert_eq!(twin_of("PART - 3D.pdf", rev), Some("Part.pdf"));
         assert_eq!(twin_stem("X - 3d"), Some("X"));
         assert_eq!(twin_stem(" - 3D"), None);
         assert_eq!(twin_stem("3D"), None);
