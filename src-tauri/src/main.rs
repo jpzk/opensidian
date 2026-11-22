@@ -66,6 +66,7 @@ use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
 mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
+mod dropticket; // #280: a native drop is a one-shot ticket; attach_files consumes it
 mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
@@ -1113,22 +1114,61 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Opt
    async runtime instead of the event loop (rule of order: no lag the user can
    feel). The index learns the copied images here because BOTH renderers
    resolve `![[x.png]]` against `Index::images()` (R29.11) — a file copied but
-   not indexed would not paint. */
+   not indexed would not paint.
+   #280: the page no longer names the paths. The native drop transport (xdnd.rs) stored them
+   under a one-shot ticket (dropticket.rs) and the page only got that ticket + the display
+   names; this command takes the ticket and consumes it (attach_ticket). A raw path, an
+   unknown, reused, expired or other-window ticket is refused before anything is touched. */
 #[tauri::command]
 async fn attach_files(
+    win: tauri::Window,
     v: State<'_, Vault>,
     note: String,
-    paths: Vec<PathBuf>,
+    ticket: String,
     otel: Option<perf::Ctx>,
 ) -> Result<Attached, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let n = paths.len();
-    let a = span_timed!(otel => "attach_files", attach_drop(&root, &note, &paths), serde_json::json!({"files": n}))
-        .map_err(|e| e.say())?;
+    let a = span_timed!(otel => "attach_files", attach_ticket(&root, &note, win.label(), &ticket), serde_json::json!({}))?;
+    index_attached(&v, &a);
+    Ok(a)
+}
+
+/// #280 THE gate in front of attach_drop for a drop: the paths come from the ticket the
+/// native drop minted, never from the caller. The ticket is consumed first (single use,
+/// whatever happens next); an Err here has moved, copied and created nothing.
+fn attach_ticket(root: &Path, note: &str, win: &str, ticket: &str) -> Result<Attached, String> {
+    let paths = dropticket::take(win, ticket).map_err(|e| {
+        eprintln!("[osdrop] attach_files refused: {e:?}");
+        e.say()
+    })?;
+    attach_drop(root, note, &paths).map_err(|e| e.say())
+}
+
+/// R29.11: both renderers resolve ![[x.png]] against the index, so it learns what landed
+fn index_attached(v: &Vault, a: &Attached) {
     let mut ix = v.index.lock().unwrap();
     for rel in &a.copied {
         ix.add_image(rel);
     }
+}
+
+/* #280 R31.7 "Insert attachment" (the typed path, the keyboard road for people and probes
+   with no pointer) names its path in the PAGE, so it cannot be told apart from a script
+   calling it. It is therefore no drop and gets no ticket: the user confirms the exact path
+   in a NATIVE dialog (consent::Kind::Attach, default answer Cancel) before attach_drop
+   runs; every rule after that is the drop's. No dialog = nothing attached (fail closed). */
+#[tauri::command]
+async fn attach_typed(win: tauri::Window, v: State<'_, Vault>, note: String, path: String) -> Result<Attached, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if path.trim().is_empty() {
+        return Err(DropErr::Empty.say());
+    }
+    let slot = consent::admit()?;
+    if !consent::ask(slot, win, consent::Kind::Attach, consent::attach_question(&path, &note)).await? {
+        return Err("attach cancelled".into());
+    }
+    let a = attach_drop(&root, &note, &[PathBuf::from(&path)]).map_err(|e| e.say())?;
+    index_attached(&v, &a);
     Ok(a)
 }
 
@@ -8482,7 +8522,7 @@ fn main() {
             updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, attach_typed, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, i18n_state, i18n_load, i18n_set, pdf_info,
@@ -13133,6 +13173,105 @@ mod tests {
         assert_eq!(serve_image(&root, "cat.png").unwrap().1, b"\x89PNG\r\n\x1a\nCAT".to_vec());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// the vault's entries (names), sorted: "the attachment folder is unchanged"
+    fn vault_names(root: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    }
+
+    /// #280: attach_files no longer takes a path. A path the page names (no drop registered
+    /// it) is refused: nothing lands in the vault and the source (an image, which a drop
+    /// would MOVE) and a PDF (which a drop would copy) both stay exactly where they were.
+    #[test]
+    fn attach_ticket_refuses_a_raw_path_and_touches_nothing() {
+        let (root, srcd) = drop_vault("tk-raw");
+        let img = src_file(&srcd, "secret.png", b"\x89PNG\r\n\x1a\nSECRET");
+        let pdf = src_file(&srcd, "secret.pdf", b"%PDF-1.4\nSECRET");
+        let before = vault_names(&root);
+        for raw in [img.to_string_lossy().to_string(), format!("file://{}", img.display()), pdf.to_string_lossy().to_string(), String::new()] {
+            let e = attach_ticket(&root, "Note", "main", &raw).unwrap_err();
+            assert!(e.contains("not a path"), "{raw:?} -> {e}");
+        }
+        assert_eq!(fs::read(&img).unwrap(), b"\x89PNG\r\n\x1a\nSECRET", "the image source must stay in place");
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4\nSECRET", "the pdf source must stay in place");
+        assert_eq!(vault_names(&root), before, "the attachment folder (vault root) must be unchanged");
+        assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), "# Note\n\nEND\n");
+        // an id-shaped string nobody minted is refused the same way
+        let e = attach_ticket(&root, "Note", "main", &"0".repeat(32)).unwrap_err();
+        assert!(e.contains("unknown"), "{e}");
+        assert!(img.exists() && pdf.exists());
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: a REAL drop (what xdnd mints) still imports exactly as before — the image is
+    /// MOVED, the pdf COPIED — and the same ticket is refused on its second use
+    #[test]
+    fn a_dropped_ticket_imports_once_and_is_refused_on_reuse() {
+        let (root, srcd) = drop_vault("tk-real");
+        let img = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT");
+        let pdf = src_file(&srcd, "doc.pdf", b"%PDF-1.4\nDOC");
+        let o = xdnd::offer("main", &[img.clone(), pdf.clone()]).expect("urandom");
+        assert_eq!(o.names, vec!["cat.png", "doc.pdf"]);
+        let a = attach_ticket(&root, "Note", "main", &o.ticket).unwrap();
+        assert_eq!(a.text, "![[cat.png]]\n![[doc.pdf]]");
+        assert_eq!(a.copied, vec!["cat.png".to_string(), "doc.pdf".to_string()]);
+        assert!(!img.exists(), "osdrop: a dropped image is still MOVED");
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4\nDOC", "pdfdrop: a dropped pdf is still COPIED");
+        assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"\x89PNG\r\n\x1a\nCAT");
+        // reuse: refused, nothing new in the vault, the (re-seeded) source untouched
+        let img2 = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT2");
+        let before = vault_names(&root);
+        let e = attach_ticket(&root, "Note", "main", &o.ticket).unwrap_err();
+        assert!(e.contains("already used"), "{e}");
+        assert_eq!(vault_names(&root), before);
+        assert_eq!(fs::read(&img2).unwrap(), b"\x89PNG\r\n\x1a\nCAT2");
+        // another window cannot spend this window's drop
+        let o2 = xdnd::offer("main", std::slice::from_ref(&img2)).expect("urandom");
+        assert!(attach_ticket(&root, "Note", "other", &o2.ticket).unwrap_err().contains("another window"));
+        assert!(img2.exists());
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: an expired ticket is refused and moves nothing (the table's own clock is
+    /// unit-tested in dropticket.rs; here the refusal is checked end to end through
+    /// attach_ticket with a ticket minted TTL ago)
+    #[test]
+    fn an_expired_ticket_is_refused_end_to_end() {
+        let (root, srcd) = drop_vault("tk-exp");
+        let img = src_file(&srcd, "old.png", b"\x89PNG\r\n\x1a\nOLD");
+        let then = std::time::Instant::now().checked_sub(dropticket::TTL + std::time::Duration::from_secs(1));
+        let Some(then) = then else { return }; // a monotonic clock younger than the TTL: nothing to test
+        let k = dropticket::mint_at_for_test("main", std::slice::from_ref(&img), then);
+        let before = vault_names(&root);
+        let e = attach_ticket(&root, "Note", "main", &k).unwrap_err();
+        assert!(e.contains("expired"), "{e}");
+        assert_eq!(fs::read(&img).unwrap(), b"\x89PNG\r\n\x1a\nOLD");
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: the typed "Insert attachment" path asks natively first; the question names the
+    /// path and the move, and its title is the one the harness finds the dialog by
+    #[test]
+    fn the_typed_attach_question_names_the_path_and_the_move() {
+        let t = consent::attach_text("/home/u/Pictures/a.png", "Note");
+        assert!(t.contains("\"/home/u/Pictures/a.png\""), "{t}");
+        assert!(t.contains("MOVED"), "{t}");
+        assert_eq!(consent::ATTACH_TITLE, "opensidian: attach file?");
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let i = src.find("async fn attach_typed(").expect("attach_typed");
+        let body = &src[i..i + src[i..].find("\n}\n").unwrap()];
+        let ask = body.find("consent::ask(").expect("attach_typed must ask natively");
+        let att = body.find("attach_drop(").expect("attach_typed attaches");
+        assert!(ask < att, "the question comes BEFORE the attach");
     }
 
     /// R31.4 + S5: three drops of the SAME name give `cat.png`, `cat 1.png`,
