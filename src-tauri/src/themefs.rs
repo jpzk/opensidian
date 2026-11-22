@@ -33,6 +33,13 @@ use std::path::{Path, PathBuf};
 
 pub const APPEARANCE_FILE: &str = ".obsidian/appearance.json";
 
+/// #250 (audit F-27): a theme / snippet stylesheet `p` (a path under `root`
+/// built by theme_path / snippet_path) through the vaultfs fd read: no
+/// symlink at any component, regular file by fstat, vaultfs::CSS_MAX on the fd
+fn vread_css(root: &Path, p: &Path) -> std::io::Result<String> {
+    crate::vaultfs::read_string(root, &crate::vaultfs::rel_of(root, p)?, crate::vaultfs::CSS_MAX)
+}
+
 /// Read the flat object. ABSENT file is Ok(empty map) — Obsidian treats absence
 /// as "every default" and does not create the file until a deviation (T2).
 /// A file that EXISTS but does not parse as a JSON object is an Err: the
@@ -40,11 +47,13 @@ pub const APPEARANCE_FILE: &str = ".obsidian/appearance.json";
 /// rule — destroying a user's hand-edited file to save our one key is the
 /// bookmarks lesson in reverse).
 pub fn read_appearance(root: &Path) -> Result<Map<String, Value>, String> {
-    let p = root.join(APPEARANCE_FILE);
-    if !p.exists() {
-        return Ok(Map::new());
-    }
-    let body = fs::read_to_string(&p).map_err(|e| format!("appearance.json unreadable: {e}"))?;
+    // #250 (audit F-27): the vaultfs fd read — a symlinked / FIFO / oversized
+    // appearance.json is unreadable (an Err, so it is never written over)
+    let body = match crate::vaultfs::read_string(root, Path::new(APPEARANCE_FILE), crate::vaultfs::CFG_MAX) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(format!("appearance.json unreadable: {e}")),
+    };
     match serde_json::from_str::<Value>(&body) {
         Ok(Value::Object(o)) => Ok(o),
         Ok(_) => Err("appearance.json is not a JSON object — refusing to touch it".into()),
@@ -235,16 +244,18 @@ pub fn parse_fc_families(out: &str) -> Vec<String> {
 /// List snippet labels for a vault, sorted bytewise (deterministic — Obsidian's
 /// on-screen order was not measured; re-measure if a gate ever compares it).
 pub fn list_snippets(root: &Path) -> Vec<String> {
-    let dir = root.join(".obsidian").join("snippets");
-    let rd = match fs::read_dir(&dir) {
+    // #250 (audit F-27): listed from the fd the vaultfs no-follow walk opened.
+    // Only REGULAR files are snippets: a symlink (to a file outside the vault,
+    // to /dev/zero ...), FIFO or device is not listed, and load_snippet refuses
+    // one swapped in later. A symlinked .obsidian or snippets/ lists nothing.
+    let rd = match crate::vaultfs::Vault::open(root).and_then(|v| v.p_list(Path::new(".obsidian/snippets"))) {
         Ok(r) => r,
         Err(_) => return Vec::new(), // absent = silent normal, never created here
     };
     let mut out: Vec<String> = rd
-        .filter_map(|e| e.ok())
-        // path().is_file() follows symlinks, as the oracle's `[ -d "$f" ]` does
-        .filter(|e| e.path().is_file())
-        .filter_map(|e| e.file_name().into_string().ok())
+        .into_iter()
+        .filter(|(_, kind)| *kind == "file")
+        .map(|(n, _)| n)
         .filter(|n| !n.starts_with('.'))
         .filter_map(|n| n.strip_suffix(".css").map(str::to_string))
         .collect();
@@ -281,7 +292,7 @@ pub fn load_snippet(root: &Path, label: &str) -> Result<(String, Option<String>)
     let p = snippet_path(root, label)?;
     let origin = format!("snippet {label}.css");
     let src =
-        fs::read_to_string(&p).map_err(|e| format!("{origin}: cannot read: {e}"))?;
+        vread_css(root, &p).map_err(|e| format!("{origin}: cannot read: {e}"))?;
     let s = sanitize_css(&src).map_err(|e| format!("{origin}: {e}"))?;
     let msg = (s.stripped > 0).then(|| mask_strip_message(&origin, s.stripped));
     Ok((s.css, msg))
@@ -347,21 +358,23 @@ fn manifest_name(m: &Map<String, Value>) -> Option<String> {
 /// oracle's glob order is collation order, not compared on-screen).
 pub fn themes_scan(root: &Path) -> ThemesScan {
     let td = root.join(".obsidian").join("themes");
-    let rd = match fs::read_dir(&td) {
+    // #250: listed from the fd the vaultfs no-follow walk opened (a symlinked
+    // .obsidian or themes/ lists nothing)
+    let rd = match crate::vaultfs::Vault::open(root).and_then(|v| v.p_list(Path::new(".obsidian/themes"))) {
         Ok(r) => r,
         Err(_) => return ThemesScan::default(), // absent = silent normal (T0)
     };
     let mut scan = ThemesScan::default();
-    for e in rd.filter_map(|e| e.ok()) {
-        let b = match e.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue, // not valid UTF-8: the glob-shaped tools never list it
-        };
+    for (b, kind) in rd {
+        if b.contains('\u{fffd}') {
+            continue; // not valid UTF-8: the glob-shaped tools never list it
+        }
         if b.starts_with('.') {
             continue; // sh glob: dotfiles are not candidates
         }
-        // is_dir follows symlinks, as the oracle's `[ ! -d "$d" ]` does
-        if !e.path().is_dir() {
+        // #250: only a REAL directory is a candidate (typed by fstatat on the
+        // held fd): a theme dir that is a symlink is not followed out of the vault
+        if kind != "folder" {
             continue; // NOT A DIRECTORY -> silently not a candidate
         }
         let m = td.join(&b).join("manifest.json");
@@ -372,7 +385,7 @@ pub fn themes_scan(root: &Path) -> ThemesScan {
         if !m.is_file() {
             why = Some(("manifest.json", "no manifest.json".into()));
         } else {
-            match fs::read_to_string(&m)
+            match crate::vaultfs::rel_of(root, &m).and_then(|r| crate::vaultfs::read_string(root, &r, crate::vaultfs::CFG_MAX))
                 .ok()
                 .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                 .and_then(|v| v.as_object().cloned())
@@ -439,7 +452,7 @@ pub fn theme_path(root: &Path, name: &str) -> Result<PathBuf, String> {
 pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), String> {
     let p = theme_path(root, name)?;
     let file = format!("theme {name}/theme.css");
-    let src = fs::read_to_string(&p).map_err(|e| format!("{file}: cannot read: {e}"))?;
+    let src = vread_css(root, &p).map_err(|e| format!("{file}: cannot read: {e}"))?;
     let s = sanitize_css(&src).map_err(|e| format!("{file}: {e}"))?;
     let quiet = crate::builtins::is_pinned(name, &src);
     let msg = (s.stripped > 0 && !quiet).then(|| mask_strip_message(&format!("theme {name}"), s.stripped));

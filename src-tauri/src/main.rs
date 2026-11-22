@@ -6603,6 +6603,27 @@ fn bm_add_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, name:
    come out in stock's order (type, ctime, title, then the rest as sent); the ctime is
    minted here. A graph always carries a title (stock D1: "Untitled Graph" when none typed);
    anything the model would carry as Opaque is refused — the pane could not paint it. */
+/// #250 (audit F-3 B): a graph bookmark's `options` / `local` keep only the
+/// graph option keys (graph.json's own: GRAPH_NUM_KEYS, GRAPH_BOOL_KEYS,
+/// scale, search, colorGroups; plus the local graph's depth / link toggles,
+/// and the local graph's `file`). The UI builds `options` from the whole
+/// graph_settings() object, so without this any foreign key in graph.json
+/// would be copied into bookmarks.json, a file that leaves with the next sync.
+const BM_GRAPH_LOCAL_KEYS: [&str; 4] = ["localJumps", "localBacklinks", "localForelinks", "localInterlinks"];
+fn bm_graph_keep(k: &str, v: &serde_json::Value) -> serde_json::Value {
+    let known = |x: &str| {
+        GRAPH_NUM_KEYS.contains(&x) || GRAPH_BOOL_KEYS.contains(&x) || BM_GRAPH_LOCAL_KEYS.contains(&x) || matches!(x, "scale" | "search" | "colorGroups")
+    };
+    let keep = |o: &serde_json::Map<String, serde_json::Value>, file: bool| {
+        serde_json::Value::Object(o.iter().filter(|(x, _)| known(x) || (file && *x == "file")).map(|(x, y)| (x.clone(), y.clone())).collect())
+    };
+    match (k, v) {
+        ("options", serde_json::Value::Object(o)) => keep(o, false),
+        ("local", serde_json::Value::Object(o)) => keep(o, true),
+        _ => v.clone(),
+    }
+}
+
 fn bm_view_node(item: &serde_json::Value, title: Option<&str>) -> Result<BmNode, String> {
     use serde_json::{Map, Value};
     let o = item.as_object().ok_or("a bookmark item is an object")?;
@@ -6628,7 +6649,7 @@ fn bm_view_node(item: &serde_json::Value, title: Option<&str>) -> Result<BmNode,
     }
     for (k, v) in o {
         if !matches!(k.as_str(), "type" | "ctime" | "title") {
-            m.insert(k.clone(), v.clone());
+            m.insert(k.clone(), if ty == "graph" { bm_graph_keep(k, v) } else { v.clone() });
         }
     }
     let n = bm_node_of(&Value::Object(m));
@@ -14627,5 +14648,415 @@ mod callout_render_tests {
         // reading-view task boxes inside a callout still carry their FILE line (rvtask)
         has(&h, "data-line=\"1\"");
         has(&h, "data-line=\"2\"");
+    }
+}
+
+/* #250: every READ of a vault path is fd-based and never follows a symlink
+   (vaultfs::Vault::open_read / read). These tests plant, per call-site class,
+   the hostile leaves the audit names (F-3 F-9 F-10 F-27 F-46 F-47): a symlink
+   to a file outside the temp vault, a symlink to /dev/zero, a FIFO, a regular
+   file one byte over the cap, a symlinked directory component, and a leaf
+   swapped for a symlink between the check and the read (the vaultfs hook
+   seam "open_read:checked"). Each reader must return its default / refuse,
+   within a time bound, and still read a normal file. */
+#[cfg(test)]
+mod read250_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    const SECRET: &str = "LEAKED-SECRET-250";
+
+    fn vault(tag: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("opensidian-r250-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, out) = (base.join("vault"), base.join("outside"));
+        fs::create_dir_all(root.join(".obsidian/snippets")).unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        (root, out)
+    }
+
+    fn fifo(p: &Path) {
+        let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", p.display());
+    }
+
+    /// `f` on a worker, Err unless it returns within 5 s (a read that followed
+    /// a FIFO blocks, one that followed /dev/zero runs until OOM)
+    fn bounded<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!("{what}: did not return within 5 s"))
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Plant {
+        Outside,
+        DevZero,
+        Fifo,
+        OverCap,
+        DirLink,
+    }
+    const PLANTS: [Plant; 5] = [Plant::Outside, Plant::DevZero, Plant::Fifo, Plant::OverCap, Plant::DirLink];
+
+    /// the .obsidian files the config readers read, each with a body that
+    /// would change the reader's answer (and carries SECRET) if it were read
+    fn cfg_files() -> Vec<(&'static str, String)> {
+        vec![
+            ("app.json", format!(r#"{{"attachmentFolderPath":"{SECRET}","useMarkdownLinks":true,"readableLineLength":false,"strictLineBreaks":true,"propertiesInDocument":"hidden"}}"#)),
+            ("graph.json", format!(r#"{{"search":"{SECRET}","auths":{{"token":"{SECRET}"}}}}"#)),
+            ("templates.json", format!(r#"{{"dateFormat":"{SECRET}"}}"#)),
+            ("bookmarks.json", format!(r#"{{"items":[{{"type":"file","ctime":1,"path":"{SECRET}.md"}}]}}"#)),
+            ("types.json", format!(r#"{{"types":{{"{SECRET}":"text"}}}}"#)),
+            ("appearance.json", format!(r#"{{"cssTheme":"{SECRET}"}}"#)),
+            ("workspace.json", format!(r#"{{"main":{{"id":"{SECRET}"}}}}"#)),
+            ("canvas.json", format!(r#"{{"snapToGrid":false,"x":"{SECRET}"}}"#)),
+            ("community-plugins.json", r#"["leakedplugin"]"#.to_string()),
+        ]
+    }
+
+    /// plant `how` at every cfg file of `root` (the outside copies live in `out`)
+    fn plant_cfg(root: &Path, out: &Path, how: Plant) {
+        let obs = root.join(".obsidian");
+        if let Plant::DirLink = how {
+            fs::remove_dir_all(&obs).unwrap();
+            for (f, body) in cfg_files() {
+                fs::write(out.join(f), body).unwrap();
+            }
+            symlink(out, &obs).unwrap();
+            return;
+        }
+        for (f, body) in cfg_files() {
+            let p = obs.join(f);
+            let o = out.join(f);
+            fs::write(&o, &body).unwrap();
+            match how {
+                Plant::Outside => symlink(&o, &p).unwrap(),
+                Plant::DevZero => symlink("/dev/zero", &p).unwrap(),
+                Plant::Fifo => fifo(&p),
+                // a VALID document one byte over the largest config cap (trailing JSON whitespace)
+                Plant::OverCap => {
+                    let mut b = body.into_bytes();
+                    b.resize(vaultfs::CFG_MAX as usize + 1, b' ');
+                    fs::write(&p, b).unwrap();
+                }
+                Plant::DirLink => unreachable!(),
+            }
+        }
+    }
+
+    /// every config reader's answer, as one string (Debug of each result)
+    fn cfg_answers(root: &Path) -> Vec<(&'static str, String)> {
+        let vc = settings::VaultCfg { file: "canvas".into(), patch: None };
+        vec![
+            ("app_bool_in", format!("{:?}", app_bool_in(root, "strictLineBreaks"))),
+            ("readable_line_length_in", format!("{:?}", readable_line_length_in(root))),
+            ("app_value_in", format!("{:?}", app_value_in(root, "propertiesInDocument"))),
+            ("attach_dir", format!("{:?}", attach_dir(root).ok().map(|d| d.0 == root.canonicalize().unwrap()))),
+            ("graph_settings_in", format!("{:?}", graph_settings_in(root))),
+            ("templates_format", format!("{:?}", templates_format(root, "dateFormat"))),
+            ("read_bm_tree", bm_emit(&read_bm_tree(root), &[])),
+            ("bm_top_extra", format!("{:?}", bm_top_extra(root))),
+            ("read_workspace", format!("{:?}", vcfg_read(root, ".obsidian/workspace.json"))),
+            ("pasteimg::app_cfg", format!("{:?}", pasteimg::app_cfg(root))),
+            ("props::types_in", format!("{:?}", props::types_in(root))),
+            ("themefs::read_appearance", format!("{:?}", themefs::read_appearance(root).ok())),
+            ("settings::vcfg_in", format!("{:?}", settings::vcfg_in(root, &vc).ok())),
+            ("plugins::enabled_ids", format!("{:?}", plugins::enabled_ids(root))),
+        ]
+    }
+
+    /// F-3 / F-27: every .obsidian config reader returns its default for every
+    /// hostile leaf, in bounded time, and nothing of the outside file reaches it
+    #[test]
+    fn read250_config_readers_return_defaults_for_hostile_leaves() {
+        let (clean, _o) = vault("cfg-clean");
+        let want = cfg_answers(&clean);
+        for how in PLANTS {
+            let (root, out) = vault(&format!("cfg-{how:?}"));
+            plant_cfg(&root, &out, how);
+            let r = root.clone();
+            let got = bounded(&format!("{how:?}"), move || cfg_answers(&r));
+            for ((name, g), (_, w)) in got.iter().zip(&want) {
+                assert!(!g.contains(SECRET) && !g.contains("leakedplugin"), "{how:?} {name}: outside content reached the reader: {g}");
+                assert_eq!(g, w, "{how:?} {name}: not the default");
+            }
+            // a read-MODIFY-write refuses rather than overwrite what it could not read
+            assert!(set_app_bool_in(&root, "alwaysUpdateLinks", true).is_err(), "{how:?}: app.json merge");
+            assert!(set_graph_settings_in(&root, &serde_json::json!({"scale": 2})).is_err(), "{how:?}: graph.json merge");
+            if !matches!(how, Plant::DirLink) {
+                assert_eq!(fs::read_to_string(out.join("graph.json")).unwrap(), cfg_files()[1].1, "{how:?}: outside file untouched");
+            }
+        }
+        // POSITIVE control: the same bodies as regular files are read
+        let (root, out) = vault("cfg-regular");
+        for (f, body) in cfg_files() {
+            fs::write(root.join(".obsidian").join(f), body).unwrap();
+        }
+        let _ = out;
+        assert!(app_bool_in(&root, "strictLineBreaks"));
+        assert!(!readable_line_length_in(&root));
+        assert_eq!(templates_format(&root, "dateFormat").as_deref(), Some(SECRET));
+        assert_eq!(graph_settings_in(&root)["search"], SECRET);
+        assert_eq!(pasteimg::app_cfg(&root), (SECRET.to_string(), true));
+        assert_eq!(plugins::enabled_ids(&root), vec!["leakedplugin".to_string()]);
+        assert!(set_app_bool_in(&root, "alwaysUpdateLinks", true).is_ok());
+    }
+
+    /// F-3 B: a graph bookmark keeps only graph option keys
+    #[test]
+    fn read250_bm_view_node_keeps_only_graph_option_keys() {
+        let item = serde_json::json!({"type": "graph",
+            "options": {"auths": {"token": SECRET}, "scale": 2, "search": "q", "repelStrength": 3, "showTags": true, "colorGroups": []},
+            "local": {"file": "B.md", "localJumps": 2, "secret": SECRET}});
+        let n = bm_view_node(&item, None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&[n], &[])).unwrap();
+        let g = &v["items"][0];
+        assert_eq!(g["options"], serde_json::json!({"scale": 2, "search": "q", "repelStrength": 3, "showTags": true, "colorGroups": []}));
+        assert_eq!(g["local"], serde_json::json!({"file": "B.md", "localJumps": 2}));
+        assert!(!v.to_string().contains(SECRET), "{v}");
+    }
+
+    /// arm the vaultfs seam: when `leaf` (an absolute path) has just passed the
+    /// leaf check, replace it with a symlink to `target` (once)
+    fn swap_at_check(leaf: PathBuf, target: PathBuf) {
+        let mut done = false;
+        vaultfs::set_hook(Some(Box::new(move |at| {
+            if at == "open_read:checked" && !done && fs::symlink_metadata(&leaf).is_ok_and(|m| m.is_file()) {
+                done = true;
+                fs::remove_file(&leaf).unwrap();
+                symlink(&target, &leaf).unwrap();
+            }
+        })));
+    }
+
+    /// F-46: read_note's core (read_capped_in) for every hostile leaf + the swap
+    #[test]
+    fn read250_read_note_refuses_hostile_leaves_and_the_swap() {
+        let (root, out) = vault("note");
+        fs::write(out.join("id_ed25519"), SECRET).unwrap();
+        fs::write(root.join("A.md"), "mine").unwrap();
+        assert_eq!(read_capped_in(&root, Path::new("A.md")).as_deref(), Some("mine"));
+        symlink(out.join("id_ed25519"), root.join("L.md")).unwrap();
+        symlink("/dev/zero", root.join("Z.md")).unwrap();
+        fifo(&root.join("F.md"));
+        fs::File::create(root.join("Big.md")).unwrap().set_len(index::MAX_NOTE_BYTES + 1).unwrap();
+        fs::write(out.join("n.md"), SECRET).unwrap();
+        symlink(&out, root.join("dirlink")).unwrap();
+        let r = root.clone();
+        let got = bounded("read_note", move || {
+            ["L.md", "Z.md", "F.md", "Big.md", "dirlink/n.md"].map(|n| read_capped_in(&r, Path::new(n)))
+        });
+        assert_eq!(got, [None, None, None, None, None]);
+        // swapped for a symlink between the check and the open
+        swap_at_check(root.join("A.md"), out.join("id_ed25519"));
+        let r = read_capped_in(&root, Path::new("A.md"));
+        vaultfs::set_hook(None);
+        assert_eq!(r, None, "the swapped note must not be read");
+    }
+
+    /// F-9: the image server, for every hostile leaf + the swap; the PDF worker
+    /// reads the inode that was checked, however the path changes while queued
+    #[test]
+    fn read250_image_server_and_pdf_worker_read_the_checked_fd() {
+        let (root, out) = vault("img");
+        let png = b"\x89PNG\r\n\x1a\nmine".to_vec();
+        fs::write(out.join("secret.png"), SECRET).unwrap();
+        fs::write(root.join("pic.png"), &png).unwrap();
+        symlink(out.join("secret.png"), root.join("l.png")).unwrap();
+        symlink("/dev/zero", root.join("z.png")).unwrap();
+        fifo(&root.join("f.png"));
+        fs::File::create(root.join("big.png")).unwrap().set_len(MAX_IMG_BYTES + 1).unwrap();
+        fs::write(out.join("n.png"), SECRET).unwrap();
+        symlink(&out, root.join("dl")).unwrap();
+        let r = root.clone();
+        let got = bounded("serve_image", move || ["l.png", "z.png", "f.png", "big.png", "dl/n.png"].map(|t| serve_image(&r, t).is_none()));
+        assert_eq!(got, [true; 5]);
+        assert_eq!(serve_image(&root, "pic.png").unwrap().1, png);
+        swap_at_check(root.join("pic.png"), out.join("secret.png"));
+        let s = serve_image(&root, "pic.png");
+        vaultfs::set_hook(None);
+        assert!(s.is_none(), "served the swapped leaf");
+        // PDF: open (= check) now, swap the path for a link to another PDF, then queue
+        fs::write(root.join("d.pdf"), pdf::tests::mini_pdf(2)).unwrap();
+        fs::write(out.join("other.pdf"), pdf::tests::mini_pdf(3)).unwrap();
+        let f = pdf_open_in(&root, "d.pdf").expect("a regular PDF opens");
+        fs::remove_file(root.join("d.pdf")).unwrap();
+        symlink(out.join("other.pdf"), root.join("d.pdf")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        pdf::queue_info_file(f, Box::new(move |i| tx.send(i.map(|i| i.pages)).unwrap()));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap(), Some(2), "the queued job read the checked inode");
+        assert!(pdf_open_in(&root, "d.pdf").is_none(), "the symlinked PDF itself is refused");
+    }
+
+    /// F-10: the index build and the watcher read through the fd primitive
+    #[test]
+    fn read250_index_build_and_watcher_never_read_a_swapped_note() {
+        let (root, out) = vault("ix");
+        fs::write(out.join("key"), SECRET).unwrap();
+        fs::write(root.join("n.md"), "old").unwrap();
+        fs::write(root.join("sub/m.md"), "m").unwrap();
+        swap_at_check(root.join("n.md"), out.join("key"));
+        let ix = Index::build(&root);
+        vaultfs::set_hook(None);
+        assert!(!ix.content("n").unwrap_or("").contains(SECRET), "the index read the swapped note");
+        assert_eq!(ix.content("sub/m"), Some("m"));
+        // the watcher: n.md changes on disk, then is swapped right at the read
+        fs::remove_file(root.join("n.md")).unwrap();
+        fs::write(root.join("n.md"), "old").unwrap();
+        let mut ix = Index::build(&root);
+        let before = watcher::snapshot(&root);
+        fs::write(root.join("n.md"), "changed, longer").unwrap();
+        let d = watcher::diff(&before, &watcher::snapshot(&root));
+        assert_eq!(d.modified, vec!["n".to_string()]);
+        swap_at_check(root.join("n.md"), out.join("key"));
+        watcher::reconcile(&root, &d, &mut ix);
+        vaultfs::set_hook(None);
+        assert_eq!(ix.content("n"), Some("old"), "the watcher read the swapped note");
+        // a FIFO note never hangs the build
+        fifo(&root.join("p.md"));
+        let r = root.clone();
+        let names = bounded("Index::build with a FIFO", move || Index::build(&r).names().to_vec());
+        assert!(!names.contains(&"p".to_string()));
+    }
+
+    /// F-47: plugin files are read from the checked fd (main.js / data.json /
+    /// styles.css swapped between plugin_file_in and the read is refused)
+    #[test]
+    fn read250_plugin_files_refuse_the_swap() {
+        let (root, out) = vault("plug");
+        let pd = root.join(".obsidian/plugins/p");
+        fs::create_dir_all(&pd).unwrap();
+        fs::write(out.join("evil.js"), SECRET).unwrap();
+        for f in ["main.js", "data.json", "styles.css", "manifest.json"] {
+            fs::write(pd.join(f), if f.ends_with("json") { "{\"id\":\"p\",\"name\":\"p\"}" } else { "x" }).unwrap();
+        }
+        for f in ["main.js", "data.json", "styles.css", "manifest.json"] {
+            assert!(plugins::plugin_read_in(&root, "p", f, 1 << 20).unwrap().is_some(), "{f}");
+            swap_at_check(pd.join(f), out.join("evil.js"));
+            let r = plugins::plugin_read_in(&root, "p", f, 1 << 20);
+            vaultfs::set_hook(None);
+            assert!(r.is_err(), "{f}: read the swapped file: {r:?}");
+            fs::remove_file(pd.join(f)).unwrap();
+            fs::write(pd.join(f), "{}").unwrap();
+        }
+        swap_at_check(pd.join("data.json"), out.join("evil.js"));
+        let r = plugins::read_data(&root, "p");
+        vaultfs::set_hook(None);
+        assert!(r.is_err() || r.as_ref().is_ok_and(|v| !v.to_string().contains(SECRET)), "{r:?}");
+    }
+
+    /// F-27: a symlinked / FIFO / oversized snippet or theme is not listed / not loaded
+    #[test]
+    fn read250_snippets_and_themes_refuse_hostile_leaves() {
+        let (root, out) = vault("css");
+        let sn = root.join(".obsidian/snippets");
+        fs::write(out.join("s.css"), format!("body{{color:red}} /* {SECRET} */")).unwrap();
+        fs::write(sn.join("ok.css"), "body{color:blue}").unwrap();
+        symlink(out.join("s.css"), sn.join("link.css")).unwrap();
+        symlink("/dev/zero", sn.join("zero.css")).unwrap();
+        fifo(&sn.join("fifo.css"));
+        fs::File::create(sn.join("big.css")).unwrap().set_len(vaultfs::CSS_MAX + 1).unwrap();
+        let r = root.clone();
+        let (listed, loads) = bounded("snippets", move || {
+            (themefs::list_snippets(&r), ["link", "zero", "fifo", "big"].map(|l| themefs::load_snippet(&r, l).is_err()))
+        });
+        assert_eq!(listed, vec!["big".to_string(), "ok".to_string()], "only regular files are listed");
+        assert_eq!(loads, [true; 4]);
+        assert!(themefs::load_snippet(&root, "ok").unwrap().0.contains("blue"));
+        // a theme whose theme.css is a symlink out of the vault
+        let td = root.join(".obsidian/themes/T");
+        fs::create_dir_all(&td).unwrap();
+        fs::write(td.join("manifest.json"), "{\"name\":\"T\"}").unwrap();
+        symlink(out.join("s.css"), td.join("theme.css")).unwrap();
+        let e = themefs::load_theme(&root, "T").unwrap_err();
+        assert!(!e.contains(SECRET), "{e}");
+        // a theme DIR that is a symlink is not a candidate
+        fs::create_dir_all(out.join("U")).unwrap();
+        fs::write(out.join("U/manifest.json"), "{\"name\":\"U\"}").unwrap();
+        fs::write(out.join("U/theme.css"), "body{}").unwrap();
+        symlink(out.join("U"), root.join(".obsidian/themes/U")).unwrap();
+        let s = themefs::themes_scan(&root);
+        assert!(!s.listed.contains(&"U".to_string()), "{:?}", s.listed);
+        assert!(themefs::load_theme(&root, "U").is_err());
+    }
+
+    /// THE GUARD (#250), like every_outbound_path_goes_through_the_choke_point:
+    /// outside vaultfs.rs, production code may not open, read or list a file by
+    /// PATH (fs::read / read_to_string / File::open / read_dir / OpenOptions
+    /// .read(true)), because a path re-resolves every symlink at the moment of
+    /// use. Vault reads go through vaultfs (Vault::open_read / read / read_fd,
+    /// walk_tree, p_list). The only exceptions are paths that are NOT in a vault,
+    /// each listed with its reason; a stale entry fails too.
+    #[test]
+    fn vault_reads_go_through_vaultfs() {
+        // production code only: drop every top-level `#[cfg(test)] mod x { … }` block
+        fn code(s: &str) -> Vec<(usize, String)> {
+            let (mut out, mut skip, mut prev_test) = (Vec::new(), false, false);
+            for (i, l) in s.lines().enumerate() {
+                let bare = l.split("//").next().unwrap_or("").trim_end();
+                if skip {
+                    if l == "}" {
+                        skip = false;
+                    }
+                } else if prev_test && (bare.starts_with("mod ") || bare.starts_with("pub mod ") || bare.starts_with("pub(crate) mod ")) {
+                    skip = !bare.ends_with(';');
+                } else {
+                    out.push((i + 1, l.to_string()));
+                }
+                prev_test = l.trim() == "#[cfg(test)]";
+            }
+            out
+        }
+        let reads = ["fs::read(", "read_to_string(", "File::open(", "read_dir("];
+        let allowed: [(&str, &str, &str); 17] = [
+            ("audiorec.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG"),
+            ("main.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG"),
+            ("cfgstore.rs", ".open(lock_file(lock_dir, cfg))", "~/.opensidian.json lock file (user config dir)"),
+            ("cfgstore.rs", "fs::read_to_string(cfg)", "~/.opensidian.json (user config)"),
+            ("cfgstore.rs", "File::open(dir).and_then(|d| d.sync_all())", "fsync of the user config dir"),
+            ("cfgstore.rs", "fs::read_to_string(&t)", "~/.opensidian.json (user config)"),
+            ("vaultlock.rs", "fs::read_to_string(lock_file(dir, canon))", "vault lock files in the user config dir"),
+            ("desk_proc.rs", "File::open(format!(\"/proc/self/fd/", "own process fd via /proc"),
+            ("spawn.rs", "read_to_string(format!(\"/proc/{pid}/stat\"))", "/proc process status"),
+            ("devui.rs", "std::fs::read(&f)", "DEV-ONLY UI hot reload from the source tree, never in a release build"),
+            ("devui.rs", "std::fs::read_dir(&d)", "DEV-ONLY UI hot reload from the source tree"),
+            ("i18n.rs", "std::fs::read_to_string(&p)", "UI translation override dir, not a vault"),
+            ("main.rs", "std::fs::read_to_string(&path).ok()", "smoke_css: an operator-chosen absolute path from an env var (test rig)"),
+            ("main.rs", "fs::read_dir(path)", "the vault picker lists folders BEFORE a vault exists (S4 picker_allows)"),
+            ("main.rs", "std::fs::read_dir(&dir)", "vb_probe: test-rig probe of an env-named dir"),
+            ("migrate.rs", "fs::read_dir(from)", "per-user config/data dir migration (home), not a vault"),
+            ("plugin_store.rs", "s.read_to_string(&mut e)", "a child process's stderr pipe"),
+        ];
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let (mut files, mut bad, mut used) = (0, Vec::new(), vec![0usize; allowed.len()]);
+        for ent in fs::read_dir(dir).unwrap().flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name == "vaultfs.rs" {
+                continue;
+            }
+            files += 1;
+            for (n, l) in code(&fs::read_to_string(ent.path()).unwrap()) {
+                let t = l.trim_start();
+                if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") || l.contains("vaultfs::") {
+                    continue;
+                }
+                let hit = reads.iter().any(|r| l.contains(r)) || (l.contains("OpenOptions::new()") && l.contains(".read(true)"));
+                if !hit {
+                    continue;
+                }
+                match allowed.iter().position(|(f, needle, _)| *f == name && l.contains(needle)) {
+                    Some(i) => used[i] += 1,
+                    None => bad.push(format!("{name}:{n}: {}", l.trim())),
+                }
+            }
+        }
+        assert!(files > 30, "scanned {files} files");
+        assert!(bad.is_empty(), "path-based reads outside vaultfs (route them through vaultfs::Vault::read / open_read, or allow-list a NON-vault path with a reason):\n{}", bad.join("\n"));
+        for (i, (f, needle, why)) in allowed.iter().enumerate() {
+            assert!(used[i] > 0, "stale allow-list entry {f}: {needle:?} ({why})");
+        }
     }
 }
