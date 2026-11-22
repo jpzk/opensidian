@@ -12906,6 +12906,7 @@ async function startGraph(g, cfg) {
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
+    holdApply();                       // #279: the node travel queued since the last frame, before its physics and draw
     // The settle test runs after EVERY physics step (ui/graph-phys.js), not once per frame: counted
     // per frame, "10 calm" meant 10..70 steps depending on how many steps each frame happened to
     // carry (wall clock), so the sim froze at a timing-dependent step and two runs of the same vault
@@ -13115,12 +13116,11 @@ async function startGraph(g, cfg) {
   // Pins exist only while held, so release clears EVERY pin in N: a refresh
   // during the hold (C3 carry) swaps in a new node object that carries fx/fy,
   // and that copy must be freed too.
-  // #279: a mouseup (e) is the RELEASE POINT: it is applied as the hold's last pointer sample before the
-  // hold ends, so the node lands where the button came up even when no mousemove reported that point.
-  // A hold that moved a node (a pin was set) leaves the sim re-flowing (GraphPhys.releaseHeat): a quick
-  // drag ends before any physics step ran, and alpha still at its rest value froze the dropped node.
-  const release = e => {
-    if (drag && e && e.type === "mouseup" && e.target === cv) holdMove(e);
+  // #279: node travel no frame has applied yet (drag.pdx/pdy, see holdApply) ends with the hold, as
+  // stock's does: a press, one jump and a release inside one frame move nothing. A hold that moved a
+  // node (a pin was set) leaves the sim re-flowing (GraphPhys.releaseHeat): with the move applied but
+  // no physics step run yet, alpha still at its rest value froze the dropped node.
+  const release = () => {
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
     let held = false;
@@ -13134,7 +13134,7 @@ async function startGraph(g, cfg) {
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
-    const rel = e => { const f = window.__graphHeld; if (f) f(e); };
+    const rel = () => { const f = window.__graphHeld; if (f) f(); };
     window.addEventListener("mouseup", rel, true);
     window.addEventListener("blur", rel);
   }
@@ -13147,31 +13147,42 @@ async function startGraph(g, cfg) {
     moved = false;
   };
   // one pointer sample of the held press (GraphPhys.dragStep: nothing inside the 4 px click slop)
+  // #279: a NODE sample is only queued (GraphPhys.holdQueue); the next animation frame applies it
+  // (holdApply, top of step(), before that frame's physics and draw), so the disc, its edges and its
+  // label are always drawn from one applied position, and a release before that frame drops it.
   function holdMove(e) {
     const m = GraphPhys.dragStep(drag, moved, e.clientX, e.clientY);
     if (!m) return;
     const { dx, dy } = m;
     moved = true;
     if (drag.node) {
-      // NODE drag. Pin on the first real movement, not on mousedown: a bare
-      // click must not stick a node it never moved. Pointer px -> world
-      // units via the camera scale, so a zoomed-out drag still tracks.
-      let p = drag.node;
-      if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
-        p = drag.node = N.find(q => q.n === p.n);
-        if (!p) { release(); return; }
-      }
-      if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
       window.__graphHeld = release;
-      p.fx += dx / view.scale; p.fy += dy / view.scale;
-      p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
-      // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
-      // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-      if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
-    } else {
-      view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
+      GraphPhys.holdQueue(drag, dx, dy);
+      wake();
+      return;
     }
+    view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
     redraw();
+  }
+  function holdApply() {
+    if (!drag || !drag.node) return;
+    const m = GraphPhys.holdTake(drag);
+    if (!m) return;
+    // NODE drag. Pin on the first real movement, not on mousedown: a bare
+    // click must not stick a node it never moved. Pointer px -> world
+    // units via the camera scale, so a zoomed-out drag still tracks.
+    let p = drag.node;
+    if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
+      p = drag.node = N.find(q => q.n === p.n);
+      if (!p) { release(); return; }
+    }
+    if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+    p.fx += m.dx / view.scale; p.fy += m.dy / view.scale;
+    p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+    // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
+    // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
+    if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
+    dirty = true;
   }
   cv.onmousemove = e => {
     const r = cv.getBoundingClientRect();
@@ -13181,7 +13192,7 @@ async function startGraph(g, cfg) {
     if (h !== hov) { hov = h; redraw(); gHover(g, e, N[h]); }   // cp-hover-editor: the engine hears every hover change
     cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
-  cv.onmouseup = e => { release(e); };   // #279: the release point is the last sample (window capture usually got here first)
+  cv.onmouseup = () => { release(); };
   cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); gHover(g, null, null); } cv.style.cursor = ""; };
   cv.oncontextmenu = e => {               // graphctx GC29-GC31: the file menu on a note / attachment node, nothing elsewhere
     e.preventDefault();

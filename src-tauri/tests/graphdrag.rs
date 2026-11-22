@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Graph node drag (#279 "the graphs are sometimes erratic"): the pure drag steps in ui/graph-phys.js
-//! (GraphPhys.dragStep, GraphPhys.releaseHeat) that ui/main.js startGraph drives from its mouse
-//! handlers, run in JavaScriptCore with the real physics engine, the way tests/graphphys.rs does.
-//! A 20-note graph (each note links two others, like the neutral repro vault) is settled to rest,
-//! then the gestures are replayed exactly as main.js applies them (pin on the first real move,
-//! alphaTarget 0.3 while held, releaseHeat at the end):
-//!   1. QUICK drag (press, one pointer jump, release before any physics step ran): the node is at the
-//!      release point when the hold ends, the sim re-flows (steps run, the node and its neighbours move)
-//!      and goes quiet again within the cap;
-//!   2. root cause, as a control: with the release state develop left (no alpha floor) the same quick
-//!      drag runs no step at all and the sim goes quiet with the node frozen where it was dropped;
-//!   3. negative: a click (no move past the 4 px slop) pins nothing, moves nothing, reheats nothing;
+//! (GraphPhys.dragStep, holdQueue/holdTake, releaseHeat) that ui/main.js startGraph drives from its mouse
+//! handlers and its animation frame, run in JavaScriptCore with the real physics engine, the way
+//! tests/graphphys.rs does. A 20-note graph (each note links two others, like the neutral repro vault)
+//! is settled to rest, then the gestures are replayed exactly as main.js applies them (a sample past the
+//! slop is queued, the next frame applies it: pin on the first applied move, alphaTarget 0.3 while held;
+//! release drops what no frame took, then releaseHeat):
+//!   1. QUICK drag inside one frame (press, one pointer jump, release before the next frame), stock's
+//!      behaviour: nothing is pinned, nothing moves, nothing is reheated, the node and its label stay
+//!      together at the start (develop drew the label at the drop point, the disc at the start);
+//!   2. ONE-FRAME drag (the frame applied the jump, the release came before any physics step): the node
+//!      is at the release point when the hold ends, the sim re-flows and goes quiet within the cap;
+//!   3. root cause, as a control: with the release state develop left (no alpha floor) the same
+//!      one-frame drag runs no step at all and the sim goes quiet with the node frozen where it was dropped;
+//!   4. negative: a click (no move past the 4 px slop) queues, pins, moves and reheats nothing;
 //!      a release that moved no node (a pan) does not raise alpha;
-//!   4. negative: a long stepped drag (alpha already past the floor when released) keeps its alpha —
+//!   5. negative: a long stepped drag (alpha already past the floor when released) keeps its alpha —
 //!      releaseHeat only floors, it never lowers or replaces the heat a real drag built up;
-//!   5. dragStep slop edges: 4 px is still a click, past it the first sample carries the whole offset,
-//!      after that every sample is applied (also 1 px ones) and the last applied point follows.
+//!   6. dragStep slop edges and the queue: 4 px is still a click, past it the first sample carries the
+//!      whole offset, every later sample counts (also 1 px ones); samples between two frames are summed
+//!      and taken once, an empty queue takes null.
 #![cfg(target_os = "linux")]
 
 use javascriptcore::{ContextExt, ExceptionExt, ValueExt};
@@ -51,16 +55,26 @@ const CHECKS: &str = r#"(function () {
     toQuiet(N, st, true, 1000); if (!st.quiet) fail("the open never settled");
     return { N, st };
   };
-  // main.js holdMove for a NODE press (view.scale 1): pin on the first real move, alphaTarget 0.3 (the ev "hold")
+  // main.js holdMove for a NODE press: a sample past the slop is queued for the next frame
   const press = (p) => ({ x: p.x, y: p.y, node: p, moved: false });
-  const move = (d, x, y) => {
+  const sample = (d, x, y) => {
     const m = G.dragStep(d, d.moved, x, y); if (!m) return false;
-    d.moved = true; const p = d.node;
-    if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
-    p.fx += m.dx; p.fy += m.dy; p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+    d.moved = true; G.holdQueue(d, m.dx, m.dy);
     return true;
   };
   const hold = st => { st.alphaTarget = 0.3; st.calm = 0; st.kePeak = 0; st.seekN = 0; st.still = 0; st.quiet = false; };
+  // main.js holdApply, the top of the next animation frame (view.scale 1): pin on the first applied
+  // move, alphaTarget 0.3 (the ev "hold"); false when nothing was queued
+  const frame = (d, st) => {
+    const m = G.holdTake(d); if (!m) return false;
+    const p = d.node;
+    if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+    p.fx += m.dx; p.fy += m.dy; p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+    if (st.alphaTarget !== 0.3 || st.quiet) hold(st);
+    return true;
+  };
+  // a sample and the frame after it (a drag a frame kept up with)
+  const move = (d, st, x, y) => sample(d, x, y) && frame(d, st);
   // main.js release: clear every pin, held = a pin was set
   const unpin = N => { let held = false; for (const q of N) if (q.fx != null) { q.fx = q.fy = null; held = true; } return held; };
   // develop's release body (before #279): target 0, seek rest, alpha untouched
@@ -68,40 +82,58 @@ const CHECKS: &str = r#"(function () {
   const snap = N => N.map(p => [p.x, p.y]);
   const maxMove = (N, S, skip) => N.reduce((m, p, i) => i === skip ? m : Math.max(m, Math.hypot(p.x - S[i][0], p.y - S[i][1])), 0);
 
-  // 1. quick drag re-flows
+  // 1. quick drag inside one frame: stock's no-op (nothing pinned, moved or reheated)
+  {
+    const { N, st } = rested(), K = 5, p = N[K], st0 = JSON.stringify(st);
+    const rx = p.x + 140, ry = p.y - 100, d = press(p);
+    if (!sample(d, rx, ry)) fail("quick drag: a 172 px jump was taken for a click");
+    if (!(d.pdx === 140 && d.pdy === -100)) fail("quick drag: the jump was not queued: " + JSON.stringify(d));
+    if (p.fx != null || p.x === rx) fail("quick drag: the sample moved the node before any frame");
+    const S = snap(N);
+    // release before the next frame: the queue goes with the hold, no pin -> main.js skips releaseHeat
+    const held = unpin(N); if (held) fail("quick drag: a pin was set without a frame");
+    if (st.alphaTarget !== 0) fail("quick drag: alphaTarget " + st.alphaTarget + " without a frame (the release would reheat)");
+    if (JSON.stringify(st) !== st0) fail("quick drag: sim state changed " + st0 + " -> " + JSON.stringify(st));
+    if (maxMove(N, S, -1) !== 0) fail("quick drag: nodes moved");
+    const ran = toQuiet(N, st, false, 50);
+    if (ran !== 0 || maxMove(N, S, -1) !== 0) fail("quick drag: the sim stepped (" + ran + ") or moved nodes after the release");
+  }
+  // 2. one-frame drag re-flows
   {
     const { N, st } = rested(), K = 5, p = N[K];
-    const x0 = p.x, y0 = p.y, rx = x0 + 140, ry = y0 - 100;
+    const rx = p.x + 140, ry = p.y - 100;
     const d = press(p);
-    if (!move(d, rx, ry)) fail("quick drag: a 172 px jump was taken for a click");
-    hold(st);                                   // no physics step between the jump and the release
-    const held = unpin(N); if (!held) fail("quick drag: no pin was set by the jump");
-    G.releaseHeat(st, held);
-    if (p.x !== rx || p.y !== ry) fail("quick drag: node at " + [p.x, p.y] + " when the hold ended, release point " + [rx, ry]);
-    if (!(st.alpha >= G.ALPHA_REST)) fail("quick drag: alpha " + st.alpha + " after release, want >= " + G.ALPHA_REST);
-    if (st.alphaTarget !== 0 || st.quiet !== false || st.seekN !== 0) fail("quick drag: release state " + JSON.stringify(st));
+    if (!move(d, st, rx, ry)) fail("one-frame drag: the frame applied nothing");
+    if (st.alphaTarget !== 0.3) fail("one-frame drag: the frame did not hold (alphaTarget " + st.alphaTarget + ")");
+    if (frame(d, st)) fail("one-frame drag: a second frame applied travel again");
+    const held = unpin(N); if (!held) fail("one-frame drag: no pin was set by the frame");
+    G.releaseHeat(st, held);                    // no physics step between the frame and the release
+    if (p.x !== rx || p.y !== ry) fail("one-frame drag: node at " + [p.x, p.y] + " when the hold ended, release point " + [rx, ry]);
+    if (!(st.alpha >= G.ALPHA_REST)) fail("one-frame drag: alpha " + st.alpha + " after release, want >= " + G.ALPHA_REST);
+    if (st.alphaTarget !== 0 || st.quiet !== false || st.seekN !== 0) fail("one-frame drag: release state " + JSON.stringify(st));
     const S = snap(N), ran = toQuiet(N, st, false, 2000);
-    if (!st.quiet) fail("quick drag: the re-flow never settled (" + ran + " steps)");
-    if (!(ran > 0)) fail("quick drag: no physics step ran after the release");
+    if (!st.quiet) fail("one-frame drag: the re-flow never settled (" + ran + " steps)");
+    if (!(ran > 0)) fail("one-frame drag: no physics step ran after the release");
     const self = Math.hypot(p.x - rx, p.y - ry), others = maxMove(N, S, K);
-    if (!(self > 5)) fail("quick drag: the dropped node moved only " + self + " after the release (frozen)");
-    if (!(others > 1)) fail("quick drag: no other node moved (max " + others + "): the graph did not re-flow");
-    if (ran > 30 * 60 + 2000) fail("quick drag: settle took " + ran + " steps, past the 30 s cap + ease-out");
+    if (!(self > 5)) fail("one-frame drag: the dropped node moved only " + self + " after the release (frozen)");
+    if (!(others > 1)) fail("one-frame drag: no other node moved (max " + others + "): the graph did not re-flow");
+    if (ran > 30 * 60 + 2000) fail("one-frame drag: settle took " + ran + " steps, past the 30 s cap + ease-out");
   }
-  // 2. control: the same quick drag with develop's release freezes (the root cause, pinned down)
+  // 3. control: the same one-frame drag with develop's release freezes (the root cause, pinned down)
   {
     const { N, st } = rested(), K = 5, p = N[K];
     if (!(st.alpha <= 0.001)) fail("control: the rested sim stopped at alpha " + st.alpha + " (> ALPHA_MIN), the frozen-release mechanism does not hold here");
     const rx = p.x + 140, ry = p.y - 100, d = press(p);
-    move(d, rx, ry); hold(st); unpin(N); oldRelease(st);
+    move(d, st, rx, ry); unpin(N); oldRelease(st);
     const S = snap(N), ran = toQuiet(N, st, false, 2000);
     if (ran !== 0) fail("control: develop's release ran " + ran + " steps, expected none");
     if (p.x !== rx || p.y !== ry || maxMove(N, S, -1) !== 0) fail("control: develop's release moved nodes");
   }
-  // 3. a click and a pan: nothing pinned, nothing reheated
+  // 4. a click and a pan: nothing queued, pinned or reheated
   {
     const { N, st } = rested(), p = N[3], a0 = st.alpha, x0 = p.x, y0 = p.y, d = press(p);
-    if (move(d, x0 + 2, y0 + 3) || move(d, x0 - 4, y0)) fail("click: a move inside the 4 px slop started a drag");
+    if (move(d, st, x0 + 2, y0 + 3) || move(d, st, x0 - 4, y0)) fail("click: a move inside the 4 px slop started a drag");
+    if (d.pdx || d.pdy || G.holdTake(d) !== null) fail("click: a slop sample was queued");
     if (p.fx != null || p.x !== x0 || p.y !== y0) fail("click: the node was pinned or moved");
     const held = unpin(N); if (held) fail("click: a pin was reported");
     G.releaseHeat(st, held);
@@ -112,11 +144,11 @@ const CHECKS: &str = r#"(function () {
     G.releaseHeat(st2, false);
     if (st2.alpha !== 0.0004 || st2.alphaTarget !== 0) fail("pan: release raised alpha / kept the target: " + JSON.stringify(st2));
   }
-  // 4. a long stepped drag keeps the heat it built up
+  // 5. a long stepped drag keeps the heat it built up
   {
-    const { N, st } = rested(), p = N[8], d = press(p);
-    hold(st);
-    for (let k = 1; k <= 40; k++) { move(d, d.x + 4, d.y - 3); run(N, st, 1, false); }
+    const { N, st } = rested(), p = N[8], d = press(p), x0 = p.x, y0 = p.y;
+    for (let k = 1; k <= 40; k++) { if (!move(d, st, d.x + 4, d.y - 3)) fail("stepped drag: frame " + k + " applied nothing"); run(N, st, 1, false); }
+    if (Math.abs(p.x - x0 - 160) > 1e-9 || Math.abs(p.y - y0 + 120) > 1e-9) fail("stepped drag: node at " + [p.x - x0, p.y - y0] + " from the press, want 160,-120");
     const a = st.alpha; if (!(a > G.ALPHA_REST)) fail("stepped drag: alpha only " + a + " after 40 held steps");
     G.releaseHeat(st, unpin(N));
     if (st.alpha !== a) fail("stepped drag: release changed alpha " + a + " -> " + st.alpha);
@@ -124,7 +156,7 @@ const CHECKS: &str = r#"(function () {
     if (G.releaseHeat(st3, true).alpha !== 0.25) fail("releaseHeat lowered a 0.25 alpha");
     toQuiet(N, st, false, 2000); if (!st.quiet) fail("stepped drag: never settled after release");
   }
-  // 5. dragStep slop edges
+  // 6. dragStep slop edges, the queue
   {
     const d = { x: 100, y: 100 };
     if (G.dragStep(d, false, 104, 100) !== null) fail("slop: exactly 4 px started a drag");
@@ -134,8 +166,16 @@ const CHECKS: &str = r#"(function () {
     const m2 = G.dragStep(d, true, 104, 104);
     if (!m2 || m2.dx !== 1 || m2.dy !== 0 || d.x !== 104) fail("moved: a 1 px sample was dropped");
     const m3 = G.dragStep(d, true, 104, 104);
-    if (!m3 || m3.dx !== 0 || m3.dy !== 0) fail("moved: a same-point sample (the release point) is not a zero step");
+    if (!m3 || m3.dx !== 0 || m3.dy !== 0) fail("moved: a same-point sample is not a zero step");
     if (G.DRAG_SLOP2 !== 16) fail("slop constant changed");
+    const q = { x: 0, y: 0 };
+    if (G.holdTake(q) !== null) fail("queue: an empty queue took travel");
+    G.holdQueue(q, 3, 4); G.holdQueue(q, 10, -2); G.holdQueue(q, 0, 0);
+    const t = G.holdTake(q);
+    if (!t || t.dx !== 13 || t.dy !== 2) fail("queue: two samples between frames took " + JSON.stringify(t) + ", want 13,2");
+    if (G.holdTake(q) !== null) fail("queue: the same travel was taken twice");
+    G.holdQueue(q, 5, 0); G.holdQueue(q, -5, 0);
+    if (G.holdTake(q) !== null) fail("queue: travel that cancels out moved the node");
   }
   return "ok";
 })()"#;

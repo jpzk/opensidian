@@ -157,11 +157,21 @@
     d.x = x; d.y = y;
     return { dx, dy };
   }
+  // holdQueue(d, dx, dy) / holdTake(d): the node travel of a held press waits for the next animation
+  // frame. Every sample past the slop is queued (summed into d.pdx, d.pdy); the frame takes the sum
+  // once (null when nothing is queued) and applies it before its physics and draw. A release drops
+  // what no frame took, as stock does: a press, one jump and a release inside one frame move nothing.
+  function holdQueue(d, dx, dy) { d.pdx = (d.pdx || 0) + dx; d.pdy = (d.pdy || 0) + dy; return d; }
+  function holdTake(d) {
+    const dx = d.pdx || 0, dy = d.pdy || 0;
+    d.pdx = 0; d.pdy = 0;
+    return dx || dy ? { dx, dy } : null;
+  }
   // releaseHeat(st, held): the sim state a hold's end leaves (st = { alpha, alphaTarget, seekN, still,
   // calm, kePeak, quiet }, changed in place and returned). The hold's alphaTarget 0.3 is dropped and the
   // sim seeks rest again. held = a node was really moved: then the sim must re-flow around where it was
-  // dropped. While held alpha only CLIMBS toward 0.3 one step at a time, so a quick drag (press, one
-  // pointer jump, release inside one frame) ends before any step ran: alpha is still the rest value
+  // dropped. While held alpha only CLIMBS toward 0.3 one step at a time, so a short drag (one frame
+  // applied the move, the release came before any physics step) ends with alpha still the rest value
   // (~ALPHA_MIN), run() takes no step, the dropped node never moves and the sim goes quiet frozen
   // (#279). A hold that moved a node therefore leaves alpha at least ALPHA_REST, the floor the settle
   // seeks rest from; a longer drag (alpha already past it) is not changed, and nothing is reheated for
@@ -178,5 +188,5 @@
       const b = e.data, r = eng.run(b);
       self.postMessage({ id: b.id, r, st: b.st, X: b.X, Y: b.Y, VX: b.VX, VY: b.VY }, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
     };
-  } else window.GraphPhys = { create, dragStep, releaseHeat, DRAG_SLOP2, ALPHA_REST };
+  } else window.GraphPhys = { create, dragStep, holdQueue, holdTake, releaseHeat, DRAG_SLOP2, ALPHA_REST };
 })();
