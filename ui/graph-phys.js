@@ -144,11 +144,39 @@
     return { run };
   }
 
+  // ---- the node drag, as pure steps (#279, main.js startGraph drives them from its mouse handlers) ----
+  // DRAG_SLOP2: a press only becomes a drag once the pointer is more than 4 px from the press point,
+  // so a click (or hand jitter) never pins or moves a node.
+  const DRAG_SLOP2 = 16;
+  // dragStep(d, moved, x, y): one pointer sample of a held press. d = { x, y }, the last APPLIED point
+  // (the press point until the drag starts), moved = the drag has already started. Returns null while
+  // inside the slop (d untouched), else { dx, dy } since the last applied point and moves d to (x, y).
+  function dragStep(d, moved, x, y) {
+    const dx = x - d.x, dy = y - d.y;
+    if (!moved && !(dx * dx + dy * dy > DRAG_SLOP2)) return null;
+    d.x = x; d.y = y;
+    return { dx, dy };
+  }
+  // releaseHeat(st, held): the sim state a hold's end leaves (st = { alpha, alphaTarget, seekN, still,
+  // calm, kePeak, quiet }, changed in place and returned). The hold's alphaTarget 0.3 is dropped and the
+  // sim seeks rest again. held = a node was really moved: then the sim must re-flow around where it was
+  // dropped. While held alpha only CLIMBS toward 0.3 one step at a time, so a quick drag (press, one
+  // pointer jump, release inside one frame) ends before any step ran: alpha is still the rest value
+  // (~ALPHA_MIN), run() takes no step, the dropped node never moves and the sim goes quiet frozen
+  // (#279). A hold that moved a node therefore leaves alpha at least ALPHA_REST, the floor the settle
+  // seeks rest from; a longer drag (alpha already past it) is not changed, and nothing is reheated for
+  // a click or a pan (held false).
+  function releaseHeat(st, held) {
+    st.alphaTarget = 0; st.calm = 0; st.kePeak = 0; st.seekN = 0; st.still = 0; st.quiet = false;
+    if (held && !(st.alpha >= ALPHA_REST)) st.alpha = ALPHA_REST;
+    return st;
+  }
+
   if (typeof window === "undefined") {             // Worker: one engine, batches in, results out (arrays transferred both ways)
     const eng = create();
     self.onmessage = e => {
       const b = e.data, r = eng.run(b);
       self.postMessage({ id: b.id, r, st: b.st, X: b.X, Y: b.Y, VX: b.VX, VY: b.VY }, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
     };
-  } else window.GraphPhys = { create };
+  } else window.GraphPhys = { create, dragStep, releaseHeat, DRAG_SLOP2, ALPHA_REST };
 })();

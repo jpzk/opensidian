@@ -12856,7 +12856,7 @@ async function startGraph(g, cfg) {
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
-  let firstFrame = true, running = false, dirty = true, shadeNow = false;
+  let firstFrame = true, running = false, dirty = true, shadeNow = false, glOwed = false;   // glOwed: #279, see the settled branch of step()
   if (g.gwRelease) g.gwRelease();      // the sim this start retires gives its physics worker back
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
   // gwRelease: a sim retired between batches (cancelAnimationFrame + simGen = 0, nothing in the Worker)
@@ -12914,7 +12914,7 @@ async function startGraph(g, cfg) {
     pump();
     const anim = animT0 >= 0;          // a running timelapse draws every frame, settled or not
     const drew = dirty || anim;
-    if (drew) { draw(); dirty = false; }
+    if (drew) { draw(); dirty = false; glOwed = true; }
     if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
     if (quiet && !inflight && animT0 < 0) {   // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false; gwPut();
@@ -12923,7 +12923,11 @@ async function startGraph(g, cfg) {
       // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
       // a settled GL loop draws the same frame once more on the next animation frame — nothing new to show,
       // it only pushes the real last frame onto the screen.
-      if (drew && glr) requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); });
+      // #279: not only a draw in THIS frame is owed that push: a frame that drew and was followed by
+      // frames that did not (a batch that ran no step, the last one before quiet) left the same unseen
+      // frame — a quick drag's node stayed drawn at its old place under a label already at the new one.
+      // glOwed = a loop frame drew since the last push.
+      if (glOwed && glr) { glOwed = false; requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); }); }
       // graphperf: a ggkeep tab left at rest comes back QUIET, so its very first frame lands here —
       // inside the tab_switch paint. v0.6.1 restarted hot and settled ~2 s later, outside it.
       // State is set now; the title + span flush are published after the next frame (afterPaint).
@@ -13111,15 +13115,26 @@ async function startGraph(g, cfg) {
   // Pins exist only while held, so release clears EVERY pin in N: a refresh
   // during the hold (C3 carry) swaps in a new node object that carries fx/fy,
   // and that copy must be freed too.
-  const release = () => {
+  // #279: a mouseup (e) is the RELEASE POINT: it is applied as the hold's last pointer sample before the
+  // hold ends, so the node lands where the button came up even when no mousemove reported that point.
+  // A hold that moved a node (a pin was set) leaves the sim re-flowing (GraphPhys.releaseHeat): a quick
+  // drag ends before any physics step ran, and alpha still at its rest value froze the dropped node.
+  const release = e => {
+    if (drag && e && e.type === "mouseup" && e.target === cv) holdMove(e);
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
-    for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) ev(() => { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); });
+    let held = false;
+    for (const q of N) if (q.fx != null) { q.fx = q.fy = null; held = true; }
+    if (alphaTarget !== 0) ev(() => {
+      sTrMark("release");
+      const s = GraphPhys.releaseHeat({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet }, held);
+      ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = s);
+      g.graphSettled = false; if (g.simGen === gen) wake();
+    });
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
-    const rel = () => { const f = window.__graphHeld; if (f) f(); };
+    const rel = e => { const f = window.__graphHeld; if (f) f(e); };
     window.addEventListener("mouseup", rel, true);
     window.addEventListener("blur", rel);
   }
@@ -13131,42 +13146,42 @@ async function startGraph(g, cfg) {
     drag = { x: e.clientX, y: e.clientY, node: i >= 0 ? N[i] : null };
     moved = false;
   };
+  // one pointer sample of the held press (GraphPhys.dragStep: nothing inside the 4 px click slop)
+  function holdMove(e) {
+    const m = GraphPhys.dragStep(drag, moved, e.clientX, e.clientY);
+    if (!m) return;
+    const { dx, dy } = m;
+    moved = true;
+    if (drag.node) {
+      // NODE drag. Pin on the first real movement, not on mousedown: a bare
+      // click must not stick a node it never moved. Pointer px -> world
+      // units via the camera scale, so a zoomed-out drag still tracks.
+      let p = drag.node;
+      if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
+        p = drag.node = N.find(q => q.n === p.n);
+        if (!p) { release(); return; }
+      }
+      if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+      window.__graphHeld = release;
+      p.fx += dx / view.scale; p.fy += dy / view.scale;
+      p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+      // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
+      // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
+      if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
+    } else {
+      view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
+    }
+    redraw();
+  }
   cv.onmousemove = e => {
     const r = cv.getBoundingClientRect();
-    if (drag) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (moved || dx * dx + dy * dy > 16) {
-        moved = true;
-        if (drag.node) {
-          // NODE drag. Pin on the first real movement, not on mousedown: a bare
-          // click must not stick a node it never moved. Pointer px -> world
-          // units via the camera scale, so a zoomed-out drag still tracks.
-          let p = drag.node;
-          if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
-            p = drag.node = N.find(q => q.n === p.n);
-            if (!p) { release(); return; }
-          }
-          if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
-          window.__graphHeld = release;
-          p.fx += dx / view.scale; p.fy += dy / view.scale;
-          p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
-          // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
-          // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
-        } else {
-          view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
-        }
-        drag.x = e.clientX; drag.y = e.clientY;
-        redraw();
-      }
-      return;
-    }
+    if (drag) { holdMove(e); return; }
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const h = hitTest(x, y);
     if (h !== hov) { hov = h; redraw(); gHover(g, e, N[h]); }   // cp-hover-editor: the engine hears every hover change
     cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
-  cv.onmouseup = () => { release(); };
+  cv.onmouseup = e => { release(e); };   // #279: the release point is the last sample (window capture usually got here first)
   cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); gHover(g, null, null); } cv.style.cursor = ""; };
   cv.oncontextmenu = e => {               // graphctx GC29-GC31: the file menu on a note / attachment node, nothing elsewhere
     e.preventDefault();
