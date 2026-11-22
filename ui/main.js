@@ -12857,6 +12857,7 @@ async function startGraph(g, cfg) {
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
   let firstFrame = true, running = false, dirty = true, shadeNow = false, glOwed = false;   // glOwed: #279, see the settled branch of step()
+  let drag = null, moved = false;      // the held press (C3, below); declared before step(): its first run is synchronous and holdApply (#279) reads drag
   if (g.gwRelease) g.gwRelease();      // the sim this start retires gives its physics worker back
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
   // gwRelease: a sim retired between batches (cancelAnimationFrame + simGen = 0, nothing in the Worker)
@@ -13107,7 +13108,7 @@ async function startGraph(g, cfg) {
   // fx/fy only WHILE HELD (R16.6, operator 2026-10-06: a released node is FREE
   // and settles back under the forces, as stock's does); on empty canvas it
   // pans the camera exactly as it always did. Click w/o movement still navigates.
-  let drag = null, moved = false;
+  // (drag, moved: declared above step() — #279 holdApply reads drag from the very first, synchronous step)
   // release: unpin the held node and drop the d3 alphaTarget back to 0, so the
   // sim cools from where it is (alpha ~0.3) instead of freezing the node. Every
   // way a hold can end goes through here: mouseup on the canvas, the pointer
