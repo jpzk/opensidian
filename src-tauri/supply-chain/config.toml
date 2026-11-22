@@ -322,6 +322,11 @@ criteria = "safe-to-deploy"
 version = "0.2.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.form_urlencoded]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0592 (GHSA-hrj5-67jp-wqp9): url 2.5.9 strictly requires form_urlencoded ^1.2.3; delta 1.2.2 -> 1.2.3 (mozilla-audited 1.2.2) reviewed by jpzk 2026-11-22: version bumps + Serializer::for_suffix clamps start_position instead of panicking (rust-url #1172), no unsafe/build.rs/io; exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-22: replace with an imported audit"
+
 [[exemptions.futures-task]]
 version = "0.3.34"
 criteria = "safe-to-deploy"
@@ -1241,8 +1246,9 @@ version = "1.0.24"
 criteria = "safe-to-deploy"
 
 [[exemptions.url]]
-version = "2.5.8"
+version = "2.5.9"
 criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0592 (GHSA-hrj5-67jp-wqp9, stack overflow in Url::origin on nested blob: URLs, patched >= 2.5.9); delta 2.5.8 -> 2.5.9 reviewed by jpzk 2026-11-22 (tag v2.5.9 = ad1c66cb, rust-url #1186 fix + WHATWG conformance #1140 #1127 #1187 #1161, no new unsafe/build.rs/io); exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-22: replace with an imported audit"
 
 [[exemptions.uuid]]
 version = "1.26.0"
