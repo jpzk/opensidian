@@ -13118,15 +13118,19 @@ async function startGraph(g, cfg) {
   // during the hold (C3 carry) swaps in a new node object that carries fx/fy,
   // and that copy must be freed too.
   // #279: node travel no frame has applied yet (drag.pdx/pdy, see holdApply) ends with the hold, as
-  // stock's does: a press, one jump and a release inside one frame move nothing. A hold that moved a
-  // node (a pin was set) leaves the sim re-flowing (GraphPhys.releaseHeat): with the move applied but
-  // no physics step run yet, alpha still at its rest value froze the dropped node.
+  // stock's does: a press, one jump and a release inside one frame leave the node at the press point.
+  // A hold that grabbed a node (GraphPhys.releaseHeld: a pin was set, or a node press went past the
+  // slop) leaves the sim re-flowing (GraphPhys.releaseHeat), as stock's: with the move applied but no
+  // physics step run yet, alpha still at its rest value froze the dropped node; a grab no frame
+  // applied ended with alphaTarget still 0 and was never re-flowed at all.
   const release = () => {
+    const d0 = drag;
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
-    let held = false;
-    for (const q of N) if (q.fx != null) { q.fx = q.fy = null; held = true; }
-    if (alphaTarget !== 0) ev(() => {
+    let pinned = false;
+    for (const q of N) if (q.fx != null) { q.fx = q.fy = null; pinned = true; }
+    const held = GraphPhys.releaseHeld(d0, moved, pinned);
+    if (alphaTarget !== 0 || held) ev(() => {
       sTrMark("release");
       const s = GraphPhys.releaseHeat({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet }, held);
       ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = s);

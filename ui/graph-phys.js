@@ -160,7 +160,8 @@
   // holdQueue(d, dx, dy) / holdTake(d): the node travel of a held press waits for the next animation
   // frame. Every sample past the slop is queued (summed into d.pdx, d.pdy); the frame takes the sum
   // once (null when nothing is queued) and applies it before its physics and draw. A release drops
-  // what no frame took, as stock does: a press, one jump and a release inside one frame move nothing.
+  // what no frame took, as stock does: a press, one jump and a release inside one frame leave the node
+  // at the press point (the graph still re-flows: releaseHeld).
   function holdQueue(d, dx, dy) { d.pdx = (d.pdx || 0) + dx; d.pdy = (d.pdy || 0) + dy; return d; }
   function holdTake(d) {
     const dx = d.pdx || 0, dy = d.pdy || 0;
@@ -176,6 +177,12 @@
   // (#279). A hold that moved a node therefore leaves alpha at least ALPHA_REST, the floor the settle
   // seeks rest from; a longer drag (alpha already past it) is not changed, and nothing is reheated for
   // a click or a pan (held false).
+  // releaseHeld(d, moved, pinned): does the end of this hold re-flow the sim (releaseHeat's held)? Yes when a
+  // node was really moved (pinned: a frame applied travel and set its pin), and also for a node GRAB that
+  // never reached a frame: a press on a node that went past the slop (moved) and was released before the
+  // next frame. Stock 1.13.7 (black-box, #279) leaves that node at the press point but re-flows the graph
+  // (pixel motion decaying for ~6 s, 6 runs). No for a click (never past the slop) or a pan (no node).
+  function releaseHeld(d, moved, pinned) { return !!pinned || !!(d && d.node && moved); }
   function releaseHeat(st, held) {
     st.alphaTarget = 0; st.calm = 0; st.kePeak = 0; st.seekN = 0; st.still = 0; st.quiet = false;
     if (held && !(st.alpha >= ALPHA_REST)) st.alpha = ALPHA_REST;
@@ -188,5 +195,5 @@
       const b = e.data, r = eng.run(b);
       self.postMessage({ id: b.id, r, st: b.st, X: b.X, Y: b.Y, VX: b.VX, VY: b.VY }, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
     };
-  } else window.GraphPhys = { create, dragStep, holdQueue, holdTake, releaseHeat, DRAG_SLOP2, ALPHA_REST };
+  } else window.GraphPhys = { create, dragStep, holdQueue, holdTake, releaseHeld, releaseHeat, DRAG_SLOP2, ALPHA_REST };
 })();
