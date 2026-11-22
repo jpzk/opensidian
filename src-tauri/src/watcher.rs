@@ -205,8 +205,13 @@ pub fn diff(prev: &Snapshot, cur: &Snapshot) -> Diff {
 /// upserts under that same lock) is either fully before or fully after us.
 pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     let mut c = Change::default();
+    // #250: one vault fd per tick; every note is read by the no-follow fd walk
+    // with the note cap on the opened fd. A note (or a parent) swapped for a
+    // symlink after snapshot() is refused and skipped, like an unreadable one
+    let vfs = crate::vaultfs::Vault::open(root).ok();
+    let read = |n: &str| vfs.as_ref()?.read_string(Path::new(&format!("{n}.md")), crate::index::MAX_NOTE_BYTES).ok();
     for n in &d.modified {
-        let Ok(s) = fs::read_to_string(note_file(root, n)) else { continue };
+        let Some(s) = read(n) else { continue };
         if ix.content(n) == Some(s.as_str()) {
             continue; // own write (or a touch): index already has these bytes
         }
@@ -220,7 +225,7 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     let adds: Vec<(String, String)> = d
         .added
         .iter()
-        .filter_map(|n| fs::read_to_string(note_file(root, n)).ok().map(|s| (n.clone(), s)))
+        .filter_map(|n| read(n).map(|s| (n.clone(), s)))
         .collect();
     for (n, s) in &adds {
         if ix.content(n) == Some(s.as_str()) {
