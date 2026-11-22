@@ -14781,7 +14781,11 @@ mod read250_tests {
             let got = bounded(&format!("{how:?}"), move || cfg_answers(&r));
             for ((name, g), (_, w)) in got.iter().zip(&want) {
                 assert!(!g.contains(SECRET) && !g.contains("leakedplugin"), "{how:?} {name}: outside content reached the reader: {g}");
-                assert_eq!(g, w, "{how:?} {name}: not the default");
+                // the readers whose caller WRITES the file back (appearance, the vcfg
+                // merge) refuse (Err -> None) rather than default: an unreadable file is
+                // never written over. Every other reader returns its default.
+                let refuses = matches!(*name, "themefs::read_appearance" | "settings::vcfg_in") && g == "None";
+                assert!(g == w || refuses, "{how:?} {name}: not the default (nor a refusal): {g} vs {w}");
             }
             // a read-MODIFY-write refuses rather than overwrite what it could not read
             assert!(set_app_bool_in(&root, "alwaysUpdateLinks", true).is_err(), "{how:?}: app.json merge");
