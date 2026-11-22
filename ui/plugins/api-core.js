@@ -673,6 +673,8 @@
     async function enable(id) {
       if (registry.has(id)) return { ok: true, id };
       if (!K.st.trusted) return host.fail(id, new Error("restricted mode is on"));
+      // #251: code that is new on disk or changed since the user allowed it is not even requested (Rust refuses it too)
+      if (K.st.pins[id] !== "ok") return host.fail(id, new Error(pinWhy(id)));
       const manifest = K.st.manifests[id];
       if (!manifest) return host.fail(id, new Error("not installed (no manifest.json)"));
       installDom();
@@ -719,12 +721,43 @@
       touch();
       return { ok: true, id };
     }
-    async function refresh() {
-      const s = await be.state();
+    function takeState(s) {
       K.st.trusted = !!s.trusted;
       K.st.enabledIds = (s.enabled || []).slice();
       K.st.manifests = {};
       for (const p of s.installed || []) if (p && p.id && p.manifest) K.st.manifests[p.id] = p.manifest;
+      const pn = s.pins || {};
+      K.st.pins = Object.assign({}, pn.status || {});
+      K.st.pinChanged = Object.assign({}, pn.changed || {});
+      K.st.pinError = pn.error || null;
+      return s;
+    }
+    /* #251: the plugins that would run but are not allowed as they are on disk (new in the vault, or
+       changed since the user allowed them, or the pin store is damaged) */
+    const unpinned = ids => ids.filter(id => K.st.manifests[id] && K.st.pins[id] !== "ok" && K.st.pins[id] !== "unreadable");
+    function pinWhy(id) {
+      const p = K.st.pins[id];
+      if (p === "changed") return "changed on disk since you allowed it (" + (K.st.pinChanged[id] || []).join(", ") + "): review and allow it in Settings > Community plugins";
+      if (p === "damaged") return "not allowed: " + (K.st.pinError || "the record of allowed plugins is damaged");
+      if (p === "unreadable") return "plugin files unreadable";
+      return "new in this vault, not allowed yet: review and allow it in Settings > Community plugins";
+    }
+    /* #251: ask Rust's native dialog for these ids (one dialog for all of them); the answer is the new state */
+    async function allow(ids) {
+      const want = unpinned(ids);
+      if (!want.length || !K.st.trusted) return null;
+      try { return takeState(await be.ack(want)); } catch (e) { console.error("[plugin] allow:", e); return null; }
+    }
+    /* #251: once per page, the first time the vault reads trusted with enabled plugins that are not
+       allowed as they are on disk (the first start after the upgrade, or code that arrived by sync / git /
+       another program): ONE native question listing all of them. Cancel = they stay off this session. */
+    let askedOnce = false;
+    async function refresh() {
+      let s = takeState(await be.state());
+      if (K.st.trusted && !askedOnce && unpinned(K.st.enabledIds).length) {
+        askedOnce = true;
+        s = (await allow(K.st.enabledIds)) || s;
+      }
       return s;
     }
     /* the user's toggle (settings -> host.setEnabled): a plugin switched on here
@@ -734,6 +767,7 @@
       await be.set({ id, on: !!on });
       await refresh();
       if (!K.st.trusted) { touch(); return { ok: true, id }; }   // restricted: the choice is saved, nothing runs
+      if (on && !registry.has(id)) await allow([id]);   // #251: switched on while new / changed on disk: the native question first
       return on ? enable(id) : disable(id);
     }
     async function setEnabled(id, on) {
@@ -932,6 +966,6 @@
     Object.defineProperty(app, "customCss", { value: new CustomCss(), enumerable: true, configurable: true, writable: true });
     Object.defineProperty(app, "hotkeyManager", { value: K.hotkeyManager, enumerable: true, configurable: true, writable: true });
 
-    Object.assign(K, { boot, censusTick, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
+    Object.assign(K, { allow, boot, censusTick, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
   });
 })();

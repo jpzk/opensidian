@@ -593,6 +593,13 @@ fn html_esc(t: &str) -> String {
 /// install or update <id> from its store release (see release()). Nothing is written
 /// until every asset URL passed the allowlist and every file passed its check.
 pub fn install(fetch: Fetch, root: &Path, id: &str) -> Result<Value, String> {
+    install_pinned(fetch, root, id).map(|(rec, _)| rec)
+}
+
+/// #251: install / update and the pin of exactly the bytes fetched and written (main.js,
+/// manifest.json, styles.css or none). The caller (store_install, an explicit user action) writes
+/// the pin outside the vault (cfgstore Op::PluginPinSet); the sidecar in the vault is a record only.
+pub fn install_pinned(fetch: Fetch, root: &Path, id: &str) -> Result<(Value, crate::plugin_pins::Pin), String> {
     let e = entry(fetch, id)?;
     let repo = s(&e, "repo");
     let r = release(fetch, &repo)?;
@@ -642,7 +649,8 @@ pub fn install(fetch: Fetch, root: &Path, id: &str) -> Result<Value, String> {
     let body = serde_json::to_string_pretty(&rec).map_err(|e| e.to_string())?;
     crate::vaultfs::write_atomic(root, &rel.join(SIDECAR), body.as_bytes()).map_err(|e| format!("{id}/{SIDECAR}: {e}"))?;
     eprintln!("[plugin-store] installed {id} {} from {repo}", s(&m, "version"));
-    Ok(rec)
+    let files = crate::plugin_pins::Files { main, manifest: man, styles };
+    Ok((rec, crate::plugin_pins::pin_of(&files, "store", at)))
 }
 
 /// remove <id>: off the enabled list first, then its (confined) folder
@@ -679,13 +687,30 @@ pub(crate) async fn store_detail(v: tauri::State<'_, crate::Vault>, id: String) 
 #[tauri::command]
 pub(crate) async fn store_install(v: tauri::State<'_, crate::Vault>, id: String) -> Result<Value, String> {
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
-    blocking(move || install(&live, &root, &id)).await
+    blocking(move || {
+        let (rec, pin) = install_pinned(&live, &root, &id)?;
+        // #251: the user installed / updated THIS release: pin its bytes for this vault folder
+        // (no folder identity = no pin: such a vault is never trusted, nothing would load)
+        match plugins::trust_key(&root).id {
+            Some(vault) => crate::cfg_update(&[crate::cfgstore::Op::PluginPinSet { vault, plugin: id.clone(), pin }]),
+            None => eprintln!("[plugin-store] {id}: not pinned: {}", crate::plugin_pins::NO_IDENTITY),
+        }
+        Ok(rec)
+    })
+    .await
 }
 
 #[tauri::command]
 pub(crate) async fn store_uninstall(v: tauri::State<'_, crate::Vault>, id: String) -> Result<(), String> {
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
-    crate::span_timed!("store_uninstall", blocking(move || uninstall(&root, &id)).await)
+    crate::span_timed!("store_uninstall", blocking(move || {
+        uninstall(&root, &id)?;
+        // #251: a later folder of the same id is new again
+        if let Some(vault) = plugins::trust_key(&root).id {
+            crate::cfg_update(&[crate::cfgstore::Op::PluginPinDrop { vault, plugin: id.clone() }]);
+        }
+        Ok(())
+    }).await)
 }
 
 #[cfg(test)]
@@ -928,5 +953,37 @@ mod tests {
         assert!(outside.join("keep.txt").is_file());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /* #251: a store install pins exactly the bytes it wrote; the pin (written by store_install
+       outside the vault) lets that code load, and the same plugin rewritten on disk afterwards is
+       refused. The sidecar in the vault is never what lets it load. */
+    #[test]
+    fn store_install_pins_what_it_wrote() {
+        let _g = STORE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let root = vault("pin251");
+        reset();
+        let f = net("pin-plug", "pin-plug", 23, "github.com");
+        let (rec, pin) = install_pinned(&f, &root, "pin-plug").unwrap();
+        assert_eq!(pin.by, "store");
+        assert_eq!(pin.version, "1.0.0");
+        assert_eq!(pin.main, sha256_hex(b"module.exports=class{};"));
+        assert_eq!(Some(pin.main.as_str()), rec["files"]["main.js"]["sha256"].as_str());
+        assert_eq!(pin.styles, None, "the release has no styles.css");
+        let on_disk = crate::plugin_pins::pin_of(&crate::plugin_pins::read_files(&root, "pin-plug").unwrap(), "store", pin.at);
+        assert_eq!(pin, on_disk, "the pin is of the bytes on disk");
+        let mut cfg = serde_json::json!({});
+        crate::plugin_pins::apply_set(&mut cfg, "7:7", "pin-plug", &pin);
+        assert!(crate::plugin_pins::verify(&cfg, Some("7:7"), &root, "pin-plug").is_ok());
+        // rewritten on disk, sidecar rewritten to match: refused
+        let dir = root.join(".obsidian/plugins/pin-plug");
+        fs::write(dir.join("main.js"), "tampered").unwrap();
+        let mut side: Value = serde_json::from_slice(&fs::read(dir.join(SIDECAR)).unwrap()).unwrap();
+        side["files"]["main.js"]["sha256"] = json!(sha256_hex(b"tampered"));
+        fs::write(dir.join(SIDECAR), side.to_string()).unwrap();
+        assert!(crate::plugin_pins::verify(&cfg, Some("7:7"), &root, "pin-plug").is_err());
+        // nothing pins without an install: a refused install returns no pin
+        reset();
+        assert!(install_pinned(&net("bad-plug", "other-id", 23, "github.com"), &root, "bad-plug").is_err());
     }
 }

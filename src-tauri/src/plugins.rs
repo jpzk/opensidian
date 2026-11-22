@@ -116,6 +116,39 @@ pub fn wrap_cjs(id: &str, src: &str) -> String {
     )
 }
 
+/// #251: what the scheme handler serves — rules 1-5 (serve), THEN rule 6: the plugin's main.js,
+/// manifest.json and styles.css match the pin the user created for this vault folder
+/// (plugin_pins.rs, outside the vault). The bytes sent are the bytes that were hashed (read once).
+/// `vault` = the vault folder identity (plugins::TrustKey.id); `cfg` = ~/.opensidian.json.
+pub fn serve_pinned(root: Option<&Path>, path: &str, trusted: bool, cfg: &serde_json::Value, vault: Option<&str>) -> Served {
+    match serve(root, path, trusted) {
+        Served::Js(_) => {}
+        other => return other,
+    }
+    // serve() answered Js: root and id are valid here
+    let (Some(root), Some(id)) = (root, parse_path(path)) else { return Served::Refused("bad path") };
+    match crate::plugin_pins::verify(cfg, vault, root, id) {
+        Ok(f) => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&f.main)).into_bytes()),
+        Err(why) => Served::Refused(why),
+    }
+}
+
+/// #251: a plugin's styles.css through the snippet sanitizer, only while the plugin matches its pin
+/// (the css applied is the css that was hashed). None = no styles.css.
+pub fn read_styles_pinned(root: &Path, id: &str, cfg: &serde_json::Value, vault: Option<&str>) -> Result<Option<String>, String> {
+    if !valid_id(id) {
+        return Err("bad plugin id".into());
+    }
+    let f = crate::plugin_pins::verify(cfg, vault, root, id).map_err(|e| format!("{id}/styles.css: {e}"))?;
+    match f.styles {
+        None => Ok(None),
+        Some(b) => {
+            let src = String::from_utf8(b).map_err(|e| format!("{id}/styles.css: {e}"))?;
+            crate::themefs::sanitize_css(&src).map(|s| Some(s.css)).map_err(|e| format!("{id}/styles.css: {e}"))
+        }
+    }
+}
+
 /// the whole decision for one request (rules 1-5), unit-testable without tauri
 pub fn serve(root: Option<&Path>, path: &str, trusted: bool) -> Served {
     let Some(id) = parse_path(path) else { return Served::Refused("bad path") };
@@ -676,5 +709,44 @@ mod tests {
         symlink(&outside, r.join(".obsidian/plugins/linkdir")).unwrap();
         assert!(write_data(&r, "linkdir", &serde_json::json!({"x": 1})).is_err());
         assert!(!outside.join("data.json").exists());
+    }
+
+    /* #251 rule 6: in a trusted vault, main.js is served only while the plugin matches the pin the
+       user created (store install / native acknowledgement), and the styles only then too */
+    #[test]
+    fn serve_pinned_serves_only_what_was_allowed() {
+        let r = vault("pin");
+        fs::write(r.join(".obsidian/plugins/good/manifest.json"), r#"{"id":"good","version":"1.0.0"}"#).unwrap();
+        fs::write(r.join(".obsidian/plugins/good/styles.css"), ".x{color:red}").unwrap();
+        let vid = trust_key(&r).id;
+        let v = vid.as_deref();
+        let none = serde_json::json!({});
+        // not pinned: refused, even though rules 1-5 allow it
+        assert_eq!(serve(Some(&r), "/good/main.js", true), js_ok(&r));
+        assert_eq!(serve_pinned(Some(&r), "/good/main.js", true, &none, v), Served::Refused("not allowed: new plugin, not acknowledged"));
+        assert!(read_styles_pinned(&r, "good", &none, v).is_err());
+        // pinned: served, byte-identical to the unpinned answer; styles applied
+        let mut cfg = serde_json::json!({});
+        let p = crate::plugin_pins::pin_of(&crate::plugin_pins::read_files(&r, "good").unwrap(), "ack", 1);
+        crate::plugin_pins::apply_set(&mut cfg, v.unwrap(), "good", &p);
+        assert_eq!(serve_pinned(Some(&r), "/good/main.js", true, &cfg, v), js_ok(&r));
+        assert_eq!(read_styles_pinned(&r, "good", &cfg, v).unwrap().as_deref(), Some(".x{color:red}"));
+        // rules 1-5 still come first: restricted mode / not enabled / bad path are refused as before
+        assert_eq!(serve_pinned(Some(&r), "/good/main.js", false, &cfg, v), Served::Refused("restricted mode"));
+        assert_eq!(serve_pinned(Some(&r), "/good/manifest.json", true, &cfg, v), Served::Refused("bad path"));
+        assert_eq!(serve_pinned(None, "/good/main.js", true, &cfg, v), Served::Refused("no vault"));
+        // main.js rewritten on disk (sync, git, another plugin): refused, styles too
+        fs::write(r.join(".obsidian/plugins/good/main.js"), "\"use strict\";module.exports=2;//end").unwrap();
+        assert_eq!(serve_pinned(Some(&r), "/good/main.js", true, &cfg, v), Served::Refused("not allowed: changed on disk since it was allowed"));
+        assert!(read_styles_pinned(&r, "good", &cfg, v).is_err());
+        // another folder identity (a vault replaced at the path) has no pins
+        assert!(matches!(serve_pinned(Some(&r), "/good/main.js", true, &cfg, Some("1:1")), Served::Refused(_)));
+        assert!(matches!(serve_pinned(Some(&r), "/good/main.js", true, &cfg, None), Served::Refused(_)));
+        // a damaged store: nothing
+        assert_eq!(serve_pinned(Some(&r), "/good/main.js", true, &serde_json::json!({"pluginPins": 1}), v), Served::Refused("not allowed: plugin pin store damaged"));
+    }
+
+    fn js_ok(r: &Path) -> Served {
+        Served::Js(wrap_cjs("good", &fs::read_to_string(r.join(".obsidian/plugins/good/main.js")).unwrap()).into_bytes())
     }
 }
