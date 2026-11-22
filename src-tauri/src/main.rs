@@ -310,10 +310,6 @@ fn note_path_in(root: &Path, name: &str, create: bool) -> Option<PathBuf> {
     Some(p)
 }
 
-fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
-    note_path_in(&cur_vault(v)?, name, create)
-}
-
 /* ---- R29 image embeds: the vault-contained byte server ------------------
    The attacker's input here is a .md file that arrived by sync/clone/share,
    so a rendered document decides which path we read. The containment rule is
@@ -404,6 +400,7 @@ fn pct_decode(s: &str) -> Option<String> {
 ///     genuinely symlinked vault (req S2) working;
 ///  5. the LEAF must not be a symlink — that is the symlink-inside-the-vault-
 ///     pointing-out case, which canonicalizing the dir alone would not catch.
+#[cfg_attr(not(test), allow(dead_code))] // the R29.5 rule as a path check (tests); serving is contained_open (#250)
 fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
     contained_in(root, target, |ext| IMG_TYPES.iter().any(|(e, _)| *e == ext), MAX_IMG_BYTES)
 }
@@ -413,21 +410,15 @@ fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
 /// and the cap (`pdf::MAX_PDF_BYTES`) differ — so a PDF embed cannot escape by
 /// any route an image embed cannot (README "security design": `../`, `%2e%2e`,
 /// absolute, hidden, symlinked leaf, symlinked dir out of the vault).
+#[cfg_attr(not(test), allow(dead_code))]
 fn pdf_path_in(root: &Path, target: &str) -> Option<PathBuf> {
     contained_in(root, target, |ext| ext == pdf::PDF_EXT, pdf::MAX_PDF_BYTES)
 }
 
 /// the shared body of `img_path_in` / `pdf_path_in` (steps 1-5 above).
+#[cfg_attr(not(test), allow(dead_code))]
 fn contained_in(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u64) -> Option<PathBuf> {
-    let dec = pct_decode(target)?;
-    if dec.contains('\0') {
-        return None;
-    }
-    let rel = safe_rel(&dec)?;
-    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
-    if !ext_ok(&ext) {
-        return None;
-    }
+    let rel = contained_rel(target, ext_ok)?;
     let croot = root.canonicalize().ok()?;
     let cdir = root.join(rel.parent().unwrap_or(Path::new(""))).canonicalize().ok()?;
     if !cdir.starts_with(&croot) {
@@ -441,14 +432,50 @@ fn contained_in(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u
     Some(p)
 }
 
+/// steps 1-3 above: the lexical part of the rule (decode, NUL, `safe_rel`,
+/// extension allowlist) -> the vault-relative path
+fn contained_rel(target: &str, ext_ok: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    let dec = pct_decode(target)?;
+    if dec.contains('\0') {
+        return None;
+    }
+    let rel = safe_rel(&dec)?;
+    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
+    if !ext_ok(&ext) {
+        return None;
+    }
+    Some(rel)
+}
+
+/// #250 (audit F-9): what the app SERVES goes through here, not through the
+/// path check above. Steps 1-3, then the file is OPENED by `vaultfs` (the
+/// openat walk from the vault fd, O_NOFOLLOW at every component and on the
+/// leaf, O_NONBLOCK, regular file by fstat on the fd) and the cap is checked
+/// on that fd. The caller reads (or queues) THAT fd: no path is resolved
+/// again between the check and the read, so a leaf or folder swapped for a
+/// symlink afterwards cannot redirect it. Stricter than step 4 on purpose: a
+/// symlinked folder is refused even when it points back inside the vault
+/// (the note index never lists files below one either).
+fn contained_open(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u64) -> Option<(PathBuf, fs::File)> {
+    let rel = contained_rel(target, ext_ok)?;
+    let f = vaultfs::Vault::open(root).ok()?.open_read(&rel).ok()?;
+    (f.metadata().ok()?.len() <= cap).then_some((rel, f))
+}
+
+/// #250: the opened PDF for an embed target (the `pdf_path_in` rule, fd-based)
+fn pdf_open_in(root: &Path, target: &str) -> Option<fs::File> {
+    contained_open(root, target, |ext| ext == pdf::PDF_EXT, pdf::MAX_PDF_BYTES).map(|(_, f)| f)
+}
+
 /// R29: bytes + Content-Type for a contained image, or None. The type comes
 /// from OUR allowlist, never from the file, and the response is served
 /// `nosniff` so a mislabeled blob cannot be re-interpreted as script.
+/// #250: read from the fd `contained_open` checked, capped on that fd.
 fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
-    let p = img_path_in(root, target)?;
-    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    let (rel, f) = contained_open(root, target, |ext| IMG_TYPES.iter().any(|(e, _)| *e == ext), MAX_IMG_BYTES)?;
+    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
     let mime = IMG_TYPES.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)?;
-    Some((mime, fs::read(&p).ok()?))
+    Some((mime, vaultfs::read_fd(f, MAX_IMG_BYTES).ok()?))
 }
 
 /// percent-ENCODE a vault-relative path for the `opensidian-img:` URL. Unreserved
@@ -818,9 +845,9 @@ fn is_pdf_target(target: &str) -> bool {
 async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) -> Result<Option<pdf::Info>, String> {
     // #144 toggle 4: refused BEFORE the path is resolved or the worker queued
     media_allowed("pdf_info")?;
-    let Some(p) = cur_vault(&v).and_then(|r| pdf_path_in(&r, &path)) else { return Ok(None) };
+    let Some(f) = cur_vault(&v).and_then(|r| pdf_open_in(&r, &path)) else { return Ok(None) };
     let (tx, rx) = std::sync::mpsc::channel();
-    pdf::queue_info(p, Box::new(move |i| {
+    pdf::queue_info_file(f, Box::new(move |i| {
         let _ = tx.send(i);
     }));
     span_timed!(otel => "pdf_info", tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten()).await)
@@ -955,7 +982,7 @@ struct Attached {
 /// root with a visible notice, never silently. Returns (dir, notice).
 fn attach_dir(root: &Path) -> Result<(PathBuf, Option<String>), DropErr> {
     let croot = root.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cfg = vcfg_read(root, ".obsidian/app.json").unwrap_or_default();
     let want = serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
         .and_then(|v| v.get("attachmentFolderPath")?.as_str().map(str::to_string))
@@ -1370,14 +1397,47 @@ fn audio_save(v: &Vault, note: &str, data: &str, tm: &datefmt::Tm) -> Result<pas
     })(), serde_json::json!({"b64": data.len()}))
 }
 
-/// S5: read a note off disk, "" when it is oversized (never part of the vault)
+/// S5: read the file `p` off disk, None when it is oversized (never part of
+/// the vault). #250: through vaultfs with `p`'s directory as the root — the
+/// leaf is opened O_NOFOLLOW|O_NONBLOCK, must be a regular file by fstat on
+/// that fd, and the cap is checked on the fd. Vault callers use
+/// `read_capped_in(root, rel)`, which also walks every parent no-follow.
 fn read_capped(p: &Path) -> Option<String> {
-    let m = fs::symlink_metadata(p).ok()?;
-    if m.len() > index::MAX_NOTE_BYTES {
-        index::warn_oversized(p);
-        return None;
+    read_capped_in(p.parent()?, Path::new(p.file_name()?))
+}
+
+/// #250: the vault file `rel` (note or config) through `vaultfs::read_string`
+/// with MAX_NOTE_BYTES on the opened fd. None: absent, refused (a symlink at
+/// any component, FIFO, device, directory), over the cap, or not UTF-8.
+fn read_capped_in(root: &Path, rel: &Path) -> Option<String> {
+    match vaultfs::read_string(root, rel, index::MAX_NOTE_BYTES) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::FileTooLarge {
+                index::warn_oversized(&root.join(rel));
+            }
+            None
+        }
     }
-    fs::read_to_string(p).ok()
+}
+
+/// #250 (audit F-3): a `.obsidian/*.json` (or other vault config file) for
+/// READING: vaultfs fd read, vaultfs::CFG_MAX on the fd. None = absent,
+/// refused or unreadable, which every caller treats as "the default".
+fn vcfg_read(root: &Path, rel: &str) -> Option<String> {
+    vaultfs::read_string(root, Path::new(rel), vaultfs::CFG_MAX).ok()
+}
+
+/// #250: the same for a read-MODIFY-WRITE. Absent = "" (the first write
+/// creates it); anything else that cannot be read (a symlinked or
+/// non-regular leaf or parent, over the cap, not UTF-8) is an Err, so the
+/// merge never overwrites a file it could not read.
+fn vcfg_read_rmw(root: &Path, rel: &str) -> Result<String, String> {
+    match vaultfs::read_string(root, Path::new(rel), vaultfs::CFG_MAX) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("{rel}: {e} — refusing to overwrite it")),
+    }
 }
 
 // folder tree for the sidebar. vaultfs::walk_real_dirs never descends a
@@ -1452,8 +1512,9 @@ fn canvas_attach(v: State<Vault>, path: String, data_b64: String, otel: Option<p
 fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
     span_timed!(otel =>
         "read_note",
-        note_path(&v, &name, false)
-            .and_then(|p| read_capped(&p))
+        cur_vault(&v)
+            .zip(note_rel(&name))
+            .and_then(|(root, rel)| read_capped_in(&root, &rel))
             .unwrap_or_default()
     )
 }
@@ -1633,7 +1694,7 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
         })?;
     // index==disk invariant: if the key is somehow missing, seed it from the
     // moved file rather than dropping the note
-    let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
+    let fallback = if ix.content(&okey).is_none() { read_capped_in(root, &nfr) } else { None };
     ix.move_key(&okey, &nkey, fallback);
     // R9.8: the note's name changed, so its BOOKMARK follows it — here, after
     // the rename is a fact on disk, and never before: everything above this
@@ -1713,7 +1774,7 @@ fn link_consent_in(root: &Path) -> bool {
 /// not a bool = false, which is Obsidian's default for every key read this way
 /// (alwaysUpdateLinks, strictLineBreaks).
 fn app_bool_in(root: &Path, key: &str) -> bool {
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cfg = vcfg_read(root, ".obsidian/app.json").unwrap_or_default();
     serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
         .and_then(|v| v.get(key).and_then(|b| b.as_bool()))
@@ -1734,7 +1795,7 @@ fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
 /// merge ONE boolean key into app.json — the refusal and temp+fsync+rename
 /// rules above hold for every key written through here
 fn set_app_bool_in(root: &Path, key: &str, on: bool) -> Result<(), String> {
-    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cur = vcfg_read_rmw(root, ".obsidian/app.json")?;
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -1805,7 +1866,7 @@ fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
    on every ask (a hand edit or another window shows on the next settings open /
    note open); written by the same merge as the boolean keys above. */
 fn app_value_in(root: &Path, key: &str) -> Option<serde_json::Value> {
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).ok()?;
+    let cfg = vcfg_read(root, ".obsidian/app.json")?;
     serde_json::from_str::<serde_json::Value>(&cfg).ok()?.get(key).cloned()
 }
 
@@ -1817,7 +1878,7 @@ fn set_props_mode_in(root: &Path, mode: &str) -> Result<(), String> {
     if !props::MODES.contains(&mode) {
         return Err(format!("unknown Properties in document mode {mode:?}"));
     }
-    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cur = vcfg_read_rmw(root, ".obsidian/app.json")?;
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -1850,7 +1911,7 @@ fn props_types(v: State<Vault>) -> std::collections::BTreeMap<String, String> {
 #[tauri::command]
 fn set_prop_type(v: State<Vault>, name: String, ty: Option<String>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let cur = fs::read_to_string(root.join(props::TYPES_REL)).unwrap_or_default();
+    let cur = vcfg_read_rmw(&root, props::TYPES_REL)?;
     let body = props::types_merged(&cur, &name, ty.as_deref())?;
     vaultfs::write_atomic(&root, Path::new(props::TYPES_REL), body.as_bytes()).map_err(|e| e.to_string())
 }
@@ -1878,7 +1939,7 @@ fn props_index(v: State<Vault>) -> Vec<props::PropStat> {
    `is-readable-line-width` class on every note view, which is the class the
    themes (Minimal 9.0.2) key their column width and file margins on. */
 fn readable_line_length_in(root: &Path) -> bool {
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cfg = vcfg_read(root, ".obsidian/app.json").unwrap_or_default();
     serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
         .and_then(|v| v.get("readableLineLength").and_then(|b| b.as_bool()))
@@ -1926,7 +1987,7 @@ fn graph_groups_ok(v: &serde_json::Value) -> bool {
 
 /// the whole graph.json object; absent / unreadable / unparsable / not an object = {}
 fn graph_settings_in(root: &Path) -> serde_json::Value {
-    read_capped(&root.join(GRAPH_REL))
+    vcfg_read(root, GRAPH_REL)
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .filter(|v| v.is_object())
         .unwrap_or_else(|| serde_json::json!({}))
@@ -1952,7 +2013,7 @@ fn set_graph_settings_in(root: &Path, patch: &serde_json::Value) -> Result<(), S
             return Err(format!("graph.json: bad value for {k:?}"));
         }
     }
-    let cur = read_capped(&root.join(GRAPH_REL)).unwrap_or_default();
+    let cur = vcfg_read_rmw(root, GRAPH_REL)?;
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -2211,7 +2272,7 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
     span_timed!(
         "read_workspace",
         cur_vault(&v)
-            .and_then(|root| fs::read_to_string(workspace_path(&root)).ok())
+            .and_then(|root| vcfg_read(&root, ".obsidian/workspace.json"))
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     )
 }
@@ -2240,8 +2301,7 @@ fn insert_datetime(v: State<Vault>, kind: String, tm: datefmt::Tm) -> Result<Str
 
 /// read-only lookup of one string key in <vault>/.obsidian/templates.json
 fn templates_format(root: &Path, key: &str) -> Option<String> {
-    let p = root.join(".obsidian").join("templates.json");
-    let s = read_capped(&p)?;
+    let s = vcfg_read(root, ".obsidian/templates.json")?;
     let j: serde_json::Value = serde_json::from_str(&s).ok()?;
     j.get(key)?.as_str().map(str::to_owned)
 }
@@ -5985,7 +6045,7 @@ fn bm_graph_spec(title: Option<&str>, x: &BmExtra) -> serde_json::Value {
 }
 
 fn read_bm_tree(root: &Path) -> Vec<BmNode> {
-    match fs::read_to_string(root.join(BM_FILE)) {
+    match vaultfs::read_string(root, Path::new(BM_FILE), vaultfs::CFG_MAX) {
         // Obsidian's file exists: it is THE store, and every dotfile is ignored
         Ok(body) => parse_bm_tree(&body),
         // no Obsidian file yet: a vault that only ever saw v0.12..v0.15 bookmarks
@@ -5995,7 +6055,8 @@ fn read_bm_tree(root: &Path) -> Vec<BmNode> {
         // Nothing is written to .obsidian/ here — the first bookmark EDIT
         // writes Obsidian's file, and from then on Obsidian's file wins.
         Err(_) => migrate::vault_bookmarks(root)
-            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|p| vaultfs::rel_of(root, &p).ok())
+            .and_then(|r| vaultfs::read_string(root, &r, vaultfs::CFG_MAX).ok())
             .map(|b| parse_legacy_bm(&b))
             .unwrap_or_default(),
     }
@@ -6123,7 +6184,7 @@ fn bm_emit(tree: &[BmNode], top: &[(String, serde_json::Value)]) -> String {
 /// write preserves them. Obsidian DROPS these (recon §5); we keep them — the
 /// strictly more conservative choice — re-emitted after `items`.
 fn bm_top_extra(root: &Path) -> Vec<(String, serde_json::Value)> {
-    let body = fs::read_to_string(root.join(BM_FILE)).unwrap_or_default();
+    let body = vcfg_read(root, BM_FILE).unwrap_or_default();
     match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(serde_json::Value::Object(o)) => o.into_iter().filter(|(k, _)| k != "items").collect(),
         _ => Vec::new(),
@@ -8408,11 +8469,11 @@ fn main() {
             if is_pdf_target(&target) {
                 let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).expect("pdf 404");
                 let q = pdf::parse_query(req.uri().query());
-                let p = root.as_deref().and_then(|r| pdf_path_in(r, &target));
+                let p = root.as_deref().and_then(|r| pdf_open_in(r, &target));
                 let (Some((page, w)), Some(p)) = (q, p) else {
                     return responder.respond(not_found());
                 };
-                return pdf::queue_render(p, page, w, Box::new(move |png| {
+                return pdf::queue_render_file(p, page, w, Box::new(move |png| {
                     responder.respond(match png {
                         Some(b) => tauri::http::Response::builder()
                             .status(200)

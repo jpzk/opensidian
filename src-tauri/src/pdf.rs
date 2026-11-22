@@ -20,9 +20,9 @@
 
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, OnceLock};
-use std::time::SystemTime;
 
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
@@ -77,12 +77,30 @@ pub fn parse_query(q: Option<&str>) -> Option<(usize, u32)> {
 }
 
 /// read (capped, re-checked on the stream) and parse. None for oversize,
-/// unreadable, unparseable — and for a parser panic.
+/// unreadable, unparseable — and for a parser panic. #250: `p`'s leaf is
+/// opened through vaultfs (O_NOFOLLOW|O_NONBLOCK, regular file by fstat);
+/// the app hands the worker an already-OPENED file instead (`load_file`).
 pub fn load(p: &Path) -> Option<Pdf> {
-    use std::io::Read;
-    let f = std::fs::File::open(p).ok()?;
+    load_file(&open_leaf(p)?)
+}
+
+/// #250: the leaf of `p` opened by vaultfs relative to its directory (no
+/// symlinked leaf, no FIFO/device, fstat-checked)
+fn open_leaf(p: &Path) -> Option<File> {
+    crate::vaultfs::Vault::open(p.parent()?).ok()?.open_read(Path::new(p.file_name()?)).ok()
+}
+
+/// #250: parse the PDF from an OPENED file (the inode main.rs checked),
+/// capped on the fd: size by fstat first, and the read stops at cap+1
+pub fn load_file(f: &File) -> Option<Pdf> {
+    use std::io::{Read, Seek};
+    if f.metadata().ok()?.len() > MAX_PDF_BYTES {
+        return None;
+    }
+    let mut r = f;
+    r.rewind().ok()?;
     let mut bytes = Vec::new();
-    f.take(MAX_PDF_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    r.take(MAX_PDF_BYTES + 1).read_to_end(&mut bytes).ok()?;
     if bytes.len() as u64 > MAX_PDF_BYTES {
         return None;
     }
@@ -145,17 +163,21 @@ pub fn page_png(pdf: &Pdf, page: usize, w: u32) -> Option<Vec<u8>> {
 
 pub type Reply<T> = Box<dyn FnOnce(Option<T>) + Send>;
 
+/// #250: a job carries the OPENED file, never a path: the worker reads the
+/// inode main.rs checked, however long the job waited in the queue
 enum Job {
-    Info(PathBuf, Reply<Info>),
-    Render(PathBuf, usize, u32, Reply<Arc<Vec<u8>>>),
+    Info(File, Reply<Info>),
+    Render(File, usize, u32, Reply<Arc<Vec<u8>>>),
 }
 
-/// a cache key that goes stale when the file changes on disk
-type Key = (PathBuf, Option<SystemTime>, u64);
+/// a cache key that goes stale when the file changes on disk: the opened
+/// inode (dev, ino) and its mtime + size, all by fstat on the fd
+type Key = (u64, u64, i64, i64, u64);
 
-fn key_of(p: &Path) -> Option<Key> {
-    let m = std::fs::symlink_metadata(p).ok()?;
-    Some((p.to_path_buf(), m.modified().ok(), m.len()))
+fn key_of(f: &File) -> Option<Key> {
+    use std::os::unix::fs::MetadataExt;
+    let m = f.metadata().ok()?;
+    Some((m.dev(), m.ino(), m.mtime(), m.mtime_nsec(), m.len()))
 }
 
 #[derive(Default)]
@@ -166,25 +188,25 @@ struct Worker {
 }
 
 impl Worker {
-    fn doc(&mut self, k: &Key) -> Option<&Pdf> {
+    fn doc(&mut self, k: &Key, f: &File) -> Option<&Pdf> {
         if let Some(i) = self.docs.iter().position(|(dk, _)| dk == k) {
             let e = self.docs.remove(i).expect("index in range");
             self.docs.push_front(e);
         } else {
-            let d = load(&k.0);
-            self.docs.push_front((k.clone(), d));
+            let d = load_file(f);
+            self.docs.push_front((*k, d));
             self.docs.truncate(DOC_CACHE);
         }
         self.docs.front().and_then(|(_, d)| d.as_ref())
     }
 
-    fn render(&mut self, p: &Path, page: usize, w: u32) -> Option<Arc<Vec<u8>>> {
-        let k = key_of(p)?;
-        let pk = (k.clone(), page, w);
+    fn render(&mut self, f: &File, page: usize, w: u32) -> Option<Arc<Vec<u8>>> {
+        let k = key_of(f)?;
+        let pk = (k, page, w);
         if let Some((_, b)) = self.pngs.iter().find(|(x, _)| *x == pk) {
             return Some(b.clone());
         }
-        let png = Arc::new(page_png(self.doc(&k)?, page, w)?);
+        let png = Arc::new(page_png(self.doc(&k, f)?, page, w)?);
         if png.len() <= PNG_CACHE_BYTES {
             self.png_bytes += png.len();
             self.pngs.push_front((pk, png.clone()));
@@ -199,12 +221,12 @@ impl Worker {
     fn run(mut self, rx: mpsc::Receiver<Job>) {
         for job in rx {
             match job {
-                Job::Info(p, reply) => {
-                    let r = key_of(&p).and_then(|k| self.doc(&k).map(info));
+                Job::Info(f, reply) => {
+                    let r = key_of(&f).and_then(|k| self.doc(&k, &f).map(info));
                     reply(r)
                 }
-                Job::Render(p, page, w, reply) => {
-                    let r = self.render(&p, page, w);
+                Job::Render(f, page, w, reply) => {
+                    let r = self.render(&f, page, w);
                     reply(r)
                 }
             }
@@ -225,11 +247,11 @@ fn worker() -> Option<&'static mpsc::Sender<Job>> {
     .as_ref()
 }
 
-/// queue an info request for an ALREADY-CONTAINED path (main.rs pdf_path_in)
-pub fn queue_info(p: PathBuf, reply: Reply<Info>) {
+/// queue an info request for a file main.rs already OPENED (`pdf_open_in`)
+pub fn queue_info_file(f: File, reply: Reply<Info>) {
     match worker() {
         Some(tx) => {
-            if let Err(mpsc::SendError(Job::Info(_, r))) = tx.send(Job::Info(p, reply)) {
+            if let Err(mpsc::SendError(Job::Info(_, r))) = tx.send(Job::Info(f, reply)) {
                 r(None)
             }
         }
@@ -237,14 +259,32 @@ pub fn queue_info(p: PathBuf, reply: Reply<Info>) {
     }
 }
 
-/// queue a page render for an ALREADY-CONTAINED path (main.rs pdf_path_in)
-pub fn queue_render(p: PathBuf, page: usize, w: u32, reply: Reply<Arc<Vec<u8>>>) {
+/// queue a page render for a file main.rs already OPENED (`pdf_open_in`)
+pub fn queue_render_file(f: File, page: usize, w: u32, reply: Reply<Arc<Vec<u8>>>) {
     match worker() {
         Some(tx) => {
-            if let Err(mpsc::SendError(Job::Render(_, _, _, r))) = tx.send(Job::Render(p, page, w, reply)) {
+            if let Err(mpsc::SendError(Job::Render(_, _, _, r))) = tx.send(Job::Render(f, page, w, reply)) {
                 r(None)
             }
         }
+        None => reply(None),
+    }
+}
+
+/// path form (tests, tools): the leaf is opened NOW by vaultfs, then queued
+#[allow(dead_code)]
+pub fn queue_info(p: PathBuf, reply: Reply<Info>) {
+    match open_leaf(&p) {
+        Some(f) => queue_info_file(f, reply),
+        None => reply(None),
+    }
+}
+
+/// path form (tests, tools): the leaf is opened NOW by vaultfs, then queued
+#[allow(dead_code)]
+pub fn queue_render(p: PathBuf, page: usize, w: u32, reply: Reply<Arc<Vec<u8>>>) {
+    match open_leaf(&p) {
+        Some(f) => queue_render_file(f, page, w, reply),
         None => reply(None),
     }
 }

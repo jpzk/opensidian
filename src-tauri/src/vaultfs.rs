@@ -428,10 +428,10 @@ pub fn rel_of(root: &Path, abs: &Path) -> io::Result<PathBuf> {
     abs.strip_prefix(&c).map(Path::to_path_buf).map_err(|_| refused(abs, "not under the vault root"))
 }
 
-/// a 1 MiB cap for a vault config / JSON file (.obsidian/*.json, manifests,
+/// a 4 MiB cap for a vault config / JSON file (.obsidian/*.json, manifests,
 /// plugin data): bigger than any real one, small enough that /dev/zero-like
 /// content cannot exhaust memory
-pub const CFG_MAX: u64 = 1024 * 1024;
+pub const CFG_MAX: u64 = 4 * 1024 * 1024;
 /// an 8 MiB cap for CSS (themes, snippets, plugin styles)
 pub const CSS_MAX: u64 = 8 * 1024 * 1024;
 
