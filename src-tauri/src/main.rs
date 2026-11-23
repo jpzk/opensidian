@@ -10059,6 +10059,11 @@ mod tests {
         let plg = ev.find("__osPluginHost.boot(").expect("plugin boot");
         assert!(tabs < r && r < plg, "reveal must come after the restored tabs and before plugins load");
         assert!(!ev[..r].contains("__osPluginHost"), "plugin code runs before the reveal");
+        // the boot layout is measured while the window is hidden: a resize (the map at the real
+        // size) must re-measure the #rtoggle rect, or the census keeps the unmapped viewport's rect
+        let rs = &ui[ui.find(concat!("addEventListener(\"re", "size\", () => {")).expect("resize handler")..];
+        let rs = &rs[..rs.find("\n});\n").expect("end")];
+        assert!(rs.contains(concat!("placeRTo", "ggle();")), "resize does not re-measure #rtoggle after the hidden boot");
     }
 
     /// #281: page_window adds the theme init script at creation, from the stored choice

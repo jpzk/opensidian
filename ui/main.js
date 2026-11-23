@@ -3859,6 +3859,10 @@ function sbarTok() {
 }
 let ovfT = 0;
 addEventListener("resize", () => {                 // the census must follow the window, not only UI state
+  // #281: a vault window boots HIDDEN, so the boot-time placeRToggle measured #rtoggle in the
+  // unmapped webview's viewport; re-measure once the window is mapped at its real size, or the
+  // [rt:] rect stays stale (the toggle itself is in-flow and always where CSS puts it).
+  placeRToggle();
   requestAnimationFrame(updateTitle);
   clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
 });
