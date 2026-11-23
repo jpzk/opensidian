@@ -9054,6 +9054,50 @@ mod tests {
         assert!(reread, "ZoomLevel is not re-read after android_boot in the android setup block: {:?}", &code[boot..block_end]);
     }
 
+    /// ui/mobile.js, code lines only (no line or block comments), trimmed
+    fn mobile_js_code() -> Vec<String> {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/mobile.js")).unwrap();
+        src.lines()
+            .map(str::trim)
+            .filter(|t| !(t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .map(String::from)
+            .collect()
+    }
+
+    /* PR #38 CodeAnt (mobile.js:416): a touchcancel is the OS or a scroll taking the touch
+       away, not a finished gesture. It must drop the pending swipe (t0 = null) and never run
+       swipeEnd, which would open/close a drawer or launch the Quick Action from the last point
+       of a touch the user did not finish. No JS runner on this VM / in cargo: source-level. */
+    #[test]
+    fn mobile_a_cancelled_touch_is_never_acted_on_as_a_swipe() {
+        let code = mobile_js_code();
+        assert!(code.iter().any(|l| l.starts_with("const swipeEnd = ")), "swipeEnd handler not found");
+        assert!(code.iter().any(|l| l.contains("addEventListener(\"touchend\", swipeEnd,")), "touchend must run swipeEnd");
+        let cancels: Vec<&String> = code.iter().filter(|l| l.contains("addEventListener(\"touchcancel\"")).collect();
+        assert!(!cancels.is_empty(), "no touchcancel listener");
+        assert!(cancels.iter().all(|l| !l.contains("swipeEnd")), "a touchcancel listener runs swipeEnd: {cancels:?}");
+        assert!(cancels.iter().any(|l| l.contains("t0 = null")), "touchcancel must drop the pending swipe (t0 = null): {cancels:?}");
+    }
+
+    /* PR #38 CodeAnt (mobile.js:600): the bottom-nav / header history buttons open a note
+       like the OS back does, so they take the same quiet-focus rule (quiet() before histGo),
+       or the loaded note focuses the editor and the IME covers the nav bar. */
+    #[test]
+    fn mobile_history_buttons_keep_the_keyboard_down_like_os_back() {
+        let code = mobile_js_code();
+        for (btn, dir) in [("nBack", "-1"), ("nFwd", "1")] {
+            let l = code
+                .iter()
+                .find(|l| l.starts_with(&format!("{btn}.onclick = ")))
+                .unwrap_or_else(|| panic!("{btn}.onclick not found"));
+            let q = l.find("quiet();").unwrap_or_else(|| panic!("{btn}.onclick does not call quiet(): {l}"));
+            let h = l.find(&format!("histGo({dir})")).unwrap_or_else(|| panic!("{btn}.onclick does not call histGo({dir}): {l}"));
+            assert!(q < h, "{btn}.onclick must go quiet BEFORE histGo: {l}");
+        }
+        assert!(code.iter().any(|l| l.contains("hBack.onclick = nBack.onclick") && l.contains("hFwd.onclick = nFwd.onclick")),
+            "the header history buttons must reuse the quiet bottom-nav handlers");
+    }
+
     #[test]
     fn block_lines_maps_every_top_level_block_to_its_source_line() {
         // one of each shape the scroll fixture uses. The mapping is what the
