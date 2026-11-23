@@ -208,7 +208,13 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_in_place(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut f = OpenOptions::new().write(true).create(true).truncate(true).open(t)?;
+    let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(t)?;
+    // #288 review: an existing 0644 config would keep its mode here; trust flags, spawn
+    // grants and plugin pins are owner-only on this path too (best effort: a refused
+    // chmod must not lose the write)
+    if let Err(e) = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600)) {
+        eprintln!("[cfg] chmod 0600 {}: {e}", t.display());
+    }
     f.write_all(bytes)?;
     f.sync_all()
 }
@@ -509,5 +515,29 @@ mod tests {
         assert!(e.get(key).is_none(), "a generic op created pins: {e}");
         update_in(&locks, &cfg, &[Op::PluginPinDrop { vault: "1:2".into(), plugin: "good".into() }]).unwrap();
         assert_eq!(crate::plugin_pins::pin(&read_value_in(&locks, &cfg), Some("1:2"), "good"), Ok(None));
+    }
+
+    /// #288 review (CodeAnt): the in-place fallback (create/rename refused) leaves the config
+    /// owner-only as well, even when the file existed with 0644
+    #[test]
+    fn cfgstore_in_place_fallback_is_owner_only_too() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("inplace288");
+        let (dir, locks) = (d.join("ro"), d.join("locks"));
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join(".opensidian.json");
+        fs::write(&cfg, r#"{"theme":"dark"}"#).unwrap();
+        fs::set_permissions(&cfg, fs::Permissions::from_mode(0o644)).unwrap();
+        // the directory refuses the temp file: the rename path fails with EACCES
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let w = update_in(&locks, &cfg, &[Op::Set("k".into(), serde_json::json!(1))]);
+        let mode = fs::metadata(&cfg).unwrap().permissions().mode() & 0o777;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("cfgstore_in_place_fallback_is_owner_only_too: wrote {w:?}");
+        assert!(w.is_ok(), "{w:?}");
+        assert_eq!(mode, 0o600, "the config is not owner-only after {w:?}");
+        let v: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!((v["theme"].as_str(), v["k"].as_i64()), (Some("dark"), Some(1)));
+        let _ = fs::remove_dir_all(&d);
     }
 }

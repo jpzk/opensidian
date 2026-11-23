@@ -111,10 +111,19 @@ fn valid(p: &Pin) -> bool {
 /// read main.js, manifest.json and styles.css of <vault>/.obsidian/plugins/<id> through the
 /// confinement of plugins::plugin_file_in (no symlinked dir or file, no escape, size caps)
 pub fn read_files(root: &Path, id: &str) -> Result<Files, String> {
+    read_files_with(root, id, &|_| {})
+}
+
+/// read_files with `between` run after plugin_file_in's check and before the read
+/// (tests: a concurrent writer replacing the file in that window, #288 review)
+pub(crate) fn read_files_with(root: &Path, id: &str, between: &dyn Fn(&Path)) -> Result<Files, String> {
     let read = |f: &str, cap: u64| -> Result<Option<Vec<u8>>, String> {
         match crate::plugins::plugin_file_in(root, id, f, cap).map_err(|e| format!("{id}/{f}: {e}"))? {
             None => Ok(None),
-            Some(p) => std::fs::read(&p).map(Some).map_err(|e| format!("{id}/{f}: {e}")),
+            Some(p) => {
+                between(&p);
+                crate::plugins::read_checked(&p, cap).map(Some).map_err(|e| format!("{id}/{f}: {e}"))
+            }
         }
     };
     let main = read("main.js", crate::plugins::MAX_MAIN_JS)?.ok_or_else(|| format!("{id}/main.js: missing"))?;
@@ -466,5 +475,39 @@ mod tests {
         assert!(t.contains("\"evil\\n\" version \"1.0.0\": NEW"), "{t}");
         assert!(t.contains(&format!("main.js {}…", &sha256_hex(b"module.exports=1;")[..16])), "{t}");
         assert!(ack_text("/v", &items, true).contains("damaged"));
+    }
+
+    /// #288 review (CodeAnt): plugin_file_in checks the size, then a concurrent vault writer
+    /// replaces the file. The read is of the OPEN file, bounded by the cap, never via a symlink.
+    #[test]
+    fn file_replaced_after_the_check_is_read_bounded() {
+        let r = vault("swap");
+        let main = r.join(".obsidian/plugins/good/main.js");
+        let cap = crate::plugins::MAX_MAIN_JS;
+        // grown past the cap in the window between the check and the read
+        let grow = |p: &Path| {
+            if p.ends_with("main.js") {
+                fs::OpenOptions::new().write(true).open(p).unwrap().set_len(cap + 1).unwrap();
+            }
+        };
+        let e = read_files_with(&r, "good", &grow).err().expect("a main.js grown past the cap is refused");
+        assert!(e.contains("main.js") && e.contains("too big"), "{e}");
+        // swapped for a symlink to a big file outside the plugin
+        fs::write(&main, "module.exports=1;").unwrap();
+        let outside = r.join("outside.js");
+        fs::OpenOptions::new().create(true).write(true).open(&outside).unwrap().set_len(cap + 1).unwrap();
+        let swap = |p: &Path| {
+            if p.ends_with("main.js") {
+                fs::remove_file(p).unwrap();
+                std::os::unix::fs::symlink(&outside, p).unwrap();
+            }
+        };
+        let e = read_files_with(&r, "good", &swap).err().expect("a main.js swapped for a symlink is refused");
+        assert!(e.contains("main.js") && e.contains("symlinked"), "{e}");
+        // untouched: read as before
+        fs::remove_file(&main).unwrap();
+        fs::write(&main, "module.exports=1;").unwrap();
+        assert_eq!(read_files_with(&r, "good", &|_| {}).unwrap().main, b"module.exports=1;");
+        let _ = fs::remove_dir_all(&r);
     }
 }

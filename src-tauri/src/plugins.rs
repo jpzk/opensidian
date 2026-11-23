@@ -84,6 +84,34 @@ pub fn plugin_dir_in(root: &Path, id: &str) -> Option<PathBuf> {
     (got == want && got.starts_with(&croot) && got.is_dir()).then_some(got)
 }
 
+/// #288 review: read a file plugin_file_in accepted, checking the OPEN file again:
+/// O_NOFOLLOW (a symlink swapped in after the check is refused), fstat on the fd
+/// (regular file, <= cap) and a read bounded by cap. A file replaced or grown
+/// between plugin_file_in's stat and this read can never make it allocate more
+/// than cap + 1 bytes, nor block on a FIFO / device.
+pub fn read_checked(p: &Path, cap: u64) -> Result<Vec<u8>, &'static str> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(p)
+        .map_err(|e| if e.raw_os_error() == Some(libc::ELOOP) { "symlinked file" } else { "unreadable" })?;
+    let m = f.metadata().map_err(|_| "unreadable")?;
+    if !m.is_file() {
+        return Err("not a file");
+    }
+    if m.len() > cap {
+        return Err("too big");
+    }
+    let mut b = Vec::with_capacity(m.len() as usize);
+    f.take(cap.saturating_add(1)).read_to_end(&mut b).map_err(|_| "unreadable")?;
+    if b.len() as u64 > cap {
+        return Err("too big");
+    }
+    Ok(b)
+}
+
 /// rule 5: a file inside a confined plugin dir. Ok(None) = absent, Err = refuse
 pub fn plugin_file_in(root: &Path, id: &str, file: &str, cap: u64) -> Result<Option<PathBuf>, &'static str> {
     let dir = plugin_dir_in(root, id).ok_or("plugin dir not confined")?;
@@ -121,12 +149,11 @@ pub fn wrap_cjs(id: &str, src: &str) -> String {
 /// (plugin_pins.rs, outside the vault). The bytes sent are the bytes that were hashed (read once).
 /// `vault` = the vault folder identity (plugins::TrustKey.id); `cfg` = ~/.opensidian.json.
 pub fn serve_pinned(root: Option<&Path>, path: &str, trusted: bool, cfg: &serde_json::Value, vault: Option<&str>) -> Served {
-    match serve(root, path, trusted) {
-        Served::Js(_) => {}
-        other => return other,
-    }
-    // serve() answered Js: root and id are valid here
-    let (Some(root), Some(id)) = (root, parse_path(path)) else { return Served::Refused("bad path") };
+    // rules 1-5 first; main.js is then read ONCE, by verify, and the bytes it hashed are served
+    let (root, id) = match gate(root, path, trusted) {
+        Err(s) => return s,
+        Ok((r, i, _)) => (r, i),
+    };
     match crate::plugin_pins::verify(cfg, vault, root, id) {
         Ok(f) => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&f.main)).into_bytes()),
         Err(why) => Served::Refused(why),
@@ -151,21 +178,30 @@ pub fn read_styles_pinned(root: &Path, id: &str, cfg: &serde_json::Value, vault:
 
 /// the whole decision for one request (rules 1-5), unit-testable without tauri
 pub fn serve(root: Option<&Path>, path: &str, trusted: bool) -> Served {
-    let Some(id) = parse_path(path) else { return Served::Refused("bad path") };
-    let Some(root) = root else { return Served::Refused("no vault") };
+    match gate(root, path, trusted) {
+        Err(s) => s,
+        Ok((_, id, p)) => match read_checked(&p, MAX_MAIN_JS) {
+            Ok(b) => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&b)).into_bytes()),
+            Err("unreadable") => Served::Missing,
+            Err(why) => Served::Refused(why),
+        },
+    }
+}
+
+/// rules 1-5 without reading main.js: Ok = (vault root, plugin id, main.js path)
+fn gate<'a>(root: Option<&'a Path>, path: &'a str, trusted: bool) -> Result<(&'a Path, &'a str, PathBuf), Served> {
+    let Some(id) = parse_path(path) else { return Err(Served::Refused("bad path")) };
+    let Some(root) = root else { return Err(Served::Refused("no vault")) };
     if !trusted {
-        return Served::Refused("restricted mode");
+        return Err(Served::Refused("restricted mode"));
     }
     if !enabled_ids(root).iter().any(|e| e == id) {
-        return Served::Refused("not enabled");
+        return Err(Served::Refused("not enabled"));
     }
     match plugin_file_in(root, id, "main.js", MAX_MAIN_JS) {
-        Err(why) => Served::Refused(why),
-        Ok(None) => Served::Missing,
-        Ok(Some(p)) => match fs::read(&p) {
-            Ok(b) => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&b)).into_bytes()),
-            Err(_) => Served::Missing,
-        },
+        Err(why) => Err(Served::Refused(why)),
+        Ok(None) => Err(Served::Missing),
+        Ok(Some(p)) => Ok((root, id, p)),
     }
 }
 
