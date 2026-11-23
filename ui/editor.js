@@ -2372,6 +2372,45 @@ Object.assign(Ed, {
     })), { userEvent: "input.type", scrollIntoView: true });
     return true;
   },
+  /* #291: document-navigation keys -> { to, extend } or null (null = not ours: the key goes on).
+     to: "docStart" | "docEnd" | "lineUp" | "lineDown". Measured on stock 1.13.7 (Linux, black box,
+     harness phase navkeysstock, 3200-line note, live preview + source):
+       Ctrl+Home / Ctrl+End    document start / end, scrolled into view   (+Shift: extend)
+       Ctrl+Up / Ctrl+Down     one SOURCE line up / down (not a wrapped row), same column
+                               clamped to the line, scrolled only when it leaves the view
+     macOS (platform convention, cannot run on the Linux box: unit-tested mapping only):
+       Cmd+Up / Cmd+Down       document start / end (+Shift: extend); Cmd+Home/End as before
+       Ctrl+Up / Ctrl+Down     not ours (the system's Mission Control / App windows)
+     Alt combinations and Ctrl+Shift+Up/Down are not ours (native/plugins, unchanged). */
+  navKey(e, mac) {
+    if (!e || e.altKey || e.isComposing) return null;
+    const k = e.key, ext = !!e.shiftKey, cmd = !!e.metaKey, ctl = !!e.ctrlKey;
+    if (k === "Home" || k === "End") {
+      // as before #291: either modifier is the document start / end, on every platform
+      return ctl || cmd ? { to: k === "End" ? "docEnd" : "docStart", extend: ext } : null;
+    }
+    if (k !== "ArrowUp" && k !== "ArrowDown") return null;
+    const down = k === "ArrowDown";
+    if (mac) return cmd && !ctl ? { to: down ? "docEnd" : "docStart", extend: ext } : null;
+    return ctl && !cmd && !ext ? { to: down ? "lineDown" : "lineUp", extend: false } : null;
+  },
+  isMac() { return typeof navigator !== "undefined" && /Mac/.test(navigator.platform || ""); },
+  // #291: the target of a navKey result in (line,col), from the caret's head f and the lines L
+  navTarget(nav, f, L) {
+    const last = L.length - 1;
+    if (nav.to === "docStart") return { l: 0, c: 0 };
+    if (nav.to === "docEnd") return { l: last, c: L[last].length };
+    const l = Math.max(0, Math.min(last, f.l + (nav.to === "lineDown" ? 1 : -1)));
+    if (l === f.l) return { l: f.l, c: f.c };            // first / last line: the caret stays
+    return { l, c: Math.min(f.c, L[l].length) };
+  },
+  navRun(g, nav) {
+    const cm = Ed.cm(g); if (!cm) return;
+    const f = Ed.focusPos(g), t = Ed.navTarget(nav, f, Ed.lines(g));
+    if (nav.extend) Ed.extendTo(g, t.l, t.c); else Ed.place(g, t.l, t.c);
+    // the view follows the caret (stock): nearest edge, so a move inside the view does not scroll
+    cm.dispatch({ effects: CMv.EditorView.scrollIntoView(cm.state.selection.main.head, { y: "nearest" }) });
+  },
   onKey(g, e) {
     if (!g || e.isComposing) return;
     if (typeof acKeydown === "function") { acKeydown(g, e); if (e.defaultPrevented) return; }
@@ -2392,10 +2431,15 @@ Object.assign(Ed, {
     if (k === "a" && mod) { e.preventDefault(); return Ed.selectAll(g); }
     if (k === "z" && mod) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (k === "y" && mod) { e.preventDefault(); return Ed.redo(g); }
+    // #291: the document-navigation keys run here, on the document (Ed.navKey), never as the
+    // webview's native caret move: that one only walks the RENDERED DOM, and CM6 renders a
+    // viewport, so on a note longer than it the caret stopped at the viewport edge
+    const nav = Ed.navKey(e, Ed.isMac());
+    if (nav) { e.preventDefault(); Ed.cmStart(); Ed.navRun(g, nav); return Ed.cmEnd(g); }
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
-      // Ctrl/Cmd+Home/End: document start / end; bare Home/End: the line's (smart) home / end
+      // bare Home/End: the line's (smart) home / end (Ctrl/Cmd+Home/End are Ed.navKey's)
       const f = Ed.focusPos(g) || s.b, L = Ed.lines(g), end = e.key === "End";
       const l = mod ? (end ? L.length - 1 : 0) : f.l;
       const c = mod ? (end ? L[l].length : 0) : end ? L[l].length : (f.c === Ed.homeCol(g, l) ? 0 : Ed.homeCol(g, l));
