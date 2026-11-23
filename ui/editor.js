@@ -982,7 +982,8 @@ const Ed = {
     let c = 0, n;
     while ((n = w.nextNode())) {
       const m = n.parentElement.closest(".mk");
-      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") });
+      // #278: source mode (.lp.src) reveals every marker without the .rv class (Ed.lpMk)
+      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") && !(m.closest && m.closest(".lp.src")) });
       c += n.nodeValue.length;
     }
     return out;
@@ -2916,6 +2917,25 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
 // a task row's marker prefix as Ed.block reads it: indent, any ">" quote levels (">  - [ ] x" is a
 // quoted list row too), a bullet or "N.", then "[c] ". m[0].length = the task text start (gh #46/#75)
 Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
+/* #278 (selection lag in source mode): the mark decoration of one marker element x (Ed.lpParse els) on a
+   build. Live preview hides a marker (.lp .mk) until the selection touches its token, and shows it through
+   the .rv twin (.lp .mk.rv). In SOURCE mode every marker is already shown (.lp.src .mk, style.css: each
+   .mk.rv rule has an identical .lp.src twin), so the swap paints nothing — but CM6 still tore down and
+   re-created the span of every marker the selection entered or left: on the box (probe/278-sellag,
+   20x Shift+Down on the realistic note) 4-60 span.mk childList mutations per step and a 11-23 ms render
+   per key instead of 5-8 ms. Source mode keeps the plain decoration, so a selection-only rebuild leaves
+   the marker DOM alone. */
+Ed.lpSrc = v => !!(v && v.lp && v.lp.classList && v.lp.classList.contains("src"));
+Ed.lpMk = (x, rev, src) => (rev && !src ? x.rv : x.d);
+/* #278: the lp decorations depend on source mode (Ed.lpMk), but applyMode flips .lp.src without a
+   transaction. Rebuild once when the mode differs from the one the current decorations were built for
+   (v._lpSrc, set by build) — and only then: a tab switch / re-apply in the same mode dispatches nothing. */
+Ed.lpSrcSync = function (g) {
+  const v = g && g.view, cm = v && v.cm;
+  if (!cm || !v._lpFx || v._lpSrc === undefined || v._lpSrc === Ed.lpSrc(v)) return false;
+  cm.dispatch({ effects: v._lpFx.of(null) });
+  return true;
+};
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -2958,6 +2978,7 @@ Ed.lpExt = function (v, G) {
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
+    const src = Ed.lpSrc(v); v._lpSrc = src;   // #278: source mode at this build (Ed.lpMk, Ed.lpSrcSync)
     const cur = doc.lineAt(sel.head).number;
     const tcrLeft = tcrRow !== cur ? tcrRow : -1, tp = " tcr" + (++tcrGen & 1);   // gh #75: see the tcr comment below
     let tcrNext = -1;
@@ -2998,7 +3019,7 @@ Ed.lpExt = function (v, G) {
         out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
-          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
         }
         // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
         // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)

@@ -5486,6 +5486,7 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
   if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
+  if (m !== "reading" && typeof Ed !== "undefined" && Ed.lpSrcSync) Ed.lpSrcSync(g);   // #278: source-mode marker decorations follow the flip
   /* plug-top5: plugin code blocks render in lp only. goal mt-fix: not in the lp a reading view keeps laid out either —
      a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
      refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
