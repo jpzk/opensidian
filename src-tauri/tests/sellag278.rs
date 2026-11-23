@@ -15,6 +15,10 @@
 //!   6. style.css: every rule revealing `.lp ... .X.rv` carries the `.lp.src ... .X` twin in the same
 //!      selector list — the premise that the swap is invisible in source mode. The checker itself is
 //!      shown to reject a rule without its twin.
+//!   7. Ed.lpRuns: source mode draws adjacent element ranges with the same parent and spec as one span
+//!      (Ctrl+A cost); other parents, specs, gaps, empty ranges and nesting never merge; the build uses it
+//!      only in source mode and falls back per element where an overlay touches a run.
+//!   8. style.css gives no source-mode marker ::before/::after content (a merge would drop one copy).
 #![cfg(target_os = "linux")]
 
 use javascriptcore::{ContextExt, ExceptionExt, ValueExt};
@@ -75,6 +79,19 @@ const CHECKS: &str = r#"(function () {
   if (hid(row("lp src", "mk rv")) !== "false,false") fail("nodes: a source-mode .rv marker is visible");
   if (hid(row("lp", "mk")) !== "true,false") fail("nodes: a live-preview marker without .rv stays hidden: " + hid(row("lp", "mk")));
   if (hid(row("lp", "mk rv")) !== "false,false") fail("nodes: a live-preview .rv marker is visible");
+  // 5. Ed.lpRuns (source-mode span merge): same parent + same spec + touching -> one run; else separate
+  const P1 = {}, P2 = {};
+  const runs = ks => JSON.stringify(Ed.lpRuns(ks).map(r => [r.i, r.j, r.s, r.e]));
+  const K = (s, e, pe, k) => ({ s, e, pe, k });
+  if (runs([]) !== "[]") fail("lpRuns: empty");
+  if (runs([K(0, 1, P1, "mk"), K(1, 2, P1, "mk")]) !== "[[0,2,0,2]]") fail("lpRuns: '#'+' ' must merge: " + runs([K(0, 1, P1, "mk"), K(1, 2, P1, "mk")]));
+  if (runs([K(0, 1, P1, "mk"), K(1, 2, P1, "mk"), K(2, 5, P1, "mk")]) !== "[[0,3,0,5]]") fail("lpRuns: three in a row");
+  if (runs([K(0, 1, P1, "mk"), K(1, 2, P2, "mk")]) !== "[[0,1,0,1],[1,2,1,2]]") fail("lpRuns: other parent must not merge");
+  if (runs([K(0, 1, P1, "mk"), K(1, 2, P1, "mk url")]) !== "[[0,1,0,1],[1,2,1,2]]") fail("lpRuns: other spec must not merge");
+  if (runs([K(0, 1, P1, "mk"), K(2, 3, P1, "mk")]) !== "[[0,1,0,1],[1,2,2,3]]") fail("lpRuns: a gap must not merge");
+  if (runs([K(0, 1, P1, "mk"), K(1, 1, P1, "mk"), K(1, 2, P1, "mk")]) !== "[[0,1,0,1],[1,3,1,2]]") fail("lpRuns: an empty range never extends a run: " + runs([K(0, 1, P1, "mk"), K(1, 1, P1, "mk"), K(1, 2, P1, "mk")]));
+  // nested: a child element between two siblings breaks the adjacency (pre-order), nothing merges across it
+  if (runs([K(0, 4, P1, "b"), K(0, 2, "B", "mk"), K(2, 4, "B", "mk"), K(4, 6, P1, "b")]) !== "[[0,1,0,4],[1,3,0,4],[3,4,4,6]]") fail("lpRuns: nested");
   return "ok";
 })()"#;
 
@@ -142,4 +159,66 @@ fn sellag278_css_src_twins() {
     }
     let css = std::fs::read_to_string(root().join("ui/style.css")).unwrap();
     assert!(css.contains(".lp.src .mk, .lp .mk.rv"), "style.css: the base marker reveal rule moved; re-check #278");
+}
+
+#[test]
+fn sellag278_build_merges_only_in_source() {
+    let ed = std::fs::read_to_string(root().join("ui/editor.js")).unwrap();
+    let start = ed.find("Ed.lpExt = function").expect("Ed.lpExt missing");
+    let body = &ed[start..];
+    let body = &body[..body.find("\nEd.").unwrap_or(body.len())];
+    assert!(body.contains("if (src && P.runs) for (const r of P.runs)"), "lpExt: the source-mode run merge (Ed.lpRuns) is gone or no longer gated on source mode (#278)");
+    assert!(body.contains("else for (let i = 0; i < P.els.length; i++) emit(i);"), "lpExt: live preview must keep one span per element (#278)");
+    assert!(body.contains("else for (let i = r.i; i < r.j; i++) emit(i);"), "lpExt: an overlay-touched run must fall back to its elements (#278)");
+    let p = &ed[ed.find("Ed.lpParse = function").expect("Ed.lpParse missing")..];
+    let p = &p[..p.find("\nEd.").unwrap_or(p.len())];
+    assert!(p.contains("P.runs = Ed.lpRuns(keys)"), "lpParse no longer computes the merged runs (#278)");
+}
+
+/// marker selectors (`.mk` + ::before/::after) whose generated content would differ between one merged
+/// span and two sibling spans in SOURCE mode: an unscoped or `.lp.src` rule with content other than none,
+/// or a `.lp ` rule with content whose `.lp.src` twin does not set `content: none`
+fn src_marker_content(css: &str) -> Vec<String> {
+    let mut s = String::new();
+    let mut rest = css;
+    while let Some(i) = rest.find("/*") {
+        s.push_str(&rest[..i]);
+        rest = rest[i + 2..].find("*/").map(|j| &rest[i + 2 + j + 2..]).unwrap_or("");
+    }
+    s.push_str(rest);
+    let mut rules: Vec<(Vec<String>, bool)> = Vec::new();   // (selectors, content is none/absent)
+    for chunk in s.split('}') {
+        let Some((sel, decl)) = chunk.split_once('{') else { continue };
+        let none = decl.split(';').filter_map(|d| d.split_once(':')).filter(|(k, _)| k.trim() == "content")
+            .all(|(_, v)| v.trim() == "none");
+        let sels = sel.split(',').map(|x| x.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|x| !x.is_empty()).collect();
+        rules.push((sels, none));
+    }
+    let none_sels: Vec<&String> = rules.iter().filter(|r| r.1).flat_map(|r| r.0.iter()).collect();
+    let mut bad = Vec::new();
+    for (sels, none) in &rules {
+        if *none { continue; }
+        for x in sels {
+            if !x.contains(".mk") || !(x.contains("::before") || x.contains("::after") || x.contains(":before") || x.contains(":after")) { continue; }
+            if !x.starts_with(".lp ") { bad.push(x.clone()); continue; }
+            let twin = x.replacen(".lp ", ".lp.src ", 1);
+            if !none_sels.iter().any(|n| **n == twin) { bad.push(x.clone()); }
+        }
+    }
+    bad
+}
+
+#[test]
+fn sellag278_css_no_src_marker_content() {
+    // the checker: content on a source-mode marker is caught, a .lp rule with a none twin passes
+    assert_eq!(src_marker_content(".lp .li > .mk.lim::before { content: \"\" }"), vec![".lp .li > .mk.lim::before".to_string()]);
+    assert!(src_marker_content(".lp .li > .mk.lim::before { content: \"\" } .lp.src .li > .mk.lim::before { content: none }").is_empty());
+    assert_eq!(src_marker_content(".mk::after { content: \"x\" }"), vec![".mk::after".to_string()]);
+    assert_eq!(src_marker_content(".lp.src .mk::after { content: \"x\" }"), vec![".lp.src .mk::after".to_string()]);
+    assert!(src_marker_content("/* .mk::after { content: \"x\" } */ .lp .mk::after { content: none }").is_empty());
+    for f in ["ui/style.css", "ui/tables.css", "ui/menu.css"] {
+        let css = std::fs::read_to_string(root().join(f)).unwrap();
+        let bad = src_marker_content(&css);
+        assert!(bad.is_empty(), "{f}: source-mode marker pseudo content - Ed.lpRuns merges adjacent equal marker spans in source mode, which would drop one copy (#278): {bad:?}");
+    }
 }
