@@ -55,6 +55,9 @@ pub const SECURITY_TITLE: &str = "opensidian: lower protection?";
 pub const OFFLINE_OPEN_TITLE: &str = "opensidian: open in browser while offline?";
 /// #295: the confirm before EVERY recording start of the Audio recorder (Record / Cancel, default Cancel)
 pub const MIC_TITLE: &str = "opensidian: record audio?";
+/// devaccess: the per-request consent of a Settings › Security › Device access row set to "ask"
+/// (Cancel / Allow once, default Cancel)
+pub const DEVICE_TITLE: &str = "opensidian: allow device access?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -68,6 +71,9 @@ pub enum Kind {
     OfflineOpen,
     /// #295: every recording start of the Audio recorder (main.rs audio_rec_start)
     Mic,
+    /// devaccess: one webview permission request of a Device access row set to ask
+    /// (audiorec::install_then -> ask_device); the field is the row (security::DEV_ROWS)
+    Device(&'static str),
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -366,6 +372,40 @@ pub fn security_dev_question(field: &str, new: crate::security::Mic) -> Question
     Question { head: SECURITY_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
+/// devaccess: what each Device access row's per-request consent says (Rust constants only: no
+/// origin, plugin id, URL or any other page-reported value goes into this dialog)
+pub const DEVICE_WHAT: &[(&str, &str, &str)] = &[
+    ("camera", "Allow the camera?", "Page or plugin code in this window asks to turn on your camera."),
+    ("location", "Allow your location?", "Page or plugin code in this window asks for your location."),
+    ("notifications", "Allow notifications?", "Page or plugin code in this window asks to show desktop notifications."),
+    ("pointerLock", "Allow pointer lock?", "Page or plugin code in this window asks to lock and hide your mouse pointer."),
+];
+
+/// the body of a row's per-request consent; None for a field that is not a Device access row
+pub fn device_text(field: &str) -> Option<String> {
+    let (f, _, what) = DEVICE_WHAT.iter().find(|r| r.0 == field)?;
+    let n = crate::security::dev_name(f);
+    let live = if *f == "camera" {
+        format!(" While the camera is on, the window title starts with \"{}\".", crate::audiorec::CAM_MARK.trim_end_matches(" — "))
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "{what}\n\nPress Allow once only if you yourself just did something in this window that needs \
+         it: page or plugin code can ask, but cannot answer this window.{live}\n\n\
+         This answer covers this one request only: every new request asks again. \
+         Settings › Security › Device access › {n} = off refuses every request without asking; \
+         always allow grants without asking (after a confirm)."
+    ))
+}
+
+/// devaccess: the question for ONE request of a row set to ask (Cancel / Allow once, default Cancel)
+pub fn device_question(field: &str) -> Option<Question> {
+    let head = DEVICE_WHAT.iter().find(|r| r.0 == field)?.1;
+    let text = device_text(field)?;
+    Some(Question { head: head.into(), log: text.clone(), text, remember: None, always: false })
+}
+
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
     Question { head: TRUST_HEAD.into(), log: text.clone(), text, remember: None, always: false }
@@ -519,6 +559,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
         Kind::Security => "security",
         Kind::OfflineOpen => "offline-open",
         Kind::Mic => "mic",
+        Kind::Device(_) => "device",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -539,14 +580,58 @@ const BODY_H: i32 = 320;
 
 #[cfg(target_os = "linux")]
 fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mpsc::Sender<Answer>) {
+    use gtk::glib::Cast;
+    let parent = win.gtk_window().ok().map(|w| w.upcast::<gtk::Window>());
+    present(parent, kind, q, move |a| {
+        let _ = tx.send(a);
+    });
+}
+
+/* devaccess: a Device access row set to "ask" — ONE request, one native question, asked from the
+   WebKit permission-request handler itself (GTK main thread, so nothing blocks: the request stays
+   pending until the answer arrives through `on`). Bounded like every question: a place from
+   admit() (EBUSY = refused, nothing asked; the caller denies) held until the answer, and at most
+   one device question per window at a time (a second request while one is open is refused, never
+   queued as a dialog flood). `on(true)` only for Allow once; Cancel, Escape, closing it, or a
+   field that is not a row = false. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static DEVICE_OPEN: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(Default::default());
+}
+
+#[cfg(target_os = "linux")]
+pub fn ask_device(slot: Slot, parent: Option<gtk::Window>, label: &str, field: &'static str, on: impl FnOnce(bool) + 'static) {
+    let Some(q) = device_question(field) else {
+        eprintln!("[consent] device {field}: not a Device access row; denied, nothing asked");
+        return on(false);
+    };
+    if !DEVICE_OPEN.with(|s| s.borrow_mut().insert(label.to_string())) {
+        eprintln!("[consent] device {field}: a device question is already open in {label}; denied, nothing asked");
+        return on(false);
+    }
+    eprintln!("[consent] device {field}: asking");
+    let label = label.to_string();
+    present(parent, Kind::Device(field), &q, move |a| {
+        let _slot = slot;
+        let _ = DEVICE_OPEN.try_with(|s| s.borrow_mut().remove(&label));
+        let yes = a == Answer::Once;
+        eprintln!("[consent] device {field}: {}", if yes { "allowed" } else { "denied" });
+        on(yes);
+    });
+}
+
+/// the GTK dialog: head ours, body a read-only text view, the refusing button default + focused;
+/// `on` gets the answer exactly once (closing it without a response never answers yes)
+#[cfg(target_os = "linux")]
+fn present(parent: Option<gtk::Window>, kind: Kind, q: &Question, on: impl FnOnce(Answer) + 'static) {
     use gtk::prelude::*;
-    let parent = win.gtk_window().ok();
     let (title, no, yes) = match kind {
         Kind::Trust => (TRUST_TITLE, "_Cancel", "_Trust"),
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
         Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
+        Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
@@ -594,11 +679,9 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     }
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
-    let tx = std::cell::RefCell::new(Some(tx));
+    let on = std::cell::RefCell::new(AnswerOnce(Some(Box::new(on))));
     d.connect_response(move |d, r| {
-        if let Some(tx) = tx.borrow_mut().take() {
-            let _ = tx.send(answer_of(r));
-        }
+        on.borrow_mut().give(answer_of(r));
         // SAFETY: the dialog is ours alone (no other Rust handle outlives this
         // handler); destroying a toplevel from its own response handler is the
         // documented GtkDialog pattern.
@@ -612,6 +695,27 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     d.present();
 }
 
+/// the answer callback of one dialog, called exactly once: with the response, or with No when the
+/// dialog goes away without one (its handler, and with it this, is dropped)
+#[cfg(target_os = "linux")]
+struct AnswerOnce(Option<Box<dyn FnOnce(Answer)>>);
+
+#[cfg(target_os = "linux")]
+impl AnswerOnce {
+    fn give(&mut self, a: Answer) {
+        if let Some(f) = self.0.take() {
+            f(a);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AnswerOnce {
+    fn drop(&mut self) {
+        self.give(Answer::No);
+    }
+}
+
 /// macOS: the same question as an NSAlert sheet on the window (macos::consent_alert): head as the
 /// message, the body in a read-only scrolling text view, the any-arguments note only where Always
 /// is offered. The refusing button comes FIRST, so Return answers it, as Enter does on Linux.
@@ -623,6 +727,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
         Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
+        Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
     };
     // GTK mnemonics ("_Trust") have no meaning in AppKit
     let plain = |s: &str| s.replace('_', "");
@@ -1312,5 +1417,59 @@ mod tests {
         assert!(control_work > 0, "control: an admitted request did no lookup ({control:?})");
         assert!(!matches!(&control, Err(e) if e.starts_with("EBUSY")), "control: a request with a free place was refused: {control:?}");
         assert!(all_back, "a place was not given back (control request or refused ones)");
+    }
+
+    /// devaccess: the per-request device question — one per Device access row, Rust text only,
+    /// names its switch, covers one request; no question for anything that is not a row
+    #[test]
+    fn devaccess_device_question_per_row() {
+        assert_eq!(DEVICE_WHAT.len(), crate::security::DEV_ROWS.len());
+        for (f, name, _) in crate::security::DEV_ROWS {
+            let q = device_question(f).unwrap_or_else(|| panic!("{f}: no question"));
+            let (_, head, what) = DEVICE_WHAT.iter().find(|r| r.0 == *f).unwrap();
+            assert_eq!(q.head, *head);
+            assert!(q.text.starts_with(what), "{f}");
+            assert!(q.text.contains(&format!("Settings › Security › Device access › {name} = off refuses")), "{f}: names the switch");
+            assert!(q.text.contains("this one request only"), "{f}");
+            assert!(q.text.contains("cannot answer this window"), "{f}");
+            assert_eq!(q.log, q.text);
+            assert!(!q.always && q.remember.is_none(), "{f}: no Always button, nothing remembered");
+            assert!(!q.text.contains('{') && !q.text.contains("http"), "{f}: no page data");
+        }
+        assert!(device_text("camera").unwrap().contains("● Camera"), "camera names its title mark");
+        assert!(!device_text("location").unwrap().contains("● Camera"));
+        for bad in ["", "microphone", "screen", "Camera", "camera ", "pointerlock"] {
+            assert!(device_question(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    /// devaccess: the device question's answers — only Allow once is yes
+    #[test]
+    fn devaccess_device_answers() {
+        let q = || device_question("camera").unwrap();
+        let k = Kind::Device("camera");
+        assert!(!ask_with(k, q(), |_, _, _| false), "not presented = NO");
+        assert!(!ask_with(k, q(), |_, _, tx| tx.send(Answer::No).is_ok()), "Cancel = NO");
+        assert!(!ask_with(k, q(), |_, _, tx| { drop(tx); true }), "closed without answer = NO");
+        assert!(!ask_with(k, q(), |_, _, tx| tx.send(Answer::Always).is_ok()), "Always = NO (no Remember)");
+        assert!(ask_with(k, q(), |_, _, tx| tx.send(Answer::Once).is_ok()), "Allow once = yes");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(answer_of(gtk::ResponseType::Reject), Answer::No);
+            assert_eq!(answer_of(gtk::ResponseType::DeleteEvent), Answer::No);
+            assert_eq!(answer_of(gtk::ResponseType::None), Answer::No);
+            let got = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let g2 = got.clone();
+            // a dialog dropped without a response answers No exactly once
+            let mut once = AnswerOnce(Some(Box::new(move |a| g2.borrow_mut().push(a))));
+            drop(once);
+            assert_eq!(*got.borrow(), vec![Answer::No]);
+            let g3 = got.clone();
+            once = AnswerOnce(Some(Box::new(move |a| g3.borrow_mut().push(a))));
+            once.give(Answer::Once);
+            once.give(Answer::No);
+            drop(once);
+            assert_eq!(*got.borrow(), vec![Answer::No, Answer::Once], "one answer per dialog, the first");
+        }
     }
 }

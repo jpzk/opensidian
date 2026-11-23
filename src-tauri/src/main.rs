@@ -1235,9 +1235,12 @@ fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
             eprintln!("[audiorec] indicator: no GTK window for {}", w2.label());
             return;
         };
-        let fix = |gw: &gtk::ApplicationWindow, on: bool| {
+        // devaccess: both marks in one fixed order (audiorec::title_with), so this hook and the
+        // camera hook (audiorec::cam_hook) always aim at the same title
+        let lab = w2.label().to_string();
+        let fix = move |gw: &gtk::ApplicationWindow, on: bool| {
             let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
-            if let Some(t) = audiorec::indicator_title(&cur, on) {
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(&lab)) {
                 gw.set_title(&t);
             }
         };
@@ -1265,7 +1268,7 @@ fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
     let gen = audiorec::indicator_set(win.label(), on);
     let fix = |w: &tauri::WebviewWindow, on: bool| {
         if let Ok(cur) = w.title() {
-            if let Some(t) = audiorec::indicator_title(&cur, on) {
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(w.label())) {
                 let _ = w.set_title(&t); // reason: a window being destroyed takes its title with it
             }
         }

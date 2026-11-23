@@ -112,6 +112,36 @@ pub fn decide(label: &str, kind: Kind, rows: Rows, lockdown: bool, now: Instant)
     }
 }
 
+/// the Device access row (security::DEV_ROWS field) a kind is decided by; None = no row (the
+/// microphone has its own setting, everything else is not available)
+pub fn row_field(kind: Kind) -> Option<&'static str> {
+    match kind {
+        Kind::UserMedia { audio: false, video: true, display: false } => Some("camera"),
+        Kind::Geolocation => Some("location"),
+        Kind::Notification => Some("notifications"),
+        Kind::PointerLock => Some("pointerLock"),
+        _ => None,
+    }
+}
+
+/// a request that was Ask, once its native question is answered: granted only for Allow once AND
+/// when the rule, decided AGAIN at answer time, still is not Deny (lockdown switched on, or the row
+/// set to off, while the question was open = refused)
+pub fn after_consent(yes: bool, again: Decision) -> bool {
+    yes && again != Decision::Deny
+}
+
+/// macOS (WKUIDelegate media capture, WKPermissionDecision): Allow = 1 grant, Deny = 2 deny,
+/// Ask = 0 prompt — WebKit's own native system prompt for that one request (default: Don't Allow;
+/// the page cannot answer it). Rows the macOS path has no hook for are Deny there already.
+pub fn mac_decision(d: Decision) -> isize {
+    match d {
+        Decision::Allow => 1,
+        Decision::Ask => 0,
+        Decision::Deny => 2,
+    }
+}
+
 /// the rows in force now: the stored rows (Settings › Security › Device access, read fresh from the
 /// config so a change applies to the next request) and the lockdown latch. No latch (cannot happen
 /// after main()) = lockdown: fail closed.
@@ -257,5 +287,89 @@ mod tests {
         let mac = src.find("crate::macos::media_gate(").expect("macOS gate");
         let line = &src[mac..mac + src[mac..].find('\n').unwrap()];
         assert!(line.contains("devperm::decide("), "macOS through devperm::decide: {line}");
+    }
+
+    /// the row a kind is decided by; nothing without a row maps to one
+    #[test]
+    fn devperm_row_field_only_for_rows() {
+        assert_eq!(row_field(Kind::UserMedia { audio: false, video: true, display: false }), Some("camera"));
+        assert_eq!(row_field(Kind::Geolocation), Some("location"));
+        assert_eq!(row_field(Kind::Notification), Some("notifications"));
+        assert_eq!(row_field(Kind::PointerLock), Some("pointerLock"));
+        for k in not_available() {
+            assert_eq!(row_field(k), None, "{k:?}");
+        }
+        // the microphone (with or without video) has its own setting, never a Device access row
+        for v in [false, true] {
+            assert_eq!(row_field(Kind::UserMedia { audio: true, video: v, display: false }), None);
+        }
+        // every row field is a stored security row (one name for the setting, the dialog, the log)
+        for k in [Kind::UserMedia { audio: false, video: true, display: false }, Kind::Geolocation, Kind::Notification, Kind::PointerLock] {
+            let f = row_field(k).unwrap();
+            assert!(crate::security::DEV_ROWS.iter().any(|r| r.0 == f), "{f}");
+        }
+    }
+
+    /// Ask, answered: only Allow once AND a rule that is still not Deny grants
+    #[test]
+    fn devperm_after_consent_negatives() {
+        for d in [Decision::Allow, Decision::Ask, Decision::Deny] {
+            assert!(!after_consent(false, d), "Cancel never grants ({d:?})");
+        }
+        assert!(!after_consent(true, Decision::Deny), "lockdown / off set while the question was open");
+        assert!(after_consent(true, Decision::Ask));
+        assert!(after_consent(true, Decision::Allow));
+        // the re-decision at answer time with lockdown on is Deny for every row value
+        let now = Instant::now();
+        let cam = Kind::UserMedia { audio: false, video: true, display: false };
+        for r in rows_all() {
+            for k in [cam, Kind::Geolocation, Kind::Notification, Kind::PointerLock] {
+                assert!(!after_consent(true, decide(APP, k, r, true, now)), "{k:?} {r:?}");
+            }
+        }
+    }
+
+    /// macOS: Ask = WebKit's system prompt (0), Allow = 1, Deny = 2; the app window's microphone
+    /// and a camera in lockdown are 2
+    #[test]
+    fn devperm_mac_decision_values() {
+        assert_eq!(mac_decision(Decision::Allow), 1);
+        assert_eq!(mac_decision(Decision::Ask), 0);
+        assert_eq!(mac_decision(Decision::Deny), 2);
+        let now = Instant::now();
+        let mut r = DEFAULT_ROWS;
+        r.camera = A::Ask;
+        let cam = Kind::UserMedia { audio: false, video: true, display: false };
+        assert_eq!(mac_decision(decide(APP, cam, r, false, now)), 0);
+        assert_eq!(mac_decision(decide(APP, cam, r, true, now)), 2);
+        assert_eq!(mac_decision(decide(APP, Kind::UserMedia { audio: true, video: false, display: false }, r, false, now)), 2);
+        assert_eq!(mac_decision(decide(APP, cam, DEFAULT_ROWS, false, now)), 2, "default unchanged: camera denied");
+    }
+
+    /// SOURCE SHAPE: Ask is a native question per request (never a silent allow): the handler's
+    /// Ask arm goes to dev_ask, which takes a consent place, asks consent::ask_device and grants
+    /// only through after_consent; ask_device presents Kind::Device with Cancel as the default
+    #[test]
+    fn devperm_ask_is_a_native_question() {
+        let src = include_str!("audiorec.rs");
+        let h = &src[src.find("wv.connect_permission_request(").unwrap()..];
+        let h = &h[..h.find("\n        });").unwrap()];
+        assert!(h.contains("Decision::Ask => dev_ask("), "Ask arm -> dev_ask");
+        assert!(h.contains("dev_refused("), "a refused row request names its switch");
+        let d = &src[src.find("fn dev_ask(").unwrap()..];
+        let d = &d[..d.find("\n}\n").unwrap()];
+        let admit = d.find("consent::admit()").expect("a bounded place");
+        let ask = d.find("consent::ask_device(").expect("the native question");
+        assert!(admit < ask);
+        assert!(!d[..ask].contains("req.allow()"), "nothing granted before the question");
+        assert!(d[ask..].contains("devperm::decide(") && d[ask..].contains("after_consent("), "re-decided at answer time");
+        let c = include_str!("consent.rs");
+        let a = &c[c.find("pub fn ask_device(").unwrap()..];
+        let a = &a[..a.find("\n}\n").unwrap()];
+        assert!(a.contains("present(parent, Kind::Device(field)"), "the native dialog");
+        assert!(a.contains("a == Answer::Once"), "only Allow once is yes");
+        assert!(c.contains("Kind::Device(_) => (DEVICE_TITLE, \"_Cancel\", \"_Allow once\"),"));
+        let p = &c[c.find("fn present(").unwrap()..];
+        assert!(p.contains("d.set_default_response(gtk::ResponseType::Reject);"), "default Cancel");
     }
 }

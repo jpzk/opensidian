@@ -471,14 +471,14 @@ pub fn clip_key_monitor(ns_window: usize, off: impl Fn() -> bool + 'static, refu
 
 /// WKWebView -> its window label, for the media gate (registered by audiorec::install*)
 static MEDIA_WEBVIEWS: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
-static MEDIA_DECIDE: std::sync::OnceLock<fn(&str, bool, bool) -> bool> = std::sync::OnceLock::new();
+static MEDIA_DECIDE: std::sync::OnceLock<fn(&str, bool, bool) -> isize> = std::sync::OnceLock::new();
 
 /// The macOS twin of audiorec.rs's WebKitGTK permission-request handler. wry's WKUIDelegate
 /// answers EVERY getUserMedia with Grant; this replaces that one method on wry's delegate class
 /// (class_replaceMethod, once) with a gate that asks `decide(label, audio, video)` for the webview
 /// the request came from — an unregistered webview (the app page, any other) is Deny.
 /// Main thread (with_webview).
-pub fn media_gate(wv: *mut std::ffi::c_void, label: &str, decide: fn(&str, bool, bool) -> bool) {
+pub fn media_gate(wv: *mut std::ffi::c_void, label: &str, decide: fn(&str, bool, bool) -> isize) {
     let wv = wv as *mut AnyObject;
     if wv.is_null() {
         return eprintln!("[audiorec] media gate: no webview");
@@ -525,14 +525,23 @@ unsafe extern "C-unwind" fn gate_imp(
     // WKMediaCaptureType: 0 camera, 1 microphone, 2 camera + microphone
     let (audio, video) = (kind == 1 || kind == 2, kind == 0 || kind == 2);
     let label = MEDIA_WEBVIEWS.lock().ok().and_then(|m| m.iter().find(|(p, _)| *p == webview as usize).map(|(_, l)| l.clone()));
-    let allow = match (&label, MEDIA_DECIDE.get()) {
-        (Some(l), Some(d)) => d(l, audio, video),
-        _ => false,
+    // WKPermissionDecision: 0 prompt (WebKit's native system prompt, devaccess row = ask),
+    // 1 grant, 2 deny; anything but 0 / 1 from the decision = 2
+    let dec = match (&label, MEDIA_DECIDE.get()) {
+        (Some(l), Some(d)) => match d(l, audio, video) {
+            n @ (0 | 1) => n,
+            _ => 2,
+        },
+        _ => 2,
     };
-    eprintln!("[audiorec] user-media request {} audio={audio} video={video} display=false -> {}", label.as_deref().unwrap_or("<unknown webview>"), if allow { "Allow" } else { "Deny" });
-    // WKPermissionDecision: 1 grant, 2 deny
+    let said = match dec {
+        0 => "Ask (system prompt)",
+        1 => "Allow",
+        _ => "Deny",
+    };
+    eprintln!("[audiorec] user-media request {} audio={audio} video={video} display=false -> {said}", label.as_deref().unwrap_or("<unknown webview>"));
     if let Some(h) = handler.as_ref() {
-        h.call((if allow { 1 } else { 2 },));
+        h.call((dec,));
     }
 }
 

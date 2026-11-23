@@ -256,9 +256,42 @@ pub const REC_MARK_TICK: Duration = Duration::from_millis(250);
 /// the title the window must carry: Some(new) when `cur` is not already it. On = exactly one
 /// REC_MARK, first; off = no REC_MARK anywhere (a page cannot leave a fake one either)
 pub fn indicator_title(cur: &str, on: bool) -> Option<String> {
-    let bare = cur.replace(REC_MARK, "");
-    let want = if on { format!("{REC_MARK}{bare}") } else { bare };
+    title_with(cur, on, false)
+}
+
+/* devaccess: the camera's live-capture mark, next to the recording mark. While a Camera grant
+   (Settings › Security › Device access › Camera) holds the camera of app window <label> (WebKit's
+   camera-capture-state is not None), its native title starts with CAM_MARK. Both marks are rebuilt
+   together in ONE fixed order by title_with, so the recording hook and the camera hook always aim
+   at the same title (no notify::title ping-pong), and a page cannot fake, move or drop either. */
+pub const CAM_MARK: &str = "● Camera — ";
+
+/// the title with exactly the marks that are on, first, in a fixed order (REC_MARK, then
+/// CAM_MARK); every copy of either mark elsewhere is removed. Some(new) only when it differs.
+pub fn title_with(cur: &str, rec: bool, cam: bool) -> Option<String> {
+    let bare = cur.replace(REC_MARK, "").replace(CAM_MARK, "");
+    let want = format!("{}{}{bare}", if rec { REC_MARK } else { "" }, if cam { CAM_MARK } else { "" });
     (want != cur).then_some(want)
+}
+
+/// app windows whose camera is live (WebKit camera-capture-state != None)
+static CAM_LIVE: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+/// record whether app window `label` holds the camera now
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // macOS: the system camera indicator
+pub fn cam_set(label: &str, on: bool) {
+    let mut g = CAM_LIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(Default::default);
+    if on {
+        s.insert(label.to_string());
+    } else {
+        s.remove(label);
+    }
+}
+
+/// does app window `label` hold the camera now
+pub fn cam_on(label: &str) -> bool {
+    CAM_LIVE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(label))
 }
 
 /// app window label -> the generation of its current recording indicator (absent = off)
@@ -337,7 +370,8 @@ pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl F
                 eprintln!("[audiorec] mock capture devices ON ({MOCK_ENV}=1, debug build)");
             }
         }
-        wv.connect_permission_request(move |_, req| {
+        let cam_label = label.clone();
+        wv.connect_permission_request(move |wv, req| {
             // devaccess: EVERY request is decided here by devperm::decide and answered with allow() or
             // deny(); the handler returns true on every path, so WebKit's class default (which ALLOWS
             // pointer lock) never runs. An unknown request type is Kind::Unknown = Deny.
@@ -356,16 +390,113 @@ pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl F
             eprintln!("[audiorec] permission request {ty} {kind:?} -> {verdict:?}");
             match verdict {
                 crate::devperm::Decision::Allow => req.allow(),
-                // Ask: the per-request native consent is not wired yet -> fail closed
-                crate::devperm::Decision::Ask | crate::devperm::Decision::Deny => req.deny(),
+                // Ask: ONE native question for this one request (consent::ask_device); the request
+                // stays pending until it is answered, then dev_ask allows or denies it
+                crate::devperm::Decision::Ask => dev_ask(wv, &label, kind, req.clone()),
+                crate::devperm::Decision::Deny => {
+                    dev_refused(&label, kind, lockdown);
+                    req.deny()
+                }
             }
             true
         });
+        // devaccess: the camera's live-capture title mark (CAM_MARK), from WebKit's own
+        // camera-capture-state (2.34+): not None = the camera is held by this page
+        if wv.find_property("camera-capture-state").is_some() {
+            let lab = cam_label;
+            wv.connect_notify_local(Some("camera-capture-state"), move |wv, _| {
+                let v = wv.property_value("camera-capture-state");
+                // SAFETY: the property is a GEnum (WebKitMediaCaptureState); `v` holds it
+                let st = unsafe { gtk::glib::gobject_ffi::g_value_get_enum(v.to_glib_none().0) };
+                cam_mark(wv, &lab, st != 0);
+            });
+        }
         done();
     });
     if let Err(e) = r {
         eprintln!("[audiorec] gate not installed: {e}");
     }
+}
+
+/// devaccess: a Device access row = ask. One native question (consent::ask_device: Rust constant
+/// text, default Cancel, a bounded place from consent::admit) for this one request, which stays
+/// pending meanwhile; at the answer the rule is decided AGAIN (devperm::after_consent), so lockdown
+/// or off set while the question was open still refuses. No row / no place = denied, nothing asked.
+#[cfg(target_os = "linux")]
+fn dev_ask(wv: &webkit2gtk::WebView, label: &str, kind: crate::devperm::Kind, req: webkit2gtk::PermissionRequest) {
+    use gtk::glib::Cast;
+    use gtk::prelude::WidgetExt;
+    use webkit2gtk::PermissionRequestExt;
+    let Some(field) = crate::devperm::row_field(kind) else {
+        return req.deny();
+    };
+    let Ok(slot) = crate::consent::admit() else {
+        return req.deny(); // EBUSY: too many questions open; logged by admit
+    };
+    let parent = wv.toplevel().and_then(|t| t.downcast::<gtk::Window>().ok());
+    let lab = label.to_string();
+    crate::consent::ask_device(slot, parent, label, field, move |yes| {
+        let (rows, lockdown) = crate::devperm::current();
+        let again = crate::devperm::decide(&lab, kind, rows, lockdown, Instant::now());
+        let grant = crate::devperm::after_consent(yes, again);
+        eprintln!("[devperm] {field} request in {lab}: answered {}, now {again:?} -> {}", if yes { "Allow once" } else { "Cancel" }, if grant { "Allow" } else { "Deny" });
+        if grant {
+            req.allow()
+        } else {
+            req.deny()
+        }
+    });
+}
+
+/// devaccess: a row request refused without a dialog says which switch refused it
+#[cfg(target_os = "linux")]
+fn dev_refused(label: &str, kind: crate::devperm::Kind, lockdown: bool) {
+    if let (Some(f), false) = (crate::devperm::row_field(kind), is_rec(label)) {
+        if lockdown {
+            eprintln!("[devperm] NotAllowedError: lockdown is on (Settings › Security › Lockdown forces Device access › {} off)", crate::security::dev_name(f));
+        } else {
+            eprintln!("[devperm] {}", crate::security::dev_off_text(f));
+        }
+    }
+}
+
+/// devaccess: app window label -> its camera title hook (GTK main thread only)
+#[cfg(target_os = "linux")]
+thread_local! {
+    static CAM_TITLE_HOOK: std::cell::RefCell<HashMap<String, (gtk::Window, gtk::glib::SignalHandlerId)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// devaccess: the camera of app window `label` went live (on) or was released: CAM_MARK on its
+/// native title, kept there by a notify::title hook (as the recording mark is: main.rs
+/// rec_indicator) until the camera is released. Both marks via title_with, one order.
+#[cfg(target_os = "linux")]
+fn cam_mark(wv: &webkit2gtk::WebView, label: &str, on: bool) {
+    use gtk::glib::{Cast, ObjectExt};
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
+    cam_set(label, on);
+    let Some(gw) = wv.toplevel().and_then(|t| t.downcast::<gtk::Window>().ok()) else {
+        return eprintln!("[devperm] camera indicator: no window for {label}");
+    };
+    let lab = label.to_string();
+    let fix = move |gw: &gtk::Window| {
+        let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
+        if let Some(t) = title_with(&cur, indicator_on(&lab), cam_on(&lab)) {
+            gw.set_title(&t);
+        }
+    };
+    CAM_TITLE_HOOK.with(|h| {
+        let mut h = h.borrow_mut();
+        if let Some((w, id)) = h.remove(label) {
+            w.disconnect(id);
+        }
+        fix(&gw);
+        if on {
+            let id = gw.connect_notify_local(Some("title"), move |gw, _| fix(gw));
+            h.insert(label.to_string(), (gw.clone(), id));
+        }
+    });
+    eprintln!("[devperm] camera indicator {label}: {}", if on { "on" } else { "off" });
 }
 
 /* #136 the recorder webview must be IN an on-screen window for WebKit: a page that is not in a window
@@ -488,7 +619,7 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
 pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
     let label = w.label().to_string();
     let r = w.with_webview(move |pw| {
-        crate::macos::media_gate(pw.inner(), &label, |l, a, v| { let (rows, lockdown) = crate::devperm::current(); crate::devperm::decide(l, crate::devperm::Kind::UserMedia { audio: a, video: v, display: false }, rows, lockdown, Instant::now()) == crate::devperm::Decision::Allow });
+        crate::macos::media_gate(pw.inner(), &label, |l, a, v| { let (rows, lockdown) = crate::devperm::current(); crate::devperm::mac_decision(crate::devperm::decide(l, crate::devperm::Kind::UserMedia { audio: a, video: v, display: false }, rows, lockdown, Instant::now())) });
         done();
     });
     if let Err(e) = r {
@@ -876,5 +1007,59 @@ mod tests {
         assert!(!indicator_live(w, g1) && indicator_live(w, g2), "the old ticker must stop");
         assert_eq!(indicator_set(w, false), None);
         assert!(!indicator_on(w) && !indicator_live(w, g2));
+    }
+
+    /// devaccess: both title marks — fixed order, one each, page fakes removed, and a fixed point
+    /// (the recording hook and the camera hook never fight over the title)
+    #[test]
+    fn devaccess_title_marks_both_one_order() {
+        let t = "Note - Vault - Opensidian";
+        assert_eq!(title_with(t, false, true).as_deref(), Some(format!("{CAM_MARK}{t}").as_str()));
+        let both = format!("{REC_MARK}{CAM_MARK}{t}");
+        assert_eq!(title_with(t, true, true).as_deref(), Some(both.as_str()));
+        assert_eq!(title_with(&both, true, true), None, "already right: no write");
+        let swapped = format!("{CAM_MARK}{REC_MARK}{t}");
+        assert_eq!(title_with(&swapped, true, true).as_deref(), Some(both.as_str()), "one order");
+        assert_eq!(title_with(&both, true, false).as_deref(), Some(format!("{REC_MARK}{t}").as_str()), "camera off keeps the recording mark");
+        assert_eq!(title_with(&both, false, false).as_deref(), Some(t));
+        let fake = format!("{t}{CAM_MARK}{CAM_MARK}");
+        assert_eq!(title_with(&fake, false, false).as_deref(), Some(t), "a page's fake camera mark is removed");
+        // fixed point: for every start title and state, applying the result again changes nothing
+        for start in [t.to_string(), both.clone(), swapped.clone(), fake.clone(), String::new()] {
+            for rec in [false, true] {
+                for cam in [false, true] {
+                    let once = title_with(&start, rec, cam).unwrap_or(start.clone());
+                    assert_eq!(title_with(&once, rec, cam), None, "{start:?} rec={rec} cam={cam}");
+                    assert_eq!(once.matches(REC_MARK).count(), rec as usize);
+                    assert_eq!(once.matches(CAM_MARK).count(), cam as usize);
+                }
+            }
+        }
+        // indicator_title (the recording mark alone) is unchanged
+        assert_eq!(indicator_title(t, true).as_deref(), Some(format!("{REC_MARK}{t}").as_str()));
+    }
+
+    /// devaccess: the camera-live state per window
+    #[test]
+    fn devaccess_cam_live_state() {
+        let w = "t-devacc-cam";
+        assert!(!cam_on(w));
+        cam_set(w, true);
+        assert!(cam_on(w) && !cam_on("t-devacc-other"));
+        cam_set(w, false);
+        assert!(!cam_on(w));
+    }
+
+    /// SOURCE SHAPE: the camera mark follows WebKit's own camera-capture-state, and the recording
+    /// hook in main.rs builds the title with the camera state too (one title_with, no fight)
+    #[test]
+    fn devaccess_cam_mark_wired() {
+        let src = include_str!("audiorec.rs");
+        assert!(src.contains("wv.connect_notify_local(Some(\"camera-capture-state\")"));
+        assert!(src.contains("cam_mark(wv, &lab, st != 0);"));
+        let m = include_str!("main.rs");
+        assert!(m.contains("audiorec::title_with(&cur, on, audiorec::cam_on(&lab))"), "Linux recording hook");
+        assert!(m.contains("audiorec::title_with(&cur, on, audiorec::cam_on(w.label()))"), "macOS recording ticker");
+        assert!(!m.contains("audiorec::indicator_title("), "no hook builds the title without the camera mark");
     }
 }
