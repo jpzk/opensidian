@@ -662,6 +662,24 @@ pub fn uninstall(root: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// #288 review (fail closed): forget this vault's pin of <id> FIRST, then remove the folder. A
+/// pin that could not be forgotten refuses the uninstall: otherwise the pin (the user's
+/// acknowledgement of exactly these bytes) would outlive the folder, and an identical copy put
+/// back later would load without being asked again. `vault` = the folder identity (None = no
+/// pin can exist for this vault, nothing to forget).
+pub fn uninstall_forgetting(
+    root: &Path,
+    id: &str,
+    vault: Option<String>,
+    forget: &dyn Fn(String, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    plugins::plugin_dir_in(root, id).ok_or_else(|| format!("{id}: not installed, or its folder is not confined"))?;
+    if let Some(vault) = vault {
+        forget(vault, id).map_err(|e| format!("{id}: not uninstalled: its pin could not be forgotten: {e}"))?;
+    }
+    uninstall(root, id)
+}
+
 /* ------------------------------------------------------------- commands
    async + spawn_blocking: a fetch never runs on the main (GTK) thread. */
 
@@ -704,12 +722,12 @@ pub(crate) async fn store_install(v: tauri::State<'_, crate::Vault>, id: String)
 pub(crate) async fn store_uninstall(v: tauri::State<'_, crate::Vault>, id: String) -> Result<(), String> {
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
     crate::span_timed!("store_uninstall", blocking(move || {
-        uninstall(&root, &id)?;
-        // #251: a later folder of the same id is new again
-        if let Some(vault) = plugins::trust_key(&root).id {
-            crate::cfg_update(&[crate::cfgstore::Op::PluginPinDrop { vault, plugin: id.clone() }]);
-        }
-        Ok(())
+        // #251: a later folder of the same id is new again; #288 review: the pin goes first,
+        // and a pin that cannot be forgotten keeps the plugin installed (fail closed)
+        let vault = plugins::trust_key(&root).id;
+        uninstall_forgetting(&root, &id, vault, &|vault: String, plugin: &str| {
+            crate::cfg_try_update(&[crate::cfgstore::Op::PluginPinDrop { vault, plugin: plugin.to_string() }])
+        })
     }).await)
 }
 
@@ -792,6 +810,27 @@ mod tests {
         assert!(js.contains(&format!("const API_VERSION = \"{COMPAT_APP_VERSION}\";")), "api-core.js API_VERSION drifted from COMPAT_APP_VERSION");
         let nd = include_str!("../../ui/plugins/node-desktop.js");
         assert!(nd.contains(&format!("const appVersion = () => \"{COMPAT_APP_VERSION}\";")), "node-desktop.js appVersion drifted from COMPAT_APP_VERSION");
+    }
+
+    /* #288 review (CodeAnt nitpicks api-core.js:677 and :770), checked on the shipped source:
+       (1) enable() does not swallow the styles answer: a pin refusal stops the load (teardown);
+       (2) saveEnabled() does not ask a second time for the id refresh() just asked about. */
+    #[test]
+    fn api_core_styles_refusal_stops_the_load_and_cancel_is_not_asked_twice() {
+        let js = include_str!("../../ui/plugins/api-core.js");
+        let en = &js[js.find("async function enable(id)").expect("enable")..];
+        let en = &en[..en.find("\n    }\n").expect("enable end")];
+        let st = en.find("be.io(id, \"styles\")").expect("enable reads the styles");
+        assert!(!en[st..].starts_with("be.io(id, \"styles\").catch"), "the styles refusal is swallowed");
+        let tr = en.find("} catch (e) {").expect("enable catch");
+        assert!(st < tr && en[tr..].contains("teardown(id)"), "a styles error must reach the teardown");
+        let se = &js[js.find("async function saveEnabled(id, on)").expect("saveEnabled")..];
+        let se = &se[..se.find("\n    }\n").expect("saveEnabled end")];
+        let snap = se.find("const asked = askedOnce;").expect("askedOnce read before refresh()");
+        let rf = se.find("await refresh();").expect("refresh");
+        let al = se.find("await allow([id])").expect("allow");
+        assert!(snap < rf && rf < al, "order: snapshot, refresh, allow");
+        assert!(se[..al].contains("!(askedOnce && !asked)"), "allow([id]) must be skipped when refresh() just asked");
     }
 
     #[test]
@@ -953,6 +992,29 @@ mod tests {
         assert!(outside.join("keep.txt").is_file());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    /* #288 review (CodeAnt nitpick plugin_store.rs:710): the pin is forgotten FIRST; a pin that
+       cannot be forgotten refuses the uninstall and leaves the folder, so the pin never outlives
+       it. Before: the folder was removed, then the failed pin drop was only logged. */
+    #[test]
+    fn uninstall_refuses_when_the_pin_cannot_be_forgotten() {
+        let root = vault("unpin288");
+        fs::create_dir_all(root.join(".obsidian/plugins/keep-me")).unwrap();
+        fs::write(root.join(".obsidian/plugins/keep-me/main.js"), "x").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let failing = |v: String, p: &str| -> Result<(), String> {
+            asked.borrow_mut().push((v, p.to_string()));
+            Err("config locked".into())
+        };
+        let e = uninstall_forgetting(&root, "keep-me", Some("1:2".into()), &failing).unwrap_err();
+        assert!(e.contains("not uninstalled") && e.contains("config locked"), "{e}");
+        assert!(root.join(".obsidian/plugins/keep-me/main.js").is_file(), "the folder stays while its pin does");
+        assert_eq!(*asked.borrow(), vec![("1:2".to_string(), "keep-me".to_string())]);
+        let ok = |_: String, _: &str| -> Result<(), String> { Ok(()) };
+        uninstall_forgetting(&root, "keep-me", Some("1:2".into()), &ok).unwrap();
+        assert!(!root.join(".obsidian/plugins/keep-me").exists(), "pin forgotten, then removed");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /* #251: a store install pins exactly the bytes it wrote; the pin (written by store_install

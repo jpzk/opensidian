@@ -161,7 +161,8 @@ pub fn serve_pinned(root: Option<&Path>, path: &str, trusted: bool, cfg: &serde_
 }
 
 /// #251: a plugin's styles.css through the snippet sanitizer, only while the plugin matches its pin
-/// (the css applied is the css that was hashed). None = no styles.css.
+/// (the css applied is the css that was hashed). None = no styles.css, or css the sanitizer refuses;
+/// Err = the pin refuses the plugin (the load stops, api-core.js enable).
 pub fn read_styles_pinned(root: &Path, id: &str, cfg: &serde_json::Value, vault: Option<&str>) -> Result<Option<String>, String> {
     if !valid_id(id) {
         return Err("bad plugin id".into());
@@ -170,8 +171,16 @@ pub fn read_styles_pinned(root: &Path, id: &str, cfg: &serde_json::Value, vault:
     match f.styles {
         None => Ok(None),
         Some(b) => {
-            let src = String::from_utf8(b).map_err(|e| format!("{id}/styles.css: {e}"))?;
-            crate::themefs::sanitize_css(&src).map(|s| Some(s.css)).map_err(|e| format!("{id}/styles.css: {e}"))
+            // #288 review: an error here is the PIN's (it stops the load in api-core.js, fail
+            // closed); css the sanitizer refuses is not applied and the plugin still runs, as before
+            let css = String::from_utf8(b).map_err(|e| e.to_string()).and_then(|src| crate::themefs::sanitize_css(&src).map(|s| s.css));
+            match css {
+                Ok(c) => Ok(Some(c)),
+                Err(e) => {
+                    eprintln!("[plugin] {id}/styles.css not applied: {e}");
+                    Ok(None)
+                }
+            }
         }
     }
 }
@@ -780,6 +789,25 @@ mod tests {
         assert!(matches!(serve_pinned(Some(&r), "/good/main.js", true, &cfg, None), Served::Refused(_)));
         // a damaged store: nothing
         assert_eq!(serve_pinned(Some(&r), "/good/main.js", true, &serde_json::json!({"pluginPins": 1}), v), Served::Refused("not allowed: plugin pin store damaged"));
+    }
+
+    /* #288 review (CodeAnt nitpick api-core.js:677): the styles answer is Err ONLY when the pin
+       refuses (api-core.js then stops the load); css the sanitizer refuses is not applied and is
+       not a reason to stop a plugin that matches its pin. */
+    #[test]
+    fn styles_pinned_err_means_the_pin_refused() {
+        let r = vault("pincss");
+        fs::write(r.join(".obsidian/plugins/good/manifest.json"), r#"{"id":"good","version":"1.0.0"}"#).unwrap();
+        fs::write(r.join(".obsidian/plugins/good/styles.css"), ".x{color:red} /* unclosed").unwrap();
+        let vid = trust_key(&r).id;
+        let v = vid.as_deref();
+        let mut cfg = serde_json::json!({});
+        let p = crate::plugin_pins::pin_of(&crate::plugin_pins::read_files(&r, "good").unwrap(), "ack", 1);
+        crate::plugin_pins::apply_set(&mut cfg, v.unwrap(), "good", &p);
+        assert_eq!(read_styles_pinned(&r, "good", &cfg, v), Ok(None), "refused css: not applied, not an error");
+        fs::write(r.join(".obsidian/plugins/good/styles.css"), ".x{color:blue}").unwrap();
+        assert!(read_styles_pinned(&r, "good", &cfg, v).is_err(), "changed css: the pin refuses");
+        let _ = fs::remove_dir_all(&r);
     }
 
     fn js_ok(r: &Path) -> Served {

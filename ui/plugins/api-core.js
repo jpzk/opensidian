@@ -688,7 +688,9 @@
       try {
         const m = Object.assign({ dir: ".obsidian/plugins/" + id }, manifest);
         rec.plugin = new Cls(app, m);
-        const css = await be.io(id, "styles").catch(() => null);
+        // #288 review: a styles.css refused by its pin (or unreadable) stops the load, fail closed;
+        // null = the plugin has no styles.css
+        const css = await be.io(id, "styles");
         if (typeof css === "string" && css) { rec.styleEl = document.createElement("style"); rec.styleEl.dataset.plugin = id; rec.styleEl.textContent = css; document.head.appendChild(rec.styleEl); }
         await rec.plugin.load();
       } catch (e) {
@@ -765,9 +767,12 @@
        app.plugins.enablePluginAndSave goes through saveEnabled (no onUserEnable). */
     async function saveEnabled(id, on) {
       await be.set({ id, on: !!on });
+      const asked = askedOnce;
       await refresh();
       if (!K.st.trusted) { touch(); return { ok: true, id }; }   // restricted: the choice is saved, nothing runs
-      if (on && !registry.has(id)) await allow([id]);   // #251: switched on while new / changed on disk: the native question first
+      // #251: switched on while new / changed on disk: the native question first; #288 review: not a
+      // second time when refresh() just asked (its one question listed every enabled id, this one too)
+      if (on && !registry.has(id) && !(askedOnce && !asked)) await allow([id]);
       return on ? enable(id) : disable(id);
     }
     async function setEnabled(id, on) {

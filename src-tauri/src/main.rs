@@ -2099,12 +2099,17 @@ fn cfg_value() -> serde_json::Value {
    rename. A call site names the key it changes, never a whole Value it read
    earlier (that read is stale by the time another window has written). */
 fn cfg_update(ops: &[cfgstore::Op]) {
-    let r = match spawner::client() {
+    if let Err(e) = cfg_try_update(ops) {
+        eprintln!("config write failed: {e}");
+    }
+}
+
+/// the same write, the error returned: for a caller that must not go on when it failed
+/// (#288 review: uninstall refuses when the pin could not be forgotten)
+pub(crate) fn cfg_try_update(ops: &[cfgstore::Op]) -> Result<(), String> {
+    match spawner::client() {
         Some(c) => c.cfg(ops), // confined: the unconfined spawner applies the Ops
         None => cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ()),
-    };
-    if let Err(e) = r {
-        eprintln!("config write failed: {e}");
     }
 }
 
