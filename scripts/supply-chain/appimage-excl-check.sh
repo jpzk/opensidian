@@ -10,6 +10,8 @@
 #      squashfs-root) may have a basename matching EXCL.
 #   3. --sbom: no component's opensidian:bundled-libs (webkit-bundle-sbom.sh) may list a
 #      soname matching EXCL — the SBOM must describe the slimmed bundle.
+#   4. VEX_ABSENT_RE: files whose absence four VEX not_affected entries rely on; --appdir (any file)
+#      and --sbom fail when one of them is bundled.
 # EXCL is read from the recipe exactly like webkit-bundle-sbom.sh does, so the three cannot drift.
 # rc=0 clean, rc=1 violation (each printed), rc=2 usage / unreadable input. Fails closed.
 set -euo pipefail
@@ -25,6 +27,15 @@ GUARD=(
   libcom_err.so.2 libkeyutils.so.1                                         # krb5's own deps (already host)
   libc.so.6 libX11.so.6 libwayland-client.so.0 libEGL.so.1                 # glibc / X / GL class
 )
+
+# VEX premises (supply-chain/vex.cdx.json, #298): these files are ABSENT from the bundle and four
+# not_affected entries rest on that. --appdir / --sbom fail if any of them shows up (by basename);
+# then re-triage the VEX entry named here instead of shipping a false not_affected.
+VEX_ABSENT_RE='^(xmlcatalog|systemd-journald|systemd-gpt-auto-generator|libgstrtp-1\.0\.so.*)$'
+#   xmlcatalog                  UBUNTU-CVE-2026-11979  (libxml2 xmlcatalog --shell)
+#   systemd-journald            UBUNTU-CVE-2026-40228  (journald ForwardToWall)
+#   systemd-gpt-auto-generator  UBUNTU-CVE-2026-121876
+#   libgstrtp-1.0.so*           UBUNTU-CVE-2026-125712 (gst-plugins-base RTCP SDES parser)
 
 recipe=$root/packaging/ci/build-appimage.sh; dirs=(); sboms=()
 while [ $# -gt 0 ]; do case "$1" in
@@ -50,6 +61,10 @@ for d in ${dirs[@]+"${dirs[@]}"}; do
     b=$(basename "$f")
     printf '%s\n' "$b" | grep -qE "$EXCL" && { echo "FAIL appdir: excluded library bundled: ${f#"$d"/}"; fails=1; }
   done < <(find "$d" \( -type f -o -type l \) -name '*.so*')
+  while IFS= read -r f; do
+    printf '%s\n' "$(basename "$f")" | grep -qE "$VEX_ABSENT_RE" \
+      && { echo "FAIL appdir: VEX not_affected premise broken, file is bundled: ${f#"$d"/}"; fails=1; }
+  done < <(find "$d" \( -type f -o -type l \))
   [ "$n" -gt 0 ] || die "--appdir $d: no .so files at all (wrong dir?)"
   echo "appdir $d: $n .so files checked"
 done
@@ -62,6 +77,7 @@ for j in ${sboms[@]+"${sboms[@]}"}; do
   [ -n "$libs" ] || die "--sbom $j: no opensidian:bundled-libs at all (not a bundle SBOM?)"
   while IFS= read -r b; do
     printf '%s\n' "$b" | grep -qE "$EXCL" && { echo "FAIL sbom: excluded library listed as bundled: $b ($j)"; fails=1; }
+    printf '%s\n' "$b" | grep -qE "$VEX_ABSENT_RE" && { echo "FAIL sbom: VEX not_affected premise broken, listed as bundled: $b ($j)"; fails=1; }
   done <<<"$libs"
   echo "sbom $j: $(wc -l <<<"$libs") bundled libs checked"
 done

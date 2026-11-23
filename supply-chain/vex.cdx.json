@@ -85,6 +85,48 @@
       "name": "chrono",
       "version": "0.4.45",
       "purl": "pkg:cargo/chrono@0.4.45"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/ubuntu/gst-plugins-base1.0@1.28.2-1ubuntu0.3?arch=source&distro=ubuntu-26.04",
+      "purl": "pkg:deb/ubuntu/gst-plugins-base1.0@1.28.2-1ubuntu0.3?arch=source&distro=ubuntu-26.04",
+      "name": "gst-plugins-base1.0",
+      "version": "1.28.2-1ubuntu0.3"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/ubuntu/jpeg-xl@0.11.1-6ubuntu4.2?arch=source&distro=ubuntu-26.04",
+      "purl": "pkg:deb/ubuntu/jpeg-xl@0.11.1-6ubuntu4.2?arch=source&distro=ubuntu-26.04",
+      "name": "jpeg-xl",
+      "version": "0.11.1-6ubuntu4.2"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/ubuntu/libjpeg-turbo@2.1.5-4ubuntu4?arch=source&distro=ubuntu-26.04",
+      "purl": "pkg:deb/ubuntu/libjpeg-turbo@2.1.5-4ubuntu4?arch=source&distro=ubuntu-26.04",
+      "name": "libjpeg-turbo",
+      "version": "2.1.5-4ubuntu4"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/ubuntu/libxml2@2.15.2+dfsg-0.1ubuntu0.3?arch=source&distro=ubuntu-26.04",
+      "purl": "pkg:deb/ubuntu/libxml2@2.15.2+dfsg-0.1ubuntu0.3?arch=source&distro=ubuntu-26.04",
+      "name": "libxml2",
+      "version": "2.15.2+dfsg-0.1ubuntu0.3"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/ubuntu/systemd@259.9-0ubuntu0.1?arch=source&distro=ubuntu-26.04",
+      "purl": "pkg:deb/ubuntu/systemd@259.9-0ubuntu0.1?arch=source&distro=ubuntu-26.04",
+      "name": "systemd",
+      "version": "259.9-0ubuntu0.1"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:deb/ubuntu/webkit2gtk@2.52.6-0ubuntu0.26.04.2?arch=source&distro=ubuntu-26.04",
+      "purl": "pkg:deb/ubuntu/webkit2gtk@2.52.6-0ubuntu0.26.04.2?arch=source&distro=ubuntu-26.04",
+      "name": "webkit2gtk",
+      "version": "2.52.6-0ubuntu0.26.04.2"
     }
   ],
   "vulnerabilities": [
@@ -383,6 +425,198 @@
         {
           "name": "opensidian:expires",
           "value": "2027-05-15"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2025-26416",
+      "id": "UBUNTU-CVE-2025-26416",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2025-26416"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/webkit2gtk@2.52.6-0ubuntu0.26.04.2?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). Skia SkBmpStandardCodec.cpp (initializeSwizzler) is in the webkitgtk-2.52.6 tarball but NOT in WebKit's Skia CMake source list (0 CMake mentions of SkBmpStandardCodec/SkBmpCodec; compiled Skia codecs = SkCodec core, Jpeg*, Png*, Swizzler, Sampler); 0 SkBmpStandardCodec strings in the bundled libwebkit2gtk-4.1.so.0. WebKit decodes BMP with its own BMPImageDecoder. Evidence: packaging/appimage/inventory/reachability/reach.out, packaging/appimage/inventory/reachability/reach2.out (\"codec files compiled\"). Re-check on any WebKitGTK bump."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2025-48622",
+      "id": "UBUNTU-CVE-2025-48622",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2025-48622"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/webkit2gtk@2.52.6-0ubuntu0.26.04.2?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). Adobe DNG SDK (dng_misc_opcodes.cpp ProcessArea) is not part of WebKitGTK: no dng_* file in the webkitgtk-2.52.6 Skia tree, 0 CMake mentions, 0 dng_ strings in libwebkit2gtk-4.1.so.0. Evidence: packaging/appimage/inventory/reachability/reach.out. Re-check on any WebKitGTK bump."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2026-125712",
+      "id": "UBUNTU-CVE-2026-125712",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2026-125712"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/gst-plugins-base1.0@1.28.2-1ubuntu0.3?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). The RTCP SDES parser lives in libgstrtp-1.0, which the AppImage does not bundle (bundled gst libs: allocators app audio base fft gl pbutils gstreamer tag video, both arches); 0 gst_rtcp/gst_rtp strings in all 10 bundled gst libs and libwebkit2gtk imports no gst_rtcp*. Enforced: scripts/supply-chain/appimage-excl-check.sh VEX_ABSENT_RE fails the build if libgstrtp-1.0 is bundled. Evidence: packaging/appimage/inventory/reachability/reach.out. Host gstreamer is the host's."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2026-52584",
+      "id": "UBUNTU-CVE-2026-52584",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2026-52584"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/jpeg-xl@0.11.1-6ubuntu4.2?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). DecodeImageAPNG is lib/extras/dec/apng.cc in jxl_extras (STATIC EXCLUDE_FROM_ALL in libjxl-0.11.1/lib/jxl_extras.cmake), not linked into the bundled libjxl.so.0.11 (0 DecodeImageAPNG/APNG/acTL strings). Evidence: packaging/appimage/inventory/reachability/reach.out, packaging/appimage/inventory/reachability/reach2.out."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2018-10126",
+      "id": "UBUNTU-CVE-2018-10126",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2018-10126"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/libjpeg-turbo@2.1.5-4ubuntu4?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). jpeg_fdct_16x16 is IJG libjpeg 9 SmartScale code; it occurs in 0 files of the libjpeg-turbo-2.1.5 source and 0 times in the bundled libjpeg.so.8 / libwebkit2gtk. Evidence: packaging/appimage/inventory/reachability/reach.out, packaging/appimage/inventory/reachability/reach2.out."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2026-11979",
+      "id": "UBUNTU-CVE-2026-11979",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2026-11979"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/libxml2@2.15.2+dfsg-0.1ubuntu0.3?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). The overflow is in the xmlcatalog command-line tool (--shell usershell()), not in libxml2.so; the AppImage ships only libxml2.so.16, no xmlcatalog binary (full file list: packaging/appimage/inventory/inventory-v0.9.6-x86_64.tsv). Enforced: appimage-excl-check.sh VEX_ABSENT_RE fails the build if xmlcatalog is bundled."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2026-121876",
+      "id": "UBUNTU-CVE-2026-121876",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2026-121876"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/systemd@259.9-0ubuntu0.1?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). The flaw is in systemd-gpt-auto-generator (boot-time generator); the AppImage ships only the client libraries libsystemd.so.0 / libudev.so.1, no generator binary (0 gpt-auto strings in libsystemd.so.0). Enforced: appimage-excl-check.sh VEX_ABSENT_RE. Evidence: packaging/appimage/inventory/reachability/reach.out, inventory-v0.9.6-x86_64.tsv."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
+      "bom-ref": "vex:UBUNTU-CVE-2026-40228",
+      "id": "UBUNTU-CVE-2026-40228",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2026-40228"
+      },
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/systemd@259.9-0ubuntu0.1?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Portable AppImage (#298). The flaw is in the systemd-journald daemon (ForwardToWall); the AppImage ships only libsystemd.so.0 (webkit/JSC import the sd_journal_send client call, which writes to the HOST journald), no journald binary. Enforced: appimage-excl-check.sh VEX_ABSENT_RE. Evidence: packaging/appimage/inventory/reachability/reach.out, inventory-v0.9.6-x86_64.tsv."
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
         }
       ]
     }

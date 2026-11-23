@@ -55,6 +55,23 @@ expect 1 "SBOM listing libmount mid-list" --sbom "$t/bad2.json"
 grep -q "libmount.so.1" "$t/out" || bad "libmount not named"
 expect 1 "clean AppDir but dirty SBOM" --appdir "$A" --sbom "$t/bad.json"
 
+
+# ---- VEX premises: files the not_affected entries say are absent must stay absent ----
+for p in usr/bin/xmlcatalog usr/lib/systemd/systemd-journald \
+         usr/lib/systemd/system-generators/systemd-gpt-auto-generator usr/lib/libgstrtp-1.0.so.0; do
+  cp -a "$A" "$t/bad"; mkdir -p "$t/bad/$(dirname "$p")"; : >"$t/bad/$p"
+  expect 1 "AppDir with VEX-premise file $p" --appdir "$t/bad"
+  grep -q "VEX not_affected premise broken, file is bundled: $p" "$t/out" || bad "$p not named in the output"
+  rm -rf "$t/bad"
+done
+cp -a "$A" "$t/bad"; ln -s nowhere "$t/bad/usr/lib/libgstrtp-1.0.so"
+expect 1 "AppDir with libgstrtp dangling symlink" --appdir "$t/bad"; rm -rf "$t/bad"
+cp -a "$A" "$t/ok"; : >"$t/ok/usr/lib/libgstrtsp-1.0.so.0"; : >"$t/ok/usr/lib/libxmlcatalog-not.so.1"
+expect 0 "near-miss names are not VEX premises" --appdir "$t/ok"; rm -rf "$t/ok"
+sbom "$t/bad3.json" "libgstbase-1.0.so.0,libgstrtp-1.0.so.0,libgstvideo-1.0.so.0"
+expect 1 "SBOM listing libgstrtp" --sbom "$t/bad3.json"
+grep -q "VEX not_affected premise broken, listed as bundled: libgstrtp-1.0.so.0" "$t/out" || bad "libgstrtp not named"
+
 # ---- dropping a guarded entry from EXCL is caught ----
 for drop in 'libsqlite3|' 'libgssapi_krb5|' 'libmount|' 'libdbus-1|' 'libkeyutils|'; do
   sed "s/$drop//" "$recipe" >"$t/recipe.sh"
