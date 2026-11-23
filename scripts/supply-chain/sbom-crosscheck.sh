@@ -8,6 +8,8 @@
 #                                    (missing / mismatch -> rc 1)
 #   fetch-android <dir>              android SBOMs from the latest successful SBOM scan run (artifact
 #                                    digest + .sha256 verified); prints the run id
+#   fetch-run <run> <sha> <dir>      SBOM artifacts of one release.yml run built from <sha> (digest +
+#                                    .sha256 verified, both linux arches required); prints the run id
 #   norm-osv <osv.json> <sbom-label>   osv-scanner JSON  -> normalized TSV on stdout
 #   norm-grype <grype.json> <sbom-label> grype JSON      -> normalized TSV on stdout
 #   diff <osv.tsv> <grype.tsv>       one line per finding: both|osv-only|grype-only <TAB> row
@@ -62,6 +64,45 @@ cmd_fetch_android() {
     n=$((n + 1))
   done
   [ "$n" -gt 0 ] || die "fetch-android: artifact has no SBOM"
+  printf '%s\n' "$run"
+}
+
+# fetch-run <run-id> <sha> <dir>: the CI-built SBOMs of ONE Release run (#299: scan the PR head, not only
+# the last published release). The run must be a release.yml run whose head_sha == <sha> (the commit
+# under test); takes every non-expired artifact named sbom-<ver>-<arch> / sbom-macos-<arch>, verifies
+# each zip against the artifact's sha256 digest and every SBOM against its .sha256 file. Both linux
+# arches (x86_64, aarch64: the SBOMs with the nested WebKit components) are required. Prints the run id.
+cmd_fetch_run() {
+  local run=${1:?fetch-run <run-id> <sha> <dir>} sha=${2:?} dir=${3:?} repo=${GITHUB_REPOSITORY:-jpzk/opensidian}
+  local meta wf hs a id dg name n=0 f
+  [[ "$run" =~ ^[0-9]+$ ]] || die "fetch-run: bad run id '$run'"
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "fetch-run: bad sha '$sha'"
+  meta=$(gh api "repos/$repo/actions/runs/$run" --jq '[.path, .head_sha] | join(" ")') || die "fetch-run: run $run not found"
+  read -r wf hs <<<"$meta"
+  [ "$wf" = ".github/workflows/release.yml" ] || die "fetch-run: run $run is '$wf', not release.yml"
+  [ "$hs" = "$sha" ] || die "fetch-run: run $run built $hs, not $sha"
+  mkdir -p "$dir"
+  while IFS=$'\t' read -r id dg name || [ -n "$id" ]; do
+    [[ "$id" =~ ^[0-9]+$ ]] || die "fetch-run: bad artifact id '$id'"
+    [[ "$dg" =~ ^sha256:[0-9a-f]{64}$ ]] || die "fetch-run: artifact $name has no sha256 digest"
+    gh api "repos/$repo/actions/artifacts/$id/zip" >"$dir/a.zip" || die "fetch-run: download of $name failed"
+    echo "${dg#sha256:}  $dir/a.zip" | sha256sum -c - >&2 || die "fetch-run: $name zip != digest $dg"
+    unzip -q -o -j "$dir/a.zip" '*.cdx.json' '*.cdx.json.sha256' -d "$dir" || die "fetch-run: unzip of $name failed"
+    rm -f "$dir/a.zip"
+  done < <(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100" --jq '.artifacts[]
+             | select((.expired | not) and (.name | test("^sbom-([0-9][0-9.]*-(x86_64|aarch64)|macos-[a-z0-9_]+)$")))
+             | [.id, .digest, .name] | @tsv' || die "fetch-run: cannot list artifacts of run $run")
+  for f in "$dir"/*.cdx.json; do
+    [ -f "$f" ] || continue
+    [ -f "$f.sha256" ] || die "fetch-run: $(basename "$f") has no .sha256"
+    (cd "$dir" && sha256sum -c "$(basename "$f").sha256" >&2) || die "fetch-run: sha256 mismatch for $f"
+    jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' "$f" >/dev/null || die "fetch-run: $f is not a CycloneDX SBOM"
+    n=$((n + 1))
+  done
+  for a in x86_64 aarch64; do
+    ls "$dir"/*[0-9]-"$a".cdx.json >/dev/null 2>&1 || die "fetch-run: run $run has no linux $a SBOM"
+  done
+  log "fetch-run: $n SBOM(s) from release run $run @ $sha"
   printf '%s\n' "$run"
 }
 # shared jq: id set normalization
@@ -122,9 +163,10 @@ c=${1:-}; shift || true
 case "$c" in
   fetch) cmd_fetch "$@" ;;
   fetch-android) cmd_fetch_android "$@" ;;
+  fetch-run) cmd_fetch_run "$@" ;;
   norm-osv) cmd_norm_osv "$@" ;;
   norm-grype) cmd_norm_grype "$@" ;;
   diff) cmd_diff "$@" ;;
   summary) cmd_summary "$@" ;;
-  *) die "usage: $0 fetch|fetch-android|norm-osv|norm-grype|diff|summary ..." ;;
+  *) die "usage: $0 fetch|fetch-android|fetch-run|norm-osv|norm-grype|diff|summary ..." ;;
 esac

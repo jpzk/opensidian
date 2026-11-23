@@ -62,7 +62,11 @@ on:
         description: 'also run the opt-in CodeMirror reproducible-rebuild check'
         type: boolean
         default: false
-  # no inputs since 2026-11-19 (the `attest` input fed the removed attest-sbom job)
+      sbom_run:
+        description: 'Release run id: cross-check THAT run''s CI-built SBOMs (must be built from this ref''s commit) instead of the latest release'
+        type: string
+        default: ''
+  # (the `attest` input fed the attest-sbom job, removed 2026-11-19; sbom_run added for #299)
   workflow_call:
 
 permissions:
@@ -253,8 +257,16 @@ jobs:
           osv=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")      # a bare assignment fails the step;
           grype=$(scripts/supply-chain/grype-install.sh "$RUNNER_TEMP/grype") # echo "X=$(...)" would not
           printf "OSV=%s\nGRYPE=%s\n" "$osv" "$grype" >> "$GITHUB_ENV"
-      - name: fetch + verify the latest published release's SBOMs
+      - name: fetch + verify the latest published release's SBOMs (or, with input sbom_run, that Release run's)
+        env:
+          SBOM_RUN: ${{ inputs.sbom_run }}
         run: |
+          if [ -n "${SBOM_RUN:-}" ]; then
+            # #299: the CI-built SBOMs of the commit under test (release dry_run), not the published ones
+            scripts/supply-chain/sbom-crosscheck.sh fetch-run "$SBOM_RUN" "$GITHUB_SHA" "$RUNNER_TEMP/xc/sbom" >/dev/null
+            echo "TAG=release run $SBOM_RUN @ ${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+            exit 0
+          fi
           tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
           SBOMS=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(endswith(".cdx.json"))] | join(" ")')
           [ -n "$SBOMS" ] || { echo "::error::release $tag has no *.cdx.json asset"; exit 1; }

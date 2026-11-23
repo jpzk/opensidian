@@ -87,6 +87,41 @@ printf 'a\tb\n' >"$t/short.tsv"
 ! SBOMS=x.cdx.json "$X" fetch latest "$t/f" >/dev/null 2>&1 && ok "fetch rejects non-semver tag" || bad "fetch accepted bad tag"
 ! SBOMS='../x.cdx.json' "$X" fetch v0.9.6 "$t/f" >/dev/null 2>&1 && ok "fetch rejects path in asset" || bad "fetch accepted ../"
 ! SBOMS='' "$X" fetch v0.9.6 "$t/f" >/dev/null 2>&1 && ok "fetch rejects empty SBOMS" || bad "fetch accepted empty"
+# fetch-run (head SBOMs of one Release run) against a stub gh: run metadata + artifact list + zip
+mkdir -p "$t/fr/bin" "$t/fr/src"
+for a in x86_64 aarch64 macos-x86_64; do
+  n=opensidian-0.9.7-$a.cdx.json
+  echo '{"bomFormat":"CycloneDX","components":[{"name":"c","components":[{"name":"nested"}]}]}' >"$t/fr/src/$n"
+  (cd "$t/fr/src" && sha256sum "$n" >"$n.sha256" && zip -q "../$a.zip" "$n" "$n.sha256")
+done
+dg() { echo "sha256:$(sha256sum "$t/fr/$1.zip" | cut -c1-64)"; }
+cat >"$t/fr/bin/gh" <<'G'
+#!/usr/bin/env bash
+# stub: $FR_PATH / $FR_SHA = run metadata, $FR_ARTS = artifact TSV (id digest name), $FR_DIR = zips by id
+case "$2" in
+  */artifacts/*/zip) id=${2%/zip}; id=${id##*/}; cat "$FR_DIR/$id.zip" ;;
+  */artifacts\?*) printf '%s\n' "$FR_ARTS" ;;
+  repos/*/actions/runs/*) echo "$FR_PATH $FR_SHA" ;;
+  *) exit 1 ;;
+esac
+G
+chmod +x "$t/fr/bin/gh"
+S=0123456789abcdef0123456789abcdef01234567
+cp "$t/fr/x86_64.zip" "$t/fr/1.zip"; cp "$t/fr/aarch64.zip" "$t/fr/2.zip"; cp "$t/fr/macos-x86_64.zip" "$t/fr/3.zip"
+arts=$(printf '%s\t%s\t%s\n' 1 "$(dg 1)" sbom-0.9.7-x86_64 2 "$(dg 2)" sbom-0.9.7-aarch64 3 "$(dg 3)" sbom-macos-x86_64)
+fr() { PATH=$t/fr/bin:$PATH FR_DIR=$t/fr FR_PATH=${P:-.github/workflows/release.yml} FR_SHA=${H:-$S} FR_ARTS=${A:-$arts} \
+       "$X" fetch-run 42 "$S" "$1"; }
+r=$(fr "$t/fr/o1" 2>/dev/null) && [ "$r" = 42 ] && [ "$(ls "$t/fr/o1"/*.cdx.json | wc -l)" = 3 ] \
+  && ok "fetch-run: release run @ sha -> 3 SBOMs (2 linux + macOS), digests + .sha256 verified" || bad "fetch-run good case"
+! H=fedcba9876543210fedcba9876543210fedcba98 fr "$t/fr/o2" >/dev/null 2>&1 && ok "fetch-run: run built another sha -> fail" || bad "fetch-run accepted other sha"
+! P=.github/workflows/ci.yml fr "$t/fr/o3" >/dev/null 2>&1 && ok "fetch-run: not a release.yml run -> fail" || bad "fetch-run accepted non-release run"
+cp "$t/fr/aarch64.zip" "$t/fr/1.zip"   # artifact 1 now differs from its listed digest
+! fr "$t/fr/o4" >/dev/null 2>&1 && ok "fetch-run: zip != artifact digest -> fail" || bad "fetch-run accepted digest mismatch"
+cp "$t/fr/x86_64.zip" "$t/fr/1.zip"
+! A=$(printf '%s\n' "$arts" | grep -v aarch64) fr "$t/fr/o5" >/dev/null 2>&1 && ok "fetch-run: linux aarch64 SBOM missing -> fail" || bad "fetch-run accepted missing arch"
+! A=$(printf '%s\n' "$arts" | grep -v sbom-0.9.7-x86_64) fr "$t/fr/o6" >/dev/null 2>&1 && ok "fetch-run: only macOS x86_64 (no linux x86_64) -> fail" || bad "fetch-run took macOS for linux"
+! "$X" fetch-run 4x2 "$S" "$t/fr/o7" >/dev/null 2>&1 && ok "fetch-run: bad run id refused" || bad "fetch-run bad run id"
+! "$X" fetch-run 42 HEAD "$t/fr/o8" >/dev/null 2>&1 && ok "fetch-run: non-sha refused" || bad "fetch-run bad sha"
 # grype-install.sh: pin-file validation happens before any download
 gi() { GRYPE_PINS=$t/p "$here/grype-install.sh" "$t/gi" >/dev/null 2>&1; }
 printf 'version v0.120.1\nsha256 amd64 abc\n' >"$t/p"; ! gi && ok "malformed sha256 refused" || bad "malformed sha256 accepted"
