@@ -9,19 +9,34 @@
         plugin_store::http_get: https only, exact host allowlist, redirects
         re-checked by hand, byte caps, anonymous);
      2. keeps published, non-draft, non-prerelease releases whose tag is a plain
-        numeric version (v0.6.2, v0.4), and takes the highest;
-     3. downloads THAT release's SHA256SUMS and SHA256SUMS.asc (and nothing
-        else: no installer, no binary);
-     4. verifies the detached OpenPGP signature over SHA256SUMS against the
-        key EMBEDDED in this binary (data/updates/opensidian-release.pub.asc),
-        whose v4 fingerprint must equal PINNED_FPR — the full 40 hex digits,
-        never just the key id — and requires the signature's issuer
-        fingerprint subpacket to be that same fingerprint;
-     5. requires every line of the signed SHA256SUMS to name a file of THIS
-        version (opensidian-<ver>-…), so an old release's genuinely signed sums
-        re-attached to a newer tag are not a signature for that tag.
-   A release that fails 3-5 is reported "NOT signed (or signature invalid) —
-   ignored" and is never offered.
+        numeric version (v0.6.2, v0.4), highest first;
+     3. for each, highest first, until one verifies (#294 F-58, at most
+        MAX_TRIES downloads of a sums pair): downloads THAT release's SHA256SUMS
+        and SHA256SUMS.asc (and nothing else: no installer, no binary);
+     4. verifies the detached OpenPGP signature over SHA256SUMS against a key
+        EMBEDDED in this binary (data/updates/opensidian-release.pub.asc, and the
+        SUCCESSOR slot once the operator fills it, #294 F-84), whose v4
+        fingerprint must equal the pinned one — the full 40 hex digits, never
+        just the key id — and requires the signature's issuer fingerprint
+        subpacket to be that same fingerprint and a creation-time subpacket;
+     5. parses the signed SHA256SUMS into name -> sha256 and requires every line
+        to name a file of THIS version (opensidian-<ver>-…), so an old release's
+        genuinely signed sums re-attached to a newer tag are not a signature for
+        that tag;
+     6. (#294 F-11) requires EVERY downloadable asset GitHub lists for the
+        release to be named in the signed sums, and GitHub's own sha256 `digest`
+        of it to equal the signed value. An unlisted extra asset, a missing or
+        different digest = "release assets do not match the signed checksums",
+        never offered. The signature covers the sums; this step is what makes the
+        verdict say something about the files the release link leads to.
+   The offered release is the highest that passes 3-6. Every higher one that
+   failed is shown as a warning (unsigned / assets do not match). The highest
+   version that ever passed is remembered in ~/.opensidian.json (SEEN_KEY, a
+   monotonic cfgstore Op, outside any vault); a check whose best verified
+   release is below it reports "rollback" and offers nothing (a hidden newer
+   release, a frozen list). The verdict names the signer and shows the signed
+   sha256 of this platform's release file: the user verifies the download
+   against it — the app itself never downloads or installs a release.
 
    The OpenPGP subset is deliberately tiny and strict: ASCII armor, v4
    signature packets of type 0x00 (binary document), EdDSA (algo 22) over
@@ -30,11 +45,13 @@
    SHA-2 is the already-locked sha2. SHA-1 appears ONLY to compute the v4
    fingerprint of the compile-time embedded key (RFC 4880 12.2 mandates it);
    no downloaded byte is ever hashed with it. The armor CRC-24 is not checked:
-   the signature is the integrity check, a CRC adds nothing over it. */
+   the signature is the integrity check, a CRC adds nothing over it. Key
+   rotation and revocation: docs/RELEASING.md "Release key lifecycle". */
 
 use crate::plugin_store::{self, Fetch};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::BTreeMap;
 
 pub const REPO: &str = "jpzk/opensidian";
 const RELEASES_URL: &str = "https://api.github.com/repos/jpzk/opensidian/releases?per_page=30";
@@ -42,13 +59,30 @@ const RELEASES_URL: &str = "https://api.github.com/repos/jpzk/opensidian/release
 pub const PINNED_KEY_ASC: &str = include_str!("../data/updates/opensidian-release.pub.asc");
 /// its full v4 fingerprint; the embedded key is refused unless it hashes to this
 pub const PINNED_FPR: &str = "A6E69ED6BC4779F3281721484CC1AFDE15B64EA3";
+/// #294 F-84: the second pinned slot, for the offline SUCCESSOR key: (armored public
+/// key, its full v4 fingerprint). EMPTY until the operator creates that key offline
+/// (docs/RELEASING.md "Release key lifecycle"); no key material is ever generated
+/// here. Filled, a signature by EITHER key verifies, each pinned the same strict way.
+pub const SUCCESSOR: Option<(&str, &str)> = None;
+/// ~/.opensidian.json key: the highest version whose release fully verified (F-58)
+pub const SEEN_KEY: &str = "updateSeen";
 const MAX_RELEASES_JSON: u64 = 2 * 1024 * 1024;
 const MAX_SUMS: u64 = 64 * 1024;
 const MAX_ASC: u64 = 16 * 1024;
+/// at most this many releases have their sums pair downloaded per check
+const MAX_TRIES: usize = 5;
 
 /// "A6E6…4EA3" — how the UI names the signer
 pub fn short_fpr() -> String {
-    format!("{}…{}", &PINNED_FPR[..4], &PINNED_FPR[PINNED_FPR.len() - 4..])
+    short_of(PINNED_FPR)
+}
+
+/// the short form of any full fingerprint
+pub fn short_of(f: &str) -> String {
+    match (f.get(..4), f.get(f.len().saturating_sub(4)..)) {
+        (Some(a), Some(b)) if f.len() >= 8 => format!("{a}…{b}"),
+        _ => f.to_string(),
+    }
 }
 
 /* ------------------------------------------------------------ armor/base64 */
@@ -167,15 +201,30 @@ pub struct PinnedKey {
 
 /// the embedded key: its primary key packet must be v4 Ed25519 AND hash to PINNED_FPR
 pub fn pinned_key() -> Result<PinnedKey, String> {
-    let bin = dearmor(PINNED_KEY_ASC, "PUBLIC KEY BLOCK")?;
+    load_key(PINNED_KEY_ASC, PINNED_FPR)
+}
+
+/// every key a release signature may be by: the current one, plus the successor once
+/// its slot is filled. A filled slot that does not load is an error (fail closed).
+pub fn trusted_keys() -> Result<Vec<PinnedKey>, String> {
+    let mut keys = vec![pinned_key()?];
+    if let Some((asc, fpr)) = SUCCESSOR {
+        keys.push(load_key(asc, fpr).map_err(|e| format!("successor slot: {e}"))?);
+    }
+    Ok(keys)
+}
+
+/// an armored key whose primary key packet must be v4 Ed25519 AND hash to `want`
+pub fn load_key(asc: &str, want: &str) -> Result<PinnedKey, String> {
+    let bin = dearmor(asc, "PUBLIC KEY BLOCK")?;
     let pk = packets(&bin)?;
     let body = match pk.first() {
         Some((6, b)) => *b,
         _ => return Err("pinned key: no primary public-key packet".into()),
     };
     let fpr = v4_fingerprint(body);
-    if hex(&fpr) != PINNED_FPR {
-        return Err(format!("pinned key: fingerprint {} is not the pinned {PINNED_FPR}", hex(&fpr)));
+    if want.len() != 40 || hex(&fpr) != want {
+        return Err(format!("pinned key: fingerprint {} is not the pinned {want}", hex(&fpr)));
     }
     // v4 | created(4) | algo 22 | oid len | oid | MPI(263 bits) = 0x40 || key(32)
     if body.len() != 6 + 1 + ED25519_OID.len() + 2 + 33
@@ -283,8 +332,10 @@ pub fn verify_packet(key: &PinnedKey, data: &[u8], sig: &[u8]) -> Result<(), Str
     if p != sig.len() {
         return Err("signature: trailing bytes".into());
     }
-    // the hashed subpackets: issuer fingerprint REQUIRED and pinned; unknown critical = refuse
+    // the hashed subpackets: issuer fingerprint REQUIRED and pinned, creation time
+    // REQUIRED (#294 F-84: exactly one, 4 bytes); unknown critical = refuse
     let mut issuer_ok = false;
+    let mut created: Option<u32> = None;
     let mut s = hashed;
     while !s.is_empty() {
         let (len, hl) = match s[0] {
@@ -305,7 +356,13 @@ pub fn verify_packet(key: &PinnedKey, data: &[u8], sig: &[u8]) -> Result<(), Str
                 issuer_ok = true;
             }
             16 if d.len() == 8 && d != &key.fpr[12..] => return Err("signed by another key id, not the pinned key".into()),
-            2 | 16 => {}
+            2 => {
+                if d.len() != 4 || created.is_some() {
+                    return Err("signature: malformed or repeated creation time".into());
+                }
+                created = Some(u32::from_be_bytes([d[0], d[1], d[2], d[3]]));
+            }
+            16 => {}
             3 => return Err("signature: carries an expiration time, not accepted".into()),
             _ if critical => return Err(format!("signature: unknown critical subpacket {t}")),
             _ => {}
@@ -314,6 +371,9 @@ pub fn verify_packet(key: &PinnedKey, data: &[u8], sig: &[u8]) -> Result<(), Str
     }
     if !issuer_ok {
         return Err("signature: no issuer fingerprint, cannot pin the signer".into());
+    }
+    if created.is_none() {
+        return Err("signature: no creation time subpacket, refused".into());
     }
     // RFC 4880 5.2.4: data || hashed part || 0x04 0xFF || be32(len(hashed part))
     let part = &sig[..6 + hlen];
@@ -329,41 +389,145 @@ pub fn verify_packet(key: &PinnedKey, data: &[u8], sig: &[u8]) -> Result<(), Str
     key.pk.verify(&digest, &sig).map_err(|_| "signature does not verify against the pinned key".to_string())
 }
 
-/// a detached armored signature over `data`, by the pinned key
-pub fn verify_detached(data: &[u8], asc: &[u8]) -> Result<(), String> {
-    let key = pinned_key()?;
+/// a detached armored signature over `data`, by a trusted key; Ok = the signer's
+/// full fingerprint (hex)
+pub fn verify_detached(data: &[u8], asc: &[u8]) -> Result<String, String> {
+    verify_detached_with(&trusted_keys()?, data, asc).map(|f| hex(&f))
+}
+
+/// the same against an explicit key set (the successor-slot tests pass a TEST key)
+pub fn verify_detached_with(keys: &[PinnedKey], data: &[u8], asc: &[u8]) -> Result<[u8; 20], String> {
     let text = std::str::from_utf8(asc).map_err(|_| "signature: not ASCII armor")?;
     let bin = dearmor(text, "SIGNATURE")?;
     let pk = packets(&bin)?;
     if pk.is_empty() || pk.iter().any(|(t, _)| *t != 2) {
         return Err("signature: the .asc must hold signature packets only".into());
     }
+    if keys.is_empty() {
+        return Err("signature: no trusted key".into());
+    }
+    // the reported reason: the one from a key the signature names, else "another key"
     let mut last = String::new();
     for (_, body) in pk {
-        match verify_packet(&key, data, body) {
-            Ok(()) => return Ok(()),
-            Err(e) => last = e,
+        for key in keys {
+            match verify_packet(key, data, body) {
+                Ok(()) => return Ok(key.fpr),
+                Err(e) => {
+                    if last.is_empty() || !e.starts_with("signed by another key") {
+                        last = e;
+                    }
+                }
+            }
         }
     }
     Err(last)
 }
 
-/// every line of the signed sums names a file of THIS version
-pub fn sums_cover_version(sums: &[u8], ver: &str) -> Result<(), String> {
+/// the signed SHA256SUMS as file name -> lowercase sha256; every line must name a
+/// file of THIS version, no name twice, at least one line
+pub fn parse_sums(sums: &[u8], ver: &str) -> Result<BTreeMap<String, String>, String> {
     let t = std::str::from_utf8(sums).map_err(|_| "SHA256SUMS: not text")?;
     let want = format!("opensidian-{ver}-");
-    let mut n = 0;
+    let mut map = BTreeMap::new();
     for l in t.lines().filter(|l| !l.trim().is_empty()) {
         let (h, name) = l.split_once("  ").ok_or("SHA256SUMS: malformed line")?;
         if h.len() != 64 || !h.bytes().all(|c| c.is_ascii_hexdigit()) || !name.starts_with(&want) || name.contains('/') {
             return Err(format!("SHA256SUMS: line {l:?} is not a {ver} release file"));
         }
-        n += 1;
+        if map.insert(name.to_string(), h.to_ascii_lowercase()).is_some() {
+            return Err(format!("SHA256SUMS: {name} is listed twice"));
+        }
     }
-    if n == 0 {
+    if map.is_empty() {
         return Err("SHA256SUMS: empty".into());
     }
+    Ok(map)
+}
+
+/// every line of the signed sums names a file of THIS version
+pub fn sums_cover_version(sums: &[u8], ver: &str) -> Result<(), String> {
+    parse_sums(sums, ver).map(|_| ())
+}
+
+/// #294 F-11: every downloadable asset GitHub lists is in the signed sums, and its
+/// GitHub sha256 digest is the signed value. The sums pair itself is not a download.
+pub fn assets_match(assets: &[Asset], signed: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut n = 0;
+    for a in assets.iter().filter(|a| a.name != "SHA256SUMS" && a.name != "SHA256SUMS.asc") {
+        let want = signed.get(&a.name).ok_or_else(|| format!("asset {:?} is not listed in the signed SHA256SUMS", a.name))?;
+        let got = a.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).map(str::to_ascii_lowercase);
+        match got {
+            Some(g) if g == *want => n += 1,
+            Some(_) => return Err(format!("asset {:?}: GitHub's sha256 differs from the signed SHA256SUMS", a.name)),
+            None => return Err(format!("asset {:?}: GitHub reports no sha256 digest", a.name)),
+        }
+    }
+    if n == 0 {
+        return Err("release has no downloadable asset".into());
+    }
     Ok(())
+}
+
+/* ------------------------------------------------------------- platform */
+
+/// what the running build is, for picking ITS release file out of the signed sums
+#[derive(Clone, Debug, Default)]
+pub struct Host {
+    pub os: String,
+    pub arch: String,
+    pub flatpak: bool,
+    /// $APPIMAGE (the runtime sets it to the image path)
+    pub appimage: Option<String>,
+    pub debian: bool,
+    pub rpm: bool,
+}
+
+/// this process. Only picks which signed hash is SHOWN; never part of the verdict.
+pub fn host() -> Host {
+    let p = |f: &str| std::path::Path::new(f).exists();
+    Host {
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+        flatpak: std::env::var_os("FLATPAK_ID").is_some() || p("/.flatpak-info"),
+        appimage: std::env::var("APPIMAGE").ok().filter(|s| !s.is_empty()),
+        debian: p("/etc/debian_version"),
+        rpm: p("/etc/redhat-release") || p("/etc/fedora-release") || p("/etc/SuSE-release"),
+    }
+}
+
+/// the release file names for this host, best match first
+pub fn platform_names(ver: &str, h: &Host) -> Vec<String> {
+    let a = h.arch.as_str();
+    let suf: Vec<String> = match h.os.as_str() {
+        "linux" => {
+            let mut v = vec![];
+            if h.flatpak {
+                v.push(format!("{a}.flatpak"));
+            }
+            if let Some(img) = &h.appimage {
+                let kind = if img.contains("portable") { "portable" } else { "slim" };
+                v.push(format!("{a}-{kind}.AppImage"));
+            }
+            if v.is_empty() && h.debian {
+                v.push(format!("{a}.deb"));
+            }
+            if v.is_empty() && h.rpm {
+                v.push(format!("{a}.rpm"));
+            }
+            if v.is_empty() {
+                v.push(format!("{a}-slim.AppImage"));
+            }
+            v
+        }
+        "macos" => vec!["universal.dmg".into(), format!("macos-{a}-unsigned.app.zip")],
+        _ => vec![],
+    };
+    suf.into_iter().map(|s| format!("opensidian-{ver}-{s}")).collect()
+}
+
+/// (file, signed sha256) of this host's release file, if the signed sums list one
+pub fn platform_artefact(ver: &str, h: &Host, signed: &BTreeMap<String, String>) -> Option<(String, String)> {
+    platform_names(ver, h).into_iter().find_map(|n| signed.get(&n).map(|s| (n.clone(), s.clone())))
 }
 
 /* -------------------------------------------------------------- releases */
@@ -375,6 +539,17 @@ pub struct Candidate {
     pub asc: Option<String>,
 }
 
+/// one asset GitHub lists: its name and GitHub's "sha256:<hex>" digest
+pub struct Asset {
+    pub name: String,
+    pub digest: Option<String>,
+}
+
+pub struct Release {
+    pub c: Candidate,
+    pub assets: Vec<Asset>,
+}
+
 /// "v0.6.2" -> "0.6.2"; only plain numeric dotted versions (1-3 parts) count
 pub fn tag_version(tag: &str) -> Option<String> {
     let v = tag.strip_prefix('v').unwrap_or(tag);
@@ -383,10 +558,11 @@ pub fn tag_version(tag: &str) -> Option<String> {
         .then(|| v.to_string())
 }
 
-/// the highest published, non-draft, non-prerelease release in the list
-pub fn pick_latest(b: &[u8]) -> Result<Option<Candidate>, String> {
+/// every published, non-draft, non-prerelease numeric release, highest first
+/// (equal versions keep the list's order)
+pub fn releases(b: &[u8]) -> Result<Vec<Release>, String> {
     let v: Value = serde_json::from_slice(b).map_err(|e| format!("releases: not JSON ({e})"))?;
-    let mut best: Option<Candidate> = None;
+    let mut out: Vec<Release> = Vec::new();
     for r in v.as_array().ok_or("releases: not a list")? {
         if r["draft"].as_bool() != Some(false) || r["prerelease"].as_bool() != Some(false) {
             continue;
@@ -396,63 +572,211 @@ pub fn pick_latest(b: &[u8]) -> Result<Option<Candidate>, String> {
         }
         let tag = r["tag_name"].as_str().unwrap_or("");
         let Some(version) = tag_version(tag) else { continue };
-        if best.as_ref().is_some_and(|b| !plugin_store::version_gt(&version, &b.version)) {
-            continue;
-        }
+        let list: Vec<&Value> = r["assets"].as_array().into_iter().flatten().collect();
         let asset = |n: &str| {
-            r["assets"].as_array().into_iter().flatten()
-                .find(|a| a["name"].as_str() == Some(n))
-                .and_then(|a| a["browser_download_url"].as_str())
-                .map(str::to_string)
+            list.iter().find(|a| a["name"].as_str() == Some(n)).and_then(|a| a["browser_download_url"].as_str()).map(str::to_string)
         };
-        best = Some(Candidate { tag: tag.to_string(), version, sums: asset("SHA256SUMS"), asc: asset("SHA256SUMS.asc") });
+        let c = Candidate { tag: tag.to_string(), version, sums: asset("SHA256SUMS"), asc: asset("SHA256SUMS.asc") };
+        let assets = list
+            .iter()
+            .map(|a| Asset { name: a["name"].as_str().unwrap_or("").to_string(), digest: a["digest"].as_str().map(str::to_string) })
+            .collect();
+        out.push(Release { c, assets });
     }
-    Ok(best)
+    out.sort_by(|a, b| {
+        use std::cmp::Ordering::*;
+        if plugin_store::version_gt(&b.c.version, &a.c.version) {
+            Greater
+        } else if plugin_store::version_gt(&a.c.version, &b.c.version) {
+            Less
+        } else {
+            Equal
+        }
+    });
+    Ok(out)
+}
+
+/// the highest published, non-draft, non-prerelease release in the list
+pub fn pick_latest(b: &[u8]) -> Result<Option<Candidate>, String> {
+    Ok(releases(b)?.into_iter().next().map(|r| r.c))
+}
+
+/// a release whose SHA256SUMS signature verified
+pub struct Signed {
+    /// the signer's full fingerprint
+    pub fpr: String,
+    /// the signed sums, name -> sha256
+    pub map: BTreeMap<String, String>,
 }
 
 /// the signature status of one release; Err(reason) = never offered
-fn signed(fetch: Fetch, c: &Candidate) -> Result<(), String> {
+fn signed(fetch: Fetch, c: &Candidate) -> Result<Signed, String> {
     let (Some(su), Some(au)) = (c.sums.as_deref(), c.asc.as_deref()) else {
         return Err("release has no SHA256SUMS / SHA256SUMS.asc".into());
     };
     let sums = fetch(su, MAX_SUMS, "SHA256SUMS")?;
     let asc = fetch(au, MAX_ASC, "SHA256SUMS.asc")?;
-    verify_detached(&sums, &asc)?;
-    sums_cover_version(&sums, &c.version)
+    let fpr = verify_detached(&sums, &asc)?;
+    Ok(Signed { fpr, map: parse_sums(&sums, &c.version)? })
+}
+
+/// why a release is not offered
+#[derive(Debug)]
+pub enum Fail {
+    /// no / bad signature over SHA256SUMS, or sums not of this version
+    Unsigned(String),
+    /// signed sums, but the release's assets do not match them (F-11)
+    Mismatch(String),
+}
+
+impl Fail {
+    fn kind(&self) -> &'static str {
+        match self {
+            Fail::Unsigned(_) => "unsigned",
+            Fail::Mismatch(_) => "mismatch",
+        }
+    }
+    fn reason(&self) -> &str {
+        match self {
+            Fail::Unsigned(e) | Fail::Mismatch(e) => e,
+        }
+    }
+}
+
+/// signature + version + every asset; Ok = this release may be offered
+pub fn verify_release(fetch: Fetch, r: &Release) -> Result<Signed, Fail> {
+    let s = signed(fetch, &r.c).map_err(Fail::Unsigned)?;
+    assets_match(&r.assets, &s.map).map_err(Fail::Mismatch)?;
+    Ok(s)
 }
 
 pub fn release_page(tag: &str) -> String {
     format!("https://github.com/{REPO}/releases/tag/{tag}")
 }
 
-/// the whole check; Err only for "could not ask GitHub at all"
+/// what one check runs with besides the network
+pub struct Ctx<'a> {
+    /// the language the verdict text renders in (i18n.rs)
+    pub lang: &'a str,
+    /// SEEN_KEY: the highest version that fully verified in an earlier check
+    pub seen: Option<String>,
+    pub host: Host,
+}
+
+/// the whole check (English, nothing remembered, this host); Err only for "could not ask GitHub at all"
 pub fn check(fetch: Fetch, current: &str) -> Result<Value, String> {
+    check_with(fetch, current, &Ctx { lang: "en", seen: None, host: host() })
+}
+
+/// the whole check. Result "status": available | current | unsigned | mismatch |
+/// rollback; "url" ONLY with available; "seen" = the SEEN_KEY value to remember.
+pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, String> {
+    let t = |id: &str, args: &[(&str, &str)]| crate::i18n::tr(ctx.lang, id, args);
     let list = fetch(RELEASES_URL, MAX_RELEASES_JSON, "releases")?;
-    let Some(c) = pick_latest(&list)? else {
-        return Ok(json!({"status": "current", "current": current, "text": format!("Opensidian is up to date ({current}); no published release found.")}));
-    };
-    let sig = signed(fetch, &c);
-    let newer = plugin_store::version_gt(&c.version, current);
-    let signer = short_fpr();
-    Ok(match (sig, newer) {
-        (Err(e), _) => {
-            eprintln!("[updates] {} rejected: {e}", c.tag);
-            json!({"status": "unsigned", "current": current, "latest": c.version, "reason": e,
-                   "text": format!("Latest release {} is NOT signed (or signature invalid) — ignored.", c.version)})
+    let rels = releases(&list)?;
+    if rels.is_empty() {
+        return Ok(json!({"status": "current", "current": current, "seen": ctx.seen, "text": t("update-none", &[("v", current)])}));
+    }
+    let mut fails: Vec<(&Release, Fail)> = Vec::new();
+    let mut best: Option<(&Release, Signed)> = None;
+    let mut tries = 0;
+    for r in &rels {
+        let fetches = r.c.sums.is_some() && r.c.asc.is_some();
+        if fetches && tries >= MAX_TRIES {
+            break;
         }
-        (Ok(()), true) => json!({"status": "available", "current": current, "latest": c.version, "signer": signer,
-                   "url": release_page(&c.tag),
-                   "text": format!("Opensidian {} is available — signed by {signer}", c.version)}),
-        (Ok(()), false) => json!({"status": "current", "current": current, "latest": c.version, "signer": signer,
-                   "text": format!("Opensidian is up to date ({current}). Latest release {} is signed by {signer}.", c.version)}),
-    })
+        tries += fetches as usize;
+        match verify_release(fetch, r) {
+            Ok(s) => {
+                best = Some((r, s));
+                break;
+            }
+            Err(f) => {
+                eprintln!("[updates] {} rejected ({}): {}", r.c.tag, f.kind(), f.reason());
+                fails.push((r, f));
+            }
+        }
+    }
+    // every failed release is above the offered one (highest first)
+    let failed: Vec<Value> = fails.iter().map(|(r, f)| json!({"version": r.c.version, "kind": f.kind(), "reason": f.reason()})).collect();
+    let warn = || -> Vec<String> {
+        fails
+            .iter()
+            .map(|(r, f)| match f {
+                Fail::Unsigned(_) => t("update-warn-unsigned", &[("version", &r.c.version)]),
+                Fail::Mismatch(_) => t("update-warn-mismatch", &[("version", &r.c.version)]),
+            })
+            .collect()
+    };
+    let Some((r, s)) = best else {
+        let (top, f) = &fails[0];
+        let id = match f {
+            Fail::Unsigned(_) => "update-unsigned",
+            Fail::Mismatch(_) => "update-mismatch",
+        };
+        return Ok(json!({"status": f.kind(), "current": current, "latest": top.c.version, "reason": f.reason(),
+                         "text": t(id, &[("version", &top.c.version)]), "warnings": Vec::<String>::new(), "failed": failed, "seen": ctx.seen}));
+    };
+    let v = r.c.version.as_str();
+    let signer = short_of(&s.fpr);
+    let seen = match ctx.seen.as_deref() {
+        Some(sn) if !plugin_store::version_gt(v, sn) => sn.to_string(),
+        _ => v.to_string(),
+    };
+    let art = platform_artefact(v, &ctx.host, &s.map);
+    let mut warnings = warn();
+    let (file, sha) = match &art {
+        Some((f, h)) => (json!(f), json!(h)),
+        None => (Value::Null, Value::Null),
+    };
+    let mut out = json!({"current": current, "latest": v, "signer": signer, "fingerprint": s.fpr,
+                         "file": file, "sha256": sha, "failed": failed, "seen": seen});
+    if plugin_store::version_gt(&seen, v) && plugin_store::version_gt(&seen, current) {
+        // never downgrade the offer: a newer release verified before and is gone now
+        out["status"] = json!("rollback");
+        out["text"] = json!(t("update-rollback", &[("version", &seen), ("v", v)]));
+    } else if plugin_store::version_gt(v, current) {
+        if art.is_none() {
+            warnings.push(t("update-no-artefact", &[]));
+        }
+        out["status"] = json!("available");
+        out["url"] = json!(release_page(&r.c.tag));
+        out["text"] = json!(t("update-available", &[("version", v), ("key", &signer)]));
+    } else {
+        out["status"] = json!("current");
+        out["text"] = json!(t("update-current", &[("v", current), ("version", v), ("key", &signer)]));
+    }
+    out["warnings"] = json!(warnings);
+    Ok(out)
 }
 
 #[tauri::command]
 pub async fn update_check() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(|| check(&plugin_store::http_get, env!("CARGO_PKG_VERSION")))
-        .await
-        .map_err(|e| format!("update check: {e}"))?
+    tauri::async_runtime::spawn_blocking(|| {
+        let seen = crate::cfg_value()[SEEN_KEY].as_str().and_then(tag_version);
+        let ctx = Ctx { lang: crate::ui_lang(), seen, host: host() };
+        let r = check_with(&plugin_store::http_get, env!("CARGO_PKG_VERSION"), &ctx)?;
+        if let Some(sn) = r["seen"].as_str().filter(|sn| ctx.seen.as_deref() != Some(*sn)) {
+            // monotonic in cfgstore: a lower value never replaces a higher one
+            crate::cfg_update(&[crate::cfgstore::Op::UpdateSeen(sn.to_string())]);
+        }
+        Ok(r)
+    })
+    .await
+    .map_err(|e| format!("update check: {e}"))?
+}
+
+/// cfgstore::Op::UpdateSeen: raise SEEN_KEY to `ver`, never lower it; a value that
+/// is not a plain numeric version is refused
+pub fn apply_seen(v: &mut Value, ver: &str) {
+    if tag_version(ver).as_deref() != Some(ver) || ver.starts_with('v') {
+        eprintln!("[cfg] refused {SEEN_KEY} {ver:?}");
+        return;
+    }
+    let cur = v[SEEN_KEY].as_str().and_then(tag_version);
+    if cur.as_deref().map_or(true, |c| plugin_store::version_gt(ver, c)) {
+        v[SEEN_KEY] = json!(ver);
+    }
 }
 
 #[cfg(test)]
@@ -525,6 +849,10 @@ mod tests {
 
     fn rel(tag: &str, draft: bool, pre: bool, sums: bool, asc: bool) -> Value {
         let mut assets = vec![json!({"name": format!("opensidian-{}-x86_64.deb", tag.trim_start_matches('v')), "browser_download_url": "https://github.com/x/deb"})];
+        // #294: the deb carries GitHub's digest; for v0.6.1 it is the signed value
+        if let Some(d) = signed_digest(assets[0]["name"].as_str().unwrap()) {
+            assets[0]["digest"] = json!(d);
+        }
         if sums {
             assets.push(json!({"name": "SHA256SUMS", "browser_download_url": format!("https://github.com/jpzk/opensidian/releases/download/{tag}/SHA256SUMS")}));
         }
@@ -568,7 +896,8 @@ mod tests {
         let l = json!([rel("v0.6.1", false, false, true, true), rel("v0.4", false, false, true, true)]);
         let r = check(&gh(l.clone(), ASC, SUMS), "0.6.0").unwrap();
         assert_eq!(r["status"], "available");
-        assert_eq!(r["text"], "Opensidian 0.6.1 is available — signed by A6E6…4EA3");
+        // #294: the verdict names what is signed (the checksums) and asks the user to verify
+        assert_eq!(r["text"], "Opensidian 0.6.1 is available — checksums signed by A6E6…4EA3, verify your download against this hash.");
         assert_eq!(r["url"], "https://github.com/jpzk/opensidian/releases/tag/v0.6.1");
         let r = check(&gh(l.clone(), ASC, SUMS), "0.7.0").unwrap();
         assert_eq!(r["status"], "current");
@@ -583,5 +912,433 @@ mod tests {
         assert_eq!(check(&gh(nosig, ASC, SUMS), "0.6.0").unwrap()["status"], "unsigned");
         let down = |_: &str, _: u64, _: &str| -> Result<Vec<u8>, String> { Err("releases: api.github.com — no route".into()) };
         assert!(check(&down, "0.7.0").unwrap_err().contains("no route"));
+    }
+
+    /* ---------------------------------------------------------- #294 tests */
+
+    /// the signed sha256 of one v0.6.1 file, as GitHub's API spells a digest
+    fn signed_digest(name: &str) -> Option<String> {
+        std::str::from_utf8(SUMS).unwrap().lines().find_map(|l| l.split_once("  ").filter(|(_, n)| *n == name).map(|(h, _)| format!("sha256:{h}")))
+    }
+
+    const DEB: &str = "9a76781b7f48398bb70550308634510a2079e2ac957a228cf5477959877c118f";
+
+    /// v0.6.1 as GitHub lists it: all five signed files with their digests + the sums pair
+    fn genuine(tag: &str) -> Value {
+        let mut assets: Vec<Value> = std::str::from_utf8(SUMS)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let (h, n) = l.split_once("  ").unwrap();
+                json!({"name": n, "digest": format!("sha256:{h}"), "browser_download_url": format!("https://github.com/jpzk/opensidian/releases/download/{tag}/{n}")})
+            })
+            .collect();
+        for n in ["SHA256SUMS", "SHA256SUMS.asc"] {
+            assets.push(json!({"name": n, "browser_download_url": format!("https://github.com/jpzk/opensidian/releases/download/{tag}/{n}")}));
+        }
+        json!({"tag_name": tag, "draft": false, "prerelease": false, "published_at": "2026-10-09T00:00:00Z", "assets": assets})
+    }
+
+    fn deb_host() -> Host {
+        Host { os: "linux".into(), arch: "x86_64".into(), debian: true, ..Host::default() }
+    }
+
+    fn ctx(seen: Option<&str>) -> Ctx<'static> {
+        Ctx { lang: "en", seen: seen.map(String::from), host: deb_host() }
+    }
+
+    /// gh() that also records every URL fetched: the check never downloads a release file
+    fn recorded(list: Value) -> (impl Fn(&str, u64, &str) -> Result<Vec<u8>, String>, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (l2, inner) = (log.clone(), gh(list, ASC, SUMS));
+        (move |u: &str, cap: u64, w: &str| { l2.borrow_mut().push(u.to_string()); inner(u, cap, w) }, log)
+    }
+
+    #[test]
+    fn genuine_release_passes_and_shows_the_signed_platform_hash() {
+        let (f, log) = recorded(json!([genuine("v0.6.1")]));
+        let r = check_with(&f, "0.6.0", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "available", "{r}");
+        assert_eq!(r["text"], "Opensidian 0.6.1 is available — checksums signed by A6E6…4EA3, verify your download against this hash.");
+        assert_eq!(r["file"], "opensidian-0.6.1-x86_64.deb");
+        assert_eq!(r["sha256"], DEB);
+        assert_eq!(r["fingerprint"], PINNED_FPR);
+        assert_eq!(r["url"], "https://github.com/jpzk/opensidian/releases/tag/v0.6.1");
+        assert_eq!(r["warnings"], json!([]));
+        assert_eq!(r["seen"], "0.6.1");
+        // nothing but the list and the sums pair is ever fetched
+        for u in log.borrow().iter() {
+            assert!(u == RELEASES_URL || u.ends_with("/SHA256SUMS") || u.ends_with("/SHA256SUMS.asc"), "fetched {u}");
+        }
+        assert_eq!(log.borrow().len(), 3);
+        // the digest GitHub reports may be upper case; the value is what counts
+        let mut g = genuine("v0.6.1");
+        g["assets"][0]["digest"] = json!(g["assets"][0]["digest"].as_str().unwrap().to_ascii_uppercase().replace("SHA256:", "sha256:"));
+        assert_eq!(check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap()["status"], "available");
+    }
+
+    fn assert_mismatch(r: &Value) {
+        assert_eq!(r["status"], "mismatch", "{r}");
+        assert_eq!(r["text"], "Latest release 0.6.1: release assets do not match the signed checksums — ignored.");
+        assert!(r.get("url").is_none(), "a mismatching release is never offered");
+        assert!(r.get("sha256").is_none() && r.get("signer").is_none(), "no signed verdict: {r}");
+    }
+
+    #[test]
+    fn unlisted_extra_asset_is_not_available() {
+        for extra in ["opensidian-0.6.1-x86_64-extra.AppImage", "install.sh", "SHA256SUMS.sig", ""] {
+            let mut g = genuine("v0.6.1");
+            g["assets"].as_array_mut().unwrap().push(json!({"name": extra, "digest": format!("sha256:{DEB}"), "browser_download_url": "https://github.com/x/e"}));
+            let r = check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap();
+            assert_mismatch(&r);
+            assert!(r["reason"].as_str().unwrap().contains("not listed"), "{r}");
+        }
+        // a release with nothing to download offers nothing either
+        let mut g = genuine("v0.6.1");
+        g["assets"].as_array_mut().unwrap().retain(|a| a["name"].as_str().unwrap().starts_with("SHA256SUMS"));
+        assert_mismatch(&check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap());
+    }
+
+    #[test]
+    fn listed_asset_with_another_digest_is_not_available() {
+        for i in 0..5 {
+            for d in [Some(format!("sha256:{}", "0".repeat(64))), Some(format!("sha512:{DEB}")), Some(DEB.to_string()), None] {
+                let mut g = genuine("v0.6.1");
+                match &d {
+                    Some(d) => g["assets"][i]["digest"] = json!(d),
+                    None => {
+                        g["assets"][i].as_object_mut().unwrap().remove("digest");
+                    }
+                }
+                assert_mismatch(&check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap());
+            }
+        }
+        // the old (pre-#294) verdict would have said "available — signed": the signature is fine
+        let mut g = genuine("v0.6.1");
+        g["assets"][4]["digest"] = json!(format!("sha256:{}", "ab".repeat(32)));
+        let r = check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap();
+        assert_eq!(r["failed"][0]["kind"], "mismatch");
+        assert!(r["reason"].as_str().unwrap().contains("differs"), "{r}");
+    }
+
+    #[test]
+    fn unsigned_higher_tag_offers_the_signed_one_with_a_warning() {
+        // v9.9.9: no .asc at all; v9.0.0: a sums pair that does not verify for it
+        let l = json!([rel("v9.9.9", false, false, true, false), rel("v9.0.0", false, false, true, true), genuine("v0.6.1")]);
+        let r = check_with(&gh(l, ASC, SUMS), "0.6.0", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "available", "{r}");
+        assert_eq!(r["latest"], "0.6.1");
+        assert_eq!(r["url"], "https://github.com/jpzk/opensidian/releases/tag/v0.6.1");
+        assert_eq!(
+            r["warnings"],
+            json!(["Newer release 9.9.9 is NOT signed (or signature invalid) — ignored.", "Newer release 9.0.0 is NOT signed (or signature invalid) — ignored."])
+        );
+        // a higher release whose assets were swapped: warned as a mismatch, not offered
+        let mut bad = genuine("v0.6.1");
+        bad["assets"][1]["digest"] = json!(format!("sha256:{}", "0".repeat(64)));
+        let older = json!({"tag_name": "v0.4", "draft": false, "prerelease": false, "published_at": "x", "assets": []});
+        let r = check_with(&gh(json!([bad, older]), ASC, SUMS), "0.3", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "mismatch", "{r}");
+        assert_eq!(r["warnings"], json!([]), "nothing verified: the lower failures are in \"failed\", not warned as newer");
+        assert_eq!(r["failed"].as_array().unwrap().len(), 2);
+        // the current release verifying is "current", with the higher unsigned tag warned
+        let l = json!([rel("v9.9.9", false, false, true, false), genuine("v0.6.1")]);
+        let r = check_with(&gh(l, ASC, SUMS), "0.6.1", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "current", "{r}");
+        assert_eq!(r["text"], "Opensidian is up to date (0.6.1). Latest release 0.6.1: checksums signed by A6E6…4EA3.");
+        assert_eq!(r["warnings"].as_array().unwrap().len(), 1);
+        assert!(r.get("url").is_none());
+    }
+
+    #[test]
+    fn at_most_max_tries_sums_pairs_are_fetched() {
+        let mut l: Vec<Value> = (0..12).map(|i| rel(&format!("v9.{i}"), false, false, true, true)).collect();
+        l.push(genuine("v0.6.1"));
+        let (f, log) = recorded(json!(l));
+        let r = check_with(&f, "0.6.0", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "unsigned", "the window is bounded; nothing verifies inside it: {r}");
+        assert!(r.get("url").is_none());
+        assert_eq!(log.borrow().len(), 1 + 2 * MAX_TRIES);
+    }
+
+    #[test]
+    fn highest_signed_version_seen_is_never_downgraded() {
+        let l = json!([genuine("v0.6.1")]);
+        // seen 0.7.0 earlier, now only 0.6.1 verifies: no offer, rollback
+        let r = check_with(&gh(l.clone(), ASC, SUMS), "0.6.0", &ctx(Some("0.7.0"))).unwrap();
+        assert_eq!(r["status"], "rollback", "{r}");
+        assert!(r.get("url").is_none(), "an older release than one seen is never offered");
+        assert_eq!(r["seen"], "0.7.0");
+        assert_eq!(r["text"], "A signed release 0.7.0 was seen before, but the newest release that verifies now is 0.6.1 — an older release is not offered.");
+        // seen lower or equal: offered, remembered value raised
+        for s in ["0.5", "0.6.1"] {
+            let r = check_with(&gh(l.clone(), ASC, SUMS), "0.6.0", &ctx(Some(s))).unwrap();
+            assert_eq!((r["status"].as_str(), r["seen"].as_str()), (Some("available"), Some("0.6.1")), "{r}");
+        }
+        // running the seen version itself is just current
+        let r = check_with(&gh(l.clone(), ASC, SUMS), "0.7.0", &ctx(Some("0.7.0"))).unwrap();
+        assert_eq!(r["status"], "current", "{r}");
+        // nothing verifies: the remembered value is kept as it was
+        let r = check_with(&gh(l, WRONG, SUMS), "0.6.0", &ctx(Some("0.7.0"))).unwrap();
+        assert_eq!((r["status"].as_str(), r["seen"].as_str()), (Some("unsigned"), Some("0.7.0")));
+    }
+
+    #[test]
+    fn seen_is_stored_monotonically_outside_the_vault() {
+        use crate::cfgstore::{apply, Op};
+        let mut v = json!({"last": "/v"});
+        apply(&mut v, &[Op::UpdateSeen("0.9.6".into())]);
+        assert_eq!(v[SEEN_KEY], "0.9.6");
+        for low in ["0.9.5", "0.9", "0.9.6", "v1.0", "../x", "1.0.0-rc1", ""] {
+            apply(&mut v, &[Op::UpdateSeen(low.into())]);
+            assert_eq!(v[SEEN_KEY], "0.9.6", "{low:?} must not replace it");
+        }
+        apply(&mut v, &[Op::UpdateSeen("0.10.0".into())]);
+        assert_eq!(v[SEEN_KEY], "0.10.0");
+        // no generic write can lower or wipe it
+        apply(&mut v, &[Op::Set(SEEN_KEY.into(), json!("0.1")), Op::SetIn(SEEN_KEY.into(), "x".into(), json!(1))]);
+        assert_eq!(v[SEEN_KEY], "0.10.0");
+        assert_eq!(v["last"], "/v");
+    }
+
+    #[test]
+    fn platform_file_follows_the_package_the_app_runs_from() {
+        let n = |h: Host| platform_names("1.2.3", &h).first().cloned().unwrap_or_default();
+        let lx = |f: fn(&mut Host)| {
+            let mut h = Host { os: "linux".into(), arch: "x86_64".into(), ..Host::default() };
+            f(&mut h);
+            h
+        };
+        assert_eq!(n(lx(|h| h.flatpak = true)), "opensidian-1.2.3-x86_64.flatpak");
+        assert_eq!(n(lx(|h| h.appimage = Some("/home/u/opensidian-1.2.3-x86_64-portable.AppImage".into()))), "opensidian-1.2.3-x86_64-portable.AppImage");
+        assert_eq!(n(lx(|h| h.appimage = Some("/opt/Opensidian.AppImage".into()))), "opensidian-1.2.3-x86_64-slim.AppImage");
+        assert_eq!(n(lx(|h| h.debian = true)), "opensidian-1.2.3-x86_64.deb");
+        assert_eq!(n(lx(|h| h.rpm = true)), "opensidian-1.2.3-x86_64.rpm");
+        assert_eq!(n(lx(|h| { h.rpm = true; h.arch = "aarch64".into() })), "opensidian-1.2.3-aarch64.rpm");
+        assert_eq!(n(Host { os: "macos".into(), arch: "aarch64".into(), ..Host::default() }), "opensidian-1.2.3-universal.dmg");
+        assert!(platform_names("1.2.3", &Host { os: "windows".into(), ..Host::default() }).is_empty());
+        // no file for this platform in the signed sums: still offered, with a warning, no hash
+        let h = Host { os: "windows".into(), arch: "x86_64".into(), ..Host::default() };
+        let r = check_with(&gh(json!([genuine("v0.6.1")]), ASC, SUMS), "0.6.0", &Ctx { lang: "en", seen: None, host: h }).unwrap();
+        assert_eq!(r["status"], "available");
+        assert!(r["sha256"].is_null());
+        assert_eq!(r["warnings"], json!(["No release file for this platform is listed in the signed checksums."]));
+    }
+
+    #[test]
+    fn verdict_is_translated() {
+        for lang in ["es", "ja", "ko", "ru", "zh-CN"] {
+            let c = Ctx { lang, seen: None, host: deb_host() };
+            let r = check_with(&gh(json!([genuine("v0.6.1")]), ASC, SUMS), "0.6.0", &c).unwrap();
+            let t = r["text"].as_str().unwrap();
+            assert!(t.contains("0.6.1") && t.contains("A6E6…4EA3") && !t.contains("checksums signed"), "{lang}: {t}");
+            let mut g = genuine("v0.6.1");
+            g["assets"][0]["digest"] = json!(format!("sha256:{}", "0".repeat(64)));
+            let r = check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &c).unwrap();
+            let t = r["text"].as_str().unwrap();
+            assert!(t.contains("0.6.1") && !t.contains("do not match"), "{lang}: {t}");
+        }
+    }
+
+    /* F-84. TEST-ONLY key material: an Ed25519 key built HERE from a fixed public
+       seed, never written to disk, never pinned outside #[cfg(test)]. It stands in
+       for the successor key so the second slot is exercised without any real key. */
+    const TEST_ONLY_SEED: [u8; 32] = *b"opensidian-TEST-ONLY-not-a-key!!";
+
+    fn b64(b: &[u8]) -> String {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut s = String::new();
+        for c in b.chunks(3) {
+            let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                s.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            }
+        }
+        s
+    }
+
+    fn armor(kind: &str, bin: &[u8]) -> String {
+        format!("-----BEGIN PGP {kind}-----\n\n{}\n-----END PGP {kind}-----\n", b64(bin))
+    }
+
+    /// (key pair, armored public key, full fingerprint hex)
+    fn test_only_key() -> (ed25519_compact::KeyPair, String, String) {
+        let kp = ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::new(TEST_ONLY_SEED));
+        let mut body = vec![4u8, 0x65, 0, 0, 0, 22, ED25519_OID.len() as u8];
+        body.extend_from_slice(ED25519_OID);
+        body.extend_from_slice(&[0x01, 0x07, 0x40]);
+        body.extend_from_slice(&kp.pk[..]);
+        let fpr = hex(&v4_fingerprint(&body));
+        let mut pkt = vec![0xC6, body.len() as u8];
+        pkt.extend_from_slice(&body);
+        (kp, armor("PUBLIC KEY BLOCK", &pkt), fpr)
+    }
+
+    /// a v4 EdDSA binary-document signature over `data` by the test key
+    fn test_only_sig(kp: &ed25519_compact::KeyPair, fpr_hex: &str, data: &[u8], ctime: bool) -> String {
+        let fpr: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&fpr_hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+        let mut hashed = vec![];
+        if ctime {
+            hashed.extend_from_slice(&[5, 2, 0x65, 0x10, 0, 0]);
+        }
+        hashed.extend_from_slice(&[22, 33, 4]);
+        hashed.extend_from_slice(&fpr);
+        let mut part = vec![4u8, 0x00, 22, 8];
+        part.extend_from_slice(&(hashed.len() as u16).to_be_bytes());
+        part.extend_from_slice(&hashed);
+        let mut trailer = part.clone();
+        trailer.extend_from_slice(&[0x04, 0xFF]);
+        trailer.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        let digest = Sha256::new().chain_update(data).chain_update(&trailer).finalize();
+        let sig = kp.sk.sign(&digest[..], None);
+        let mut b = part;
+        b.extend_from_slice(&[0, 0]);
+        b.extend_from_slice(&digest[..2]);
+        for half in sig[..].chunks(32) {
+            b.extend_from_slice(&[0x01, 0x00]);
+            b.extend_from_slice(half);
+        }
+        let mut pkt = vec![0xC2, b.len() as u8];
+        pkt.extend_from_slice(&b);
+        armor("SIGNATURE", &pkt)
+    }
+
+    #[test]
+    fn successor_slot_signature_verifies() {
+        let keys = trusted_keys().expect("the pinned slots load");
+        assert_eq!(keys.len(), 1 + SUCCESSOR.is_some() as usize);
+        assert_eq!(hex(&keys[0].fpr), PINNED_FPR);
+        let (kp, asc, fpr) = test_only_key();
+        assert_ne!(fpr, PINNED_FPR);
+        let succ = load_key(&asc, &fpr).expect("test key loads into a slot");
+        assert!(load_key(&asc, PINNED_FPR).is_err(), "a slot pins the full fingerprint");
+        assert!(load_key(&asc, &fpr[..16]).is_err(), "never a key id");
+        let sig = test_only_sig(&kp, &fpr, SUMS, true);
+        // current + successor: the successor's signature verifies and names its signer
+        let both = [pinned_key().unwrap(), succ];
+        assert_eq!(hex(&verify_detached_with(&both, SUMS, sig.as_bytes()).unwrap()), fpr);
+        // ... and the current key's real signature still verifies with both slots set
+        assert_eq!(hex(&verify_detached_with(&both, SUMS, ASC).unwrap()), PINNED_FPR);
+        // a tampered file under the successor's signature: refused for the right reason
+        let mut t = SUMS.to_vec();
+        t[0] ^= 1;
+        assert!(verify_detached_with(&both, &t, sig.as_bytes()).unwrap_err().contains("does not verify"));
+        // without the successor slot that signature is just another key
+        assert!(verify_detached(SUMS, sig.as_bytes()).unwrap_err().contains("another key"));
+        assert!(verify_detached_with(&[], SUMS, ASC).is_err());
+    }
+
+    /// the hashed area of a signature packet body with every subpacket of type `drop` removed
+    fn strip_subpacket(body: &[u8], drop: u8) -> Vec<u8> {
+        let hlen = u16::from_be_bytes([body[4], body[5]]) as usize;
+        let (mut s, mut kept) = (&body[6..6 + hlen], vec![]);
+        while !s.is_empty() {
+            assert!(s[0] < 192, "short subpackets only in the fixtures");
+            let len = s[0] as usize;
+            if s[1] & 0x7f != drop {
+                kept.extend_from_slice(&s[..1 + len]);
+            }
+            s = &s[1 + len..];
+        }
+        let mut out = body[..4].to_vec();
+        out.extend_from_slice(&(kept.len() as u16).to_be_bytes());
+        out.extend_from_slice(&kept);
+        out.extend_from_slice(&body[6 + hlen..]);
+        out
+    }
+
+    #[test]
+    fn signature_without_creation_time_is_refused() {
+        // the real release signature with its creation-time subpacket cut out
+        let bin = dearmor(std::str::from_utf8(ASC).unwrap(), "SIGNATURE").unwrap();
+        let (_, body) = packets(&bin).unwrap()[0];
+        verify_packet(&pinned_key().unwrap(), SUMS, body).expect("the fixture has one");
+        let cut = strip_subpacket(body, 2);
+        assert!(cut.len() < body.len());
+        assert!(verify_packet(&pinned_key().unwrap(), SUMS, &cut).unwrap_err().contains("creation time"));
+        // a cryptographically VALID signature that simply has none: still refused
+        let (kp, asc, fpr) = test_only_key();
+        let k = [load_key(&asc, &fpr).unwrap()];
+        verify_detached_with(&k, SUMS, test_only_sig(&kp, &fpr, SUMS, true).as_bytes()).expect("with a creation time it verifies");
+        let e = verify_detached_with(&k, SUMS, test_only_sig(&kp, &fpr, SUMS, false).as_bytes()).unwrap_err();
+        assert!(e.contains("creation time"), "{e}");
+    }
+
+    /* real later releases: v0.9.6 (24 files, SHA-512 signature) and v0.9.4, as
+       published (the sums pair verbatim; digests = what GitHub's API reports) */
+    const S096: &[u8] = include_bytes!("../data/updates/v0.9.6-SHA256SUMS");
+    const A096: &[u8] = include_bytes!("../data/updates/v0.9.6-SHA256SUMS.asc");
+    const S094: &[u8] = include_bytes!("../data/updates/v0.9.4-SHA256SUMS");
+    const A094: &[u8] = include_bytes!("../data/updates/v0.9.4-SHA256SUMS.asc");
+
+    fn real(tag: &str, sums: &[u8]) -> Value {
+        let mut g = genuine(tag);
+        let mut assets: Vec<Value> = std::str::from_utf8(sums)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let (h, n) = l.split_once("  ").unwrap();
+                json!({"name": n, "digest": format!("sha256:{h}"), "browser_download_url": format!("https://github.com/jpzk/opensidian/releases/download/{tag}/{n}")})
+            })
+            .collect();
+        assets.extend(g["assets"].as_array().unwrap().iter().filter(|a| a["name"].as_str().unwrap().starts_with("SHA256SUMS")).cloned());
+        g["assets"] = json!(assets);
+        g
+    }
+
+    /// an offline GitHub serving each tag its own sums pair
+    fn gh_tags(list: Value) -> impl Fn(&str, u64, &str) -> Result<Vec<u8>, String> {
+        move |u: &str, _: u64, _: &str| {
+            plugin_store::check_url(u)?;
+            if u == RELEASES_URL {
+                return Ok(list.to_string().into_bytes());
+            }
+            for (tag, s, a) in [("v0.9.6", S096, A096), ("v0.9.4", S094, A094), ("v0.6.1", SUMS, ASC)] {
+                if let Some(f) = u.strip_prefix(&format!("https://github.com/jpzk/opensidian/releases/download/{tag}/")) {
+                    return match f {
+                        "SHA256SUMS" => Ok(s.to_vec()),
+                        "SHA256SUMS.asc" => Ok(a.to_vec()),
+                        _ => Err(format!("unexpected fetch {u}")),
+                    };
+                }
+            }
+            Err(format!("unexpected fetch {u}"))
+        }
+    }
+
+    #[test]
+    fn real_releases_verify_and_a_tampered_newer_one_is_warned() {
+        let l = json!([real("v0.9.6", S096), real("v0.9.4", S094), genuine("v0.6.1")]);
+        let r = check_with(&gh_tags(l.clone()), "0.9.0", &ctx(None)).unwrap();
+        assert_eq!((r["status"].as_str(), r["latest"].as_str()), (Some("available"), Some("0.9.6")), "{r}");
+        assert_eq!(r["sha256"], "6ee6c401d47dba46e5faa39264d2ef885af5f70a649e534d0de5f8d8c3f22d20");
+        let r = check_with(&gh_tags(l.clone()), "0.9.6", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "current", "{r}");
+        assert_eq!(r["warnings"], json!([]));
+        // one swapped binary in v0.9.6: v0.9.4 is offered, v0.9.6 warned as a mismatch
+        let mut t = l.clone();
+        t[0]["assets"][4]["digest"] = json!(format!("sha256:{}", "1".repeat(64)));
+        let r = check_with(&gh_tags(t.clone()), "0.9.0", &ctx(None)).unwrap();
+        assert_eq!((r["status"].as_str(), r["latest"].as_str()), (Some("available"), Some("0.9.4")), "{r}");
+        assert_eq!(r["warnings"], json!(["Newer release 0.9.6: release assets do not match the signed checksums — ignored."]));
+        // ... and if 0.9.6 had verified before, nothing older is offered
+        let r = check_with(&gh_tags(t.clone()), "0.9.0", &ctx(Some("0.9.6"))).unwrap();
+        assert_eq!(r["status"], "rollback", "{r}");
+        assert!(r.get("url").is_none());
+        // running 0.9.6 with its own release tampered: never "current — signed" for it
+        let r = check_with(&gh_tags(t), "0.9.6", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "current");
+        assert_eq!(r["latest"], "0.9.4");
+        assert_eq!(r["warnings"].as_array().unwrap().len(), 1, "{r}");
+        // a v0.9.6 tag carrying v0.9.4's genuinely signed sums is not signed for 0.9.6
+        let mut swap = l.clone();
+        for a in swap[0]["assets"].as_array_mut().unwrap() {
+            if let Some(u) = a["browser_download_url"].as_str().map(|u| u.replace("/v0.9.6/SHA256SUMS", "/v0.9.4/SHA256SUMS")) {
+                a["browser_download_url"] = json!(u);
+            }
+        }
+        let r = check_with(&gh_tags(swap), "0.9.0", &ctx(None)).unwrap();
+        assert_eq!(r["latest"], "0.9.4", "{r}");
+        assert_eq!(r["failed"][0]["kind"], "unsigned");
     }
 }
