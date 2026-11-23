@@ -15915,9 +15915,9 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
   let pend = [];
   mc.port1.onmessage = () => { const tm = now(); const f = pend.shift(); if (f) { f.render = r2(tm - f.tr); try { const c = Ed.cm(fg()); f.vp2 = c ? c.viewport.from + "-" + c.viewport.to : ""; } catch (_) {} span("p278_frame", Object.assign(f, { tr: undefined })); } };
   const frame = () => {
-    const tr = now(); drain(fb); const b = fb; fb = nb();
+    const tr = now(); drain(fb); const b = fb; fb = nb(); const ly0 = now(); void document.body.offsetHeight; const sty = r2(now() - ly0);
     if (k && !k.done) closeKey("frame");
-    pend.push({ ts: ep(tr), tr, gap: r2(tr - lastFrame), keys: b.keys, cm: b.cm, cmAdd: b.cmAdd, cmAttr: b.cmAttr, other: b.other, tg: tgs(b), vp: (() => { try { const c = Ed.cm(fg()); return c ? c.viewport.from + "-" + c.viewport.to + "/" + c.state.doc.length + ":" + c.visibleRanges.length : ""; } catch (_) { return "x"; } })() });
+    pend.push({ ts: ep(tr), tr, sty, gap: r2(tr - lastFrame), keys: b.keys, cm: b.cm, cmAdd: b.cmAdd, cmAttr: b.cmAttr, other: b.other, tg: tgs(b), vp: (() => { try { const c = Ed.cm(fg()); return c ? c.viewport.from + "-" + c.viewport.to + "/" + c.state.doc.length + ":" + c.visibleRanges.length : ""; } catch (_) { return "x"; } })() });
     lastFrame = tr; mc.port2.postMessage(0);
     if (now() - last < 600) requestAnimationFrame(frame); else rafOn = false;
   };
@@ -15935,7 +15935,7 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
     upd0() { if (k && !k.done) { if (!k.u0) k.u0 = now(); k.nupd++; } },
     build(ms, lines, rv, deco) { if (k && !k.done) { k.b += ms; k.bl = lines; k.brv = rv; k.bd = deco; } else span("p278_build", { ts: ep(now() - ms), ms: r2(ms), lines, rv, deco }); },
     ul(t0) { if (k && !k.done) k.ul += now() - t0; },
-    sa(disp, cen, top) { span("p278_sa", { ts: ep(now()), disp: r2(disp), cen: r2(cen), top: top ? 1 : 0, flags: ["selclear", "headtop"].filter(f => P.flag(f)).join("+") }); },
+    sa(disp, cen, top) { span("p278_sa", { ts: ep(now()), disp: r2(disp), cen: r2(cen), top: top ? 1 : 0, flags: ["selclear", "headtop", "nohas"].filter(f => P.flag(f)).join("+") }); },
     // probe3: time each phase of EditorView.update during one selectAll dispatch (internal names of the vendored CM6 6.43.10)
     wrap(cm) {
       if (cm.__p3) return cm.__p3; const A = cm.__p3 = { on: false, t: {}, pl: [] };

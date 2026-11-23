@@ -2079,6 +2079,7 @@ Object.assign(Ed, {
     const cm = Ed.cm(g); if (!cm) return;
     const P = window.__p278, t0 = performance.now();
     if (P && P.flag("selclear") && !document.getElementById("p278sc")) { const s = document.createElement("style"); s.id = "p278sc"; s.textContent = ".cm-content ::selection, .cm-content::selection { background: transparent !important }"; document.head.appendChild(s); }
+    if (P && P.flag("nohas") && !window.__p278nh) { window.__p278nh = 1; for (const ss of document.styleSheets) { let rs; try { rs = ss.cssRules; } catch (_) { continue; } for (let i = rs.length - 1; i >= 0; i--) if (rs[i].selectorText && rs[i].selectorText.includes(":has(")) ss.deleteRule(i); } }
     const top = !!(P && P.flag("headtop"));
     const A3 = P && P.wrap ? P.wrap(cm) : null; if (A3) { P.plugWrap(cm, A3); A3.on = true; }
     cm.dispatch({ selection: top ? { anchor: cm.state.doc.length, head: 0 } : { anchor: 0, head: cm.state.doc.length } });
