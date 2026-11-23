@@ -2902,7 +2902,7 @@ Ed.lpParse = function (g, text) {
   P = { cls: row.className + (blk ? " blk" : ""), toks, wid, els: els.map(x => {
     const sp = spec(x.el), d = CMv.Decoration.mark(sp);
     const isMk = x.el.classList.contains("mk");
-    return { s: x.s, e: x.e, d, rv: isMk ? CMv.Decoration.mark(Object.assign({}, sp, { class: sp.class + " rv" })) : d };
+    return { s: x.s, e: x.e, d, pe: x.el.parentNode, sk: JSON.stringify(sp), rv: isMk ? CMv.Decoration.mark(Object.assign({}, sp, { class: sp.class + " rv" })) : d };
   }) };
   if (Ed._lpc.size > 4000) Ed._lpc.clear();
   Ed._lpc.set(text, P);
@@ -3017,6 +3017,16 @@ Ed.lpExt = function (v, G) {
         if (car) tcrNext = cur;
         const tcr = car || ln.number === tcrLeft ? tp : "";
         out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
+        // PROBE #278 mkm: source mode merges consecutive SIBLING marks with the same spec (same parent, contiguous)
+        if (src && Ed._p278mkm) {
+          const E = P.els; let i = 0;
+          while (i < E.length) {
+            const x = E[i]; let e = x.e, j = i + 1;
+            while (j < E.length && E[j].pe === x.pe && E[j].sk === x.sk && E[j].s === e && !(ors && hit(ors, E[j].s, E[j].e))) { e = E[j].e; j++; }
+            if (e > x.s && !(ors && hit(ors, x.s, e))) out.push((j > i + 1 ? (Ed._p278mkmN = (Ed._p278mkmN || 0) + (j - i - 1), x.d) : x.d).range(ln.from + x.s, ln.from + e));
+            i = j;
+          }
+        } else
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
           if (x.e > x.s && !(src && (Ed._p278nomk || (Ed._p278mko && x.rv !== x.d))) && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));

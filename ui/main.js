@@ -15922,10 +15922,25 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
       return;
     }
     if (has("min") || has("mdsel")) { if (cm.state.field(mk, false) === undefined) { mode = has("mdsel") ? "mdsel" : "min"; cm.setState(CMs.EditorState.create({ doc: cm.state.doc, extensions: minExt(mode === "mdsel") })); console.log("[p278] state", mode); } }
-    else if (has("bxlps")) { bareDone = true; mode = "bxlps"; bare(cm, true, true); }
-    else if (has("bxlp")) { bareDone = true; mode = "bxlp"; bare(cm, true, false); }
-    else if (has("bxs")) { bareDone = true; mode = "bxs"; bare(cm, false, true); }
-    else if (has("bare")) { bareDone = true; mode = "bare"; bare(cm); }
+    else if (has("bxlps") || has("bxlp") || has("bxs") || has("bare")) {   // iter c1: build only once the note is loaded; failures -> otel p278_err
+      const f = has("bxlps") ? "bxlps" : has("bxlp") ? "bxlp" : has("bxs") ? "bxs" : "bare", len = cm.state.doc.length;
+      if (len < 2000) { try { otel.span("p278_wait", { f, len }, 0); } catch (_) {} return; }
+      bareDone = true; mode = f;
+      try { bare(cm, f === "bxlps" || f === "bxlp", f === "bxlps" || f === "bxs"); }
+      catch (e) { try { otel.span("p278_err", { f, msg: String(e && e.stack || e).slice(0, 600) }, 0); } catch (_) {} }
+      setTimeout(() => { try { const b = window.__p278bare, bx = document.getElementById("p278bare");
+        otel.span("p278_bare", { f, len: b ? b.state.doc.length : -1, nodes: b ? b.contentDOM.getElementsByTagName("*").length : -1,
+          h: b ? Math.round(b.contentDOM.getBoundingClientRect().height) : -1, txt: b ? b.contentDOM.textContent.slice(0, 80) : "", disp: bx ? getComputedStyle(bx).display : "none",
+          col: b ? getComputedStyle(b.contentDOM).color : "" }, 0); } catch (e) { try { otel.span("p278_err", { f, msg: "post " + String(e).slice(0, 300) }, 0); } catch (_) {} } }, 1500);
+    }
+    else if (has("selcl") || has("dslrm")) { if (!window.__p278sc) { window.__p278sc = 1; mode = has("selcl") ? "selcl" : "dslrm"; let k = 0;
+        // iter c1: selcl = our ::selection rule SCOPED: it no longer matches the inline elements inside a .cm-line (the line
+        // itself and everything outside the editor keep it); dslrm = CM6 drawSelection (layer in --text-selection) + our rule deleted
+        for (const s of document.styleSheets) { let rs; try { rs = s.cssRules; } catch (_) { continue; } for (let i = rs.length - 1; i >= 0; i--) if (rs[i].selectorText === "::selection") { s.deleteRule(i); k++; } }
+        if (mode === "selcl") { const st = document.createElement("style"); st.textContent = ":not(.cm-line *)::selection { background-color: var(--text-selection) }"; document.head.appendChild(st); }
+        else cm.dispatch({ effects: CMs.StateEffect.appendConfig.of([CMv.drawSelection(), CMv.EditorView.theme({ ".cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": { background: "var(--text-selection)" } })]) });
+        console.log("[p278] state", mode, "removed=" + k); } }
+    else if (has("mkm")) { if (!Ed._p278mkm) { Ed._p278mkm = true; mode = "mkm"; const v = fg() && fg().view; if (v && v._lpFx) cm.dispatch({ effects: v._lpFx.of(null) }); } }
     else if (has("dsel")) { if (!cm.__p278ds) { cm.__p278ds = 1; mode = "dsel"; cm.dispatch({ effects: CMs.StateEffect.appendConfig.of([CMv.drawSelection()]) }); } }
     else if (has("cvis")) { if (!document.getElementById("p278cv")) { mode = "cvis"; const s = document.createElement("style"); s.id = "p278cv"; s.textContent = ".cm-content .cm-line { content-visibility: auto; contain-intrinsic-size: auto 1.5em }"; document.head.appendChild(s); } }
     else mode = mode || "base";
@@ -15935,7 +15950,12 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
   let k = null; const mc = new MessageChannel();
   mc.port1.onmessage = () => { const x = k; if (!x || x.r1 != null) return; x.r1 = r2(performance.now() - x.tr);
     let n = -1; try { const v = window.__p278bare || Ed.cm(fg()); n = v.contentDOM.getElementsByTagName("*").length; } catch (_) {}
-    try { otel.span("p278_iso", { ts: Math.round((O + x.t0) * 100) / 100, mode, q: r2(x.q), sync: r2(x.sync), raf: r2(x.tr - x.t0), r1: x.r1, nodes: n }, 0); } catch (_) {} };
+    try { otel.span("p278_iso", { ts: Math.round((O + x.t0) * 100) / 100, mode, q: r2(x.q), sync: r2(x.sync), raf: r2(x.tr - x.t0), r1: x.r1, nodes: n }, 0); } catch (_) {}
+    // iter c1: one DOM census per launch at the first Ctrl+A (tag.classes histogram, text nodes, mkm merges so far)
+    if (!window.__p278cen2) { window.__p278cen2 = 1; try { const v = window.__p278bare || Ed.cm(fg()), h = {}; let tn = 0;
+      for (const e of v.contentDOM.getElementsByTagName("*")) { const kk = e.tagName.toLowerCase() + "." + [...e.classList].sort().join("."); h[kk] = (h[kk] || 0) + 1; }
+      const w = document.createTreeWalker(v.contentDOM, NodeFilter.SHOW_TEXT); while (w.nextNode()) tn++;
+      otel.span("p278_cen", { mode, nodes: n, texts: tn, lines: v.contentDOM.children.length, mkm: Ed._p278mkmN || 0, top: JSON.stringify(Object.entries(h).sort((a, b) => b[1] - a[1]).slice(0, 40)) }, 0); } catch (e) { try { otel.span("p278_err", { f: "cen", msg: String(e).slice(0, 300) }, 0); } catch (_) {} } } };
   window.addEventListener("keydown", e => { if (!(e.ctrlKey && (e.key === "a" || e.key === "A"))) return; const t0 = performance.now();
     k = { t0, q: t0 - e.timeStamp, sync: 0, tr: 0, r1: null }; requestAnimationFrame(() => { k.tr = performance.now(); mc.port2.postMessage(0); }); }, true);
   window.addEventListener("keydown", e => { if (k && !k.sync && e.ctrlKey && (e.key === "a" || e.key === "A")) k.sync = performance.now() - k.t0; }, false);
