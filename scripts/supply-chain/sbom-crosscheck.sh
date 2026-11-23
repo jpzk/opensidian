@@ -74,7 +74,10 @@ cmd_norm_osv() {
   jq -e '.results | type == "array"' "$j" >/dev/null 2>&1 || die "norm-osv: $j is not osv-scanner JSON"
   jq -r --arg l "$l" "$JQ_IDS"'
     .results[].packages[]? | .package as $p | (.vulnerabilities // [])[]
-    | [$l, ($p.ecosystem | orn), ($p.name | ascii_downcase), ($p.version | orn), .id,
+    | [$l, ($p.ecosystem | orn),
+       # Maven: osv-scanner says group:artifact, grype says artifactId -> key on artifactId
+       ($p.name | if $p.ecosystem == "Maven" then (split(":") | last) else . end | ascii_downcase),
+       ($p.version | orn), .id,
        ids([.id] + (.aliases // []) + (.upstream // [])),
        ((.database_specific.severity // .severity[0]?.score // null) | if . == null then null else tostring end | orn),
        ([.affected[]?.ranges[]?.events[]? | .fixed // empty] | unique | join(",") | orn)]

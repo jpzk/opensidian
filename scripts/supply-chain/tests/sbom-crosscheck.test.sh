@@ -54,6 +54,29 @@ chk grype-only brotli
 "$X" diff "$t/empty.tsv" "$t/g.tsv" >"$t/d2.tsv" && [ "$(grep -c '^grype-only' "$t/d2.tsv")" = 4 ] \
   && ok "empty osv side: every grype row is grype-only" || bad "empty side mis-assigned: $(cat "$t/d2.tsv")"
 "$X" summary "$t/d.tsv" | grep -q '^| L | 2 | 2 | 2 |$' && ok summary || bad "summary: $("$X" summary "$t/d.tsv")"
+# Maven: osv-scanner names a package group:artifact, grype names it by artifactId only (CI run
+# 45169073492: kotlin-gradle-plugin GHSA-r937-wjx7-w2jp showed up as osv-only AND grype-only).
+cat >"$t/mo.json" <<'J'
+{"results":[{"packages":[
+ {"package":{"name":"org.jetbrains.kotlin:kotlin-gradle-plugin","version":"1.9.25","ecosystem":"Maven"},
+  "vulnerabilities":[{"id":"GHSA-r937-wjx7-w2jp","aliases":["CVE-2026-53914"]}]},
+ {"package":{"name":"org.example:only-osv","version":"1.0","ecosystem":"Maven"},
+  "vulnerabilities":[{"id":"GHSA-xxxx-xxxx-xxxx"}]}
+]}]}
+J
+cat >"$t/mg.json" <<'J'
+{"matches":[
+ {"vulnerability":{"id":"GHSA-r937-wjx7-w2jp","severity":"Medium","fix":{"versions":[]}},
+  "artifact":{"name":"kotlin-gradle-plugin","version":"1.9.25","type":"java-archive",
+   "purl":"pkg:maven/org.jetbrains.kotlin/kotlin-gradle-plugin@1.9.25"}}
+]}
+J
+"$X" norm-osv "$t/mo.json" M >"$t/mo.tsv" && "$X" norm-grype "$t/mg.json" M >"$t/mg.tsv" \
+  && "$X" diff "$t/mo.tsv" "$t/mg.tsv" >"$t/md.tsv" || bad "maven fixture rc"
+grep -q $'^both\tM\tMaven\tkotlin-gradle-plugin\t1.9.25\t' "$t/md.tsv" && ok "maven group:artifact == grype artifactId" \
+  || bad "maven not matched: $(cat "$t/md.tsv")"
+! grep -q '^grype-only' "$t/md.tsv" && ok "maven: no spurious grype-only" || bad "maven spurious grype-only"
+grep -q $'^osv-only\tM\tMaven\tonly-osv\t' "$t/md.tsv" && ok "maven one-sided still reported" || bad "maven one-sided lost"
 # fail closed
 echo '{"matches":"x"}' >"$t/bad.json"
 ! "$X" norm-grype "$t/bad.json" L >/dev/null 2>&1 && ok "malformed grype JSON fails" || bad "malformed grype JSON accepted"
