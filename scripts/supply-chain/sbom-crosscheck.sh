@@ -43,15 +43,21 @@ cmd_fetch() {
 
 # fetch-android <dir>: the android SBOMs are not release assets (no APK released yet); sbom-scan.yml
 # builds them from the android branch and keeps them as artifact sbom-scan-android. Take that artifact
-# from the latest SUCCESSFUL SBOM scan run, verify the zip against the artifact's sha256 digest and
-# every SBOM against its .sha256 file. Prints the run id on stdout.
+# from the newest SUCCESSFUL SBOM scan run that HAS it (android-sbom only runs on schedule /
+# workflow_dispatch; release and workflow_run runs succeed without it), verify the zip against the
+# artifact's sha256 digest and every SBOM against its .sha256 file. Prints the run id on stdout.
 cmd_fetch_android() {
-  local dir=${1:?fetch-android <dir>} repo=${GITHUB_REPOSITORY:-jpzk/opensidian} run id dg f n=0
-  run=$(gh run list --repo "$repo" --workflow sbom-scan.yml --status success -L 1 --json databaseId --jq '.[0].databaseId')
-  [[ "$run" =~ ^[0-9]+$ ]] || die "fetch-android: no successful SBOM scan run"
-  id=$(gh api "repos/$repo/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "sbom-scan-android" and (.expired | not))][0].id')
-  dg=$(gh api "repos/$repo/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "sbom-scan-android" and (.expired | not))][0].digest')
-  [[ "$id" =~ ^[0-9]+$ ]] || die "fetch-android: run $run has no sbom-scan-android artifact"
+  local dir=${1:?fetch-android <dir>} repo=${GITHUB_REPOSITORY:-jpzk/opensidian} run="" r a id="" dg="" f n=0
+  for r in $(gh run list --repo "$repo" --workflow sbom-scan.yml --status success -L 30 --json databaseId --jq '.[].databaseId'); do
+    [[ "$r" =~ ^[0-9]+$ ]] || die "fetch-android: bad run id '$r'"
+    a=$(gh api "repos/$repo/actions/runs/$r/artifacts?per_page=100" \
+          --jq '[.artifacts[] | select(.name == "sbom-scan-android" and (.expired | not))][0] // empty | [.id, .digest] | @tsv') \
+      || die "fetch-android: cannot list artifacts of run $r"
+    [ -n "$a" ] || { log "fetch-android: run $r has no sbom-scan-android artifact (android-sbom skipped), trying older"; continue; }
+    run=$r; IFS=$'\t' read -r id dg <<<"$a"; break
+  done
+  [ -n "$run" ] || die "fetch-android: no successful SBOM scan run (of the last 30) has a sbom-scan-android artifact"
+  [[ "$id" =~ ^[0-9]+$ ]] || die "fetch-android: run $run: bad artifact id '$id'"
   [[ "$dg" =~ ^sha256:[0-9a-f]{64}$ ]] || die "fetch-android: artifact $id has no sha256 digest"
   mkdir -p "$dir"
   gh api "repos/$repo/actions/artifacts/$id/zip" >"$dir/a.zip" || die "fetch-android: download of artifact $id failed"

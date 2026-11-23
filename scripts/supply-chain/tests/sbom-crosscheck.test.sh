@@ -122,6 +122,30 @@ cp "$t/fr/x86_64.zip" "$t/fr/1.zip"
 ! A=$(printf '%s\n' "$arts" | grep -v sbom-0.9.7-x86_64) fr "$t/fr/o6" >/dev/null 2>&1 && ok "fetch-run: only macOS x86_64 (no linux x86_64) -> fail" || bad "fetch-run took macOS for linux"
 ! "$X" fetch-run 4x2 "$S" "$t/fr/o7" >/dev/null 2>&1 && ok "fetch-run: bad run id refused" || bad "fetch-run bad run id"
 ! "$X" fetch-run 42 HEAD "$t/fr/o8" >/dev/null 2>&1 && ok "fetch-run: non-sha refused" || bad "fetch-run bad sha"
+# fetch-android (#306 CodeAnt): sbom-scan.yml also succeeds on release / workflow_run events where
+# android-sbom is skipped, so the newest successful run can lack sbom-scan-android. Stub gh: run list
+# = $FA_RUNS (newest first), artifacts of run <r> = $FA_DIR/arts-<r>.tsv (id digest), zips by id.
+mkdir -p "$t/fa/bin" "$t/fa/src"
+n=opensidian-0.9.4-android-aarch64.cdx.json
+echo '{"bomFormat":"CycloneDX","components":[]}' >"$t/fa/src/$n"
+(cd "$t/fa/src" && sha256sum "$n" >"$n.sha256" && zip -q "../7.zip" "$n" "$n.sha256")
+cat >"$t/fa/bin/gh" <<'G'
+#!/usr/bin/env bash
+if [ "$1" = run ]; then printf '%s\n' $FA_RUNS; exit 0; fi
+case "$2" in
+  */artifacts/*/zip) id=${2%/zip}; id=${id##*/}; cat "$FA_DIR/$id.zip" ;;
+  repos/*/actions/runs/*/artifacts*) r=${2%/artifacts*}; r=${r##*/}; [ -f "$FA_DIR/arts-$r.tsv" ] && cat "$FA_DIR/arts-$r.tsv"; exit 0 ;;
+  *) exit 1 ;;
+esac
+G
+chmod +x "$t/fa/bin/gh"
+printf '7\tsha256:%s\n' "$(sha256sum "$t/fa/7.zip" | cut -c1-64)" >"$t/fa/arts-101.tsv"
+fa() { PATH=$t/fa/bin:$PATH FA_DIR=$t/fa FA_RUNS=$1 "$X" fetch-android "$2"; }
+r=$(fa "103 102 101" "$t/fa/o1" 2>/dev/null) && [ "$r" = 101 ] && [ -f "$t/fa/o1/$n" ] \
+  && ok "fetch-android: newest successful runs without android artifact skipped -> run 101" || bad "fetch-android picked '${r:-}' (want 101)"
+! fa "103 102" "$t/fa/o2" >/dev/null 2>&1 && ok "fetch-android: no successful run has the artifact -> fail" || bad "fetch-android passed without artifact"
+printf '7\tsha256:%064d\n' 0 >"$t/fa/arts-101.tsv"
+! fa "101" "$t/fa/o3" >/dev/null 2>&1 && ok "fetch-android: zip != artifact digest -> fail" || bad "fetch-android accepted digest mismatch"
 # grype-install.sh: pin-file validation happens before any download
 gi() { GRYPE_PINS=$t/p "$here/grype-install.sh" "$t/gi" >/dev/null 2>&1; }
 printf 'version v0.120.1\nsha256 amd64 abc\n' >"$t/p"; ! gi && ok "malformed sha256 refused" || bad "malformed sha256 accepted"
