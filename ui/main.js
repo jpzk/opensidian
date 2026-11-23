@@ -12606,31 +12606,21 @@ async function startGraph(g, cfg) {
     gw = null;
   };
   function batch(steps, budget) {
-    const n = N.length, X = new Float64Array(n), Y = new Float64Array(n), VX = new Float64Array(n), VY = new Float64Array(n);
-    const PIN = new Uint8Array(n), FX = new Float64Array(n), FY = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      const p = N[i]; X[i] = p.x; Y[i] = p.y; VX[i] = p.vx; VY[i] = p.vy;
-      if (p.fx != null) { PIN[i] = 1; FX[i] = p.fx; FY[i] = p.fy; }
-    }
+    const o = GraphPhys.nodesOut(N);   // X Y VX VY PIN FX FY (the X..VY buffers are transferred to the worker)
     if (lnkSrc !== links) {             // rebuild() replaces `links`, so its identity is the version
       lnkSrc = links; const L = links.length;
       lnk = { LA: new Int32Array(L), LB: new Int32Array(L), LBI: new Float64Array(L), LK: new Float64Array(L) };
       for (let i = 0; i < L; i++) { const l = links[i]; lnk.LA[i] = l.a; lnk.LB[i] = l.b; lnk.LBI[i] = l.bias; lnk.LK[i] = l.k; }
     }
-    return { gen: nGen, X, Y, VX, VY, PIN, FX, FY, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
+    return { gen: nGen, ...o, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
              f: { repel: F.repel, repelK: REPEL_K, repelP: REPEL_P, dist: F.dist, center: F.center, centerK: CENTER_K },
              st: { alpha, alphaTarget, seekN, still, calm, kePeak, quiet } };
   }
   // a result: positions and state back, the settle side effects, then the replayed events
-  function land(bgen, r, st, X, Y, VX, VY, PIN) {
+  function land(bgen, r, st, X, Y, VX, VY, bo) {   // bo: the batch as posted (its PIN)
     inflight = false; const q = evq; evq = [];
     if (g.simGen !== gen || bgen !== nGen) return;   // retired, or N[] swapped while the batch was out
-    for (let i = 0; i < N.length; i++) {
-      const p = N[i];
-      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
-      else if (PIN[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
-      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
-    }
+    GraphPhys.landNodes(N, bo, X, Y, VX, VY);   // a held node at its pin, one dropped while the batch was out stays put
     ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = st);
     if (sTr && r.tr) {
       const T = r.tr, o = performance.timeOrigin;
@@ -12658,13 +12648,13 @@ async function startGraph(g, cfg) {
     const w = gwGet();
     if (!w) {                           // main thread: the frame budget bounds the batch
       const b = batch(steps, PH_BUDGET_MS);
-      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b.PIN);
+      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b);
       return;
     }
     const b = batch(steps, PH_WORKER_MS);
     inflight = true;
     w.onmessage = e => {
-      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b.PIN);
+      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b);
       if (g.simGen !== gen || quiet) { gwPut(); if (g.simGen === gen) wake(); return; }
       if (!(rcSnap && rcSnap.vraw === undefined)) pump();   // C5: rcPre must see the swap before any step
     };
@@ -13181,9 +13171,7 @@ async function startGraph(g, cfg) {
       p = drag.node = N.find(q => q.n === p.n);
       if (!p) { release(); return; }
     }
-    if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
-    p.fx += m.dx / view.scale; p.fy += m.dy / view.scale;
-    p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+    GraphPhys.holdPlace(p, m.dx / view.scale, m.dy / view.scale);   // pin on the first applied move, node at the pin
     // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
     // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
     if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });

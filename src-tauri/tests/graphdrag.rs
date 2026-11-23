@@ -203,3 +203,86 @@ fn graph_drag() {
     if let Some(e) = ctx.exception() { panic!("graph drag check failed: {}", e.to_str()); }
     assert_eq!(out, "ok");
 }
+
+// Review follow-up (CodeAnt, PR #292 ui/graph-phys.js:170): a physics batch is in flight (the worker
+// copied the nodes out while the dragged node was not pinned yet), the next frame applies the held
+// travel (holdPlace pins and moves it), the release clears the pin, and only then does the batch land.
+// The node must stay where it was dropped: the batch's copy is from before the move. Replayed with
+// main.js's own node half of a batch (GraphPhys.nodesOut / landNodes) and the real engine.
+//   1. released while the batch was out: the dropped node keeps the drop point, at rest; nodes the
+//      main thread did not touch take the batch's result;
+//   2. still held when the batch lands: the node sits at its pin;
+//   3. pinned when the batch went out, released before it landed: it stays where it was dropped;
+//   4. the next batch (posted after the landing, no move since) re-flows the dropped node again.
+const IN_FLIGHT: &str = r#"(function () {
+  "use strict";
+  const G = window.GraphPhys, eng = G.create();
+  const F = { repel: 10, repelK: 42.03, repelP: 0, dist: 250, center: 0.5187, centerK: 0.0771 }, LINK_K = 0.5;
+  const fail = m => { throw new Error(m); };
+  const n = 20, E = []; for (let i = 0; i < n; i++) { E.push([i, (i + 1) % n]); E.push([i, (i + 7) % n]); }
+  const adj = Array.from({ length: n }, () => new Set()); for (const [i, j] of E) { adj[i].add(j); adj[j].add(i); }
+  const links = []; adj.forEach((s, i) => { for (const j of s) if (i < j) { const di = adj[i].size, dj = adj[j].size; links.push({ a: i, b: j, bias: di / (di + dj), k: LINK_K / Math.min(di, dj) }); } });
+  const LNK = { LA: new Int32Array(links.map(l => l.a)), LB: new Int32Array(links.map(l => l.b)), LBI: new Float64Array(links.map(l => l.bias)), LK: new Float64Array(links.map(l => l.k)) };
+  // main.js batch(): the node half copied out NOW; the worker runs it later (out)
+  const post = (N, st) => ({ ...G.nodesOut(N), links: LNK, f: F, st: Object.assign({}, st), steps: 8, budget: 1e12, trace: false, first: false });
+  const work = b => { eng.run(b); return b; };
+  const land = (N, b) => G.landNodes(N, b, b.X, b.Y, b.VX, b.VY);
+  const unpin = N => { let held = false; for (const q of N) if (q.fx != null) { q.fx = q.fy = null; held = true; } return held; };
+  // a hot sim (alpha 0.3): every batch moves every free node
+  const hot = () => {
+    let r = 11; const rnd = () => (r = r * 16807 % 2147483647) / 2147483647;
+    const N = []; for (let i = 0; i < n; i++) { const rr = 66 * Math.sqrt(i + rnd()), t = 2 * Math.PI * rnd(); N.push({ x: rr * Math.cos(t), y: rr * Math.sin(t), vx: 0, vy: 0, fx: null, fy: null }); }
+    return { N, st: { alpha: 0.3, alphaTarget: 0.3, seekN: -1, still: 0, calm: 0, kePeak: 0, quiet: false } };
+  };
+  const frame = (d, p) => { const m = G.holdTake(d); if (!m) fail("frame: nothing queued"); G.holdPlace(p, m.dx, m.dy); };
+  // 1. released while the batch was out
+  {
+    const { N, st } = hot(), K = 5, p = N[K], x0 = p.x, y0 = p.y, d = { x: p.x, y: p.y, node: p };
+    if (!G.dragStep(d, false, p.x + 140, p.y - 100)) fail("in-flight: the jump was taken for a click");
+    G.holdQueue(d, 140, -100);
+    const b = post(N, st);                        // the batch goes out: the node is not pinned yet
+    if (b.PIN[K] !== 0) fail("in-flight: the node was pinned before any frame");
+    frame(d, p);                                  // the next frame applies the travel while the batch is out
+    const rx = x0 + 140, ry = y0 - 100;
+    if (p.x !== rx || p.y !== ry || p.fx !== rx) fail("in-flight: holdPlace put the node at " + [p.x, p.y] + ", want " + [rx, ry]);
+    if (!unpin(N)) fail("in-flight: the frame set no pin");   // release before the batch lands
+    work(b);
+    if (b.X[K] === rx && b.Y[K] === ry) fail("in-flight: the batch result already holds the drop point, the race is not exercised");
+    land(N, b);
+    if (p.x !== rx || p.y !== ry) fail("in-flight: the batch landed the stale position " + [p.x, p.y] + " over the drop point " + [rx, ry]);
+    if (p.vx !== 0 || p.vy !== 0) fail("in-flight: the dropped node landed with velocity " + [p.vx, p.vy]);
+    for (let i = 0; i < n; i++) if (i !== K && (N[i].x !== b.X[i] || N[i].y !== b.Y[i] || N[i].vx !== b.VX[i])) fail("in-flight: free node " + i + " did not take the batch result");
+    // 4. the next batch, posted after the landing with no move since, re-flows it
+    const b2 = work(post(N, st)); land(N, b2);
+    if (p.x !== b2.X[K] || p.y !== b2.Y[K]) fail("in-flight: the next batch did not re-flow the dropped node (stuck at " + [p.x, p.y] + ")");
+    if (p.x === rx && p.y === ry) fail("in-flight: the dropped node never moved again in a hot sim");
+  }
+  // 2. still held when the batch lands: at the pin
+  {
+    const { N, st } = hot(), K = 3, p = N[K], d = { x: p.x, y: p.y, node: p };
+    G.holdQueue(d, 60, 20); const b = post(N, st); frame(d, p);
+    const fx = p.fx, fy = p.fy; work(b); land(N, b);
+    if (p.x !== fx || p.y !== fy || p.vx !== 0) fail("held: the landing moved a held node off its pin " + [p.x, p.y] + " pin " + [fx, fy]);
+  }
+  // 3. pinned when the batch went out, released before it landed: stays where it was dropped
+  {
+    const { N, st } = hot(), K = 9, p = N[K], d = { x: p.x, y: p.y, node: p };
+    G.holdQueue(d, -30, 45); frame(d, p);
+    const b = post(N, st); if (b.PIN[K] !== 1) fail("pinned: the batch did not carry the pin");
+    const dx = p.x, dy = p.y; unpin(N); work(b); land(N, b);
+    if (p.x !== dx || p.y !== dy || p.vx !== 0 || p.vy !== 0) fail("pinned: node at " + [p.x, p.y, p.vx, p.vy] + ", dropped at " + [dx, dy]);
+  }
+  return "ok";
+})()"#;
+
+#[test]
+fn graph_drag_release_in_flight() {
+    let src = std::fs::read_to_string(root().join("ui/graph-phys.js")).unwrap();
+    let ctx = javascriptcore::Context::new();
+    ctx.evaluate("var window = {}; var performance = { timeOrigin: 0, now: function () { return Date.now(); } };");
+    ctx.evaluate(&src);
+    if let Some(e) = ctx.exception() { panic!("graph-phys.js did not load: {}", e.to_str()); }
+    let out = ctx.evaluate(IN_FLIGHT).map(|v| v.to_str().to_string()).unwrap_or_default();
+    if let Some(e) = ctx.exception() { panic!("graph drag in-flight check failed: {}", e.to_str()); }
+    assert_eq!(out, "ok");
+}

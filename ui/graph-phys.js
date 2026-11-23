@@ -188,6 +188,35 @@
     if (held && !(st.alpha >= ALPHA_REST)) st.alpha = ALPHA_REST;
     return st;
   }
+  // holdPlace(p, dx, dy): a frame applies the held travel (world units) to node p: pin on the first
+  // applied move (fx/fy), the node at the pin, at rest.
+  function holdPlace(p, dx, dy) {
+    if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+    p.fx += dx; p.fy += dy;
+    p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+    return p;
+  }
+  // nodesOut(N) / landNodes(N, o, X, Y, VX, VY): the node half of a physics batch (main.js batch/land).
+  // nodesOut copies the nodes out (pins from fx/fy); landNodes writes a batch's result back: a node held
+  // now sits at its pin, a node pinned when the batch went out stays where it was dropped, any other
+  // takes the batch's position and velocity.
+  function nodesOut(N) {
+    const n = N.length, o = { X: new Float64Array(n), Y: new Float64Array(n), VX: new Float64Array(n), VY: new Float64Array(n),
+                               PIN: new Uint8Array(n), FX: new Float64Array(n), FY: new Float64Array(n) };
+    for (let i = 0; i < n; i++) {
+      const p = N[i]; o.X[i] = p.x; o.Y[i] = p.y; o.VX[i] = p.vx; o.VY[i] = p.vy;
+      if (p.fx != null) { o.PIN[i] = 1; o.FX[i] = p.fx; o.FY[i] = p.fy; }
+    }
+    return o;
+  }
+  function landNodes(N, o, X, Y, VX, VY) {
+    for (let i = 0; i < N.length; i++) {
+      const p = N[i];
+      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
+      else if (o.PIN[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
+      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
+    }
+  }
 
   if (typeof window === "undefined") {             // Worker: one engine, batches in, results out (arrays transferred both ways)
     const eng = create();
@@ -195,5 +224,5 @@
       const b = e.data, r = eng.run(b);
       self.postMessage({ id: b.id, r, st: b.st, X: b.X, Y: b.Y, VX: b.VX, VY: b.VY }, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
     };
-  } else window.GraphPhys = { create, dragStep, holdQueue, holdTake, releaseHeld, releaseHeat, DRAG_SLOP2, ALPHA_REST };
+  } else window.GraphPhys = { create, dragStep, holdQueue, holdTake, holdPlace, nodesOut, landNodes, releaseHeld, releaseHeat, DRAG_SLOP2, ALPHA_REST };
 })();
