@@ -168,6 +168,11 @@ chk "G1: embedded-in + evidence properties" \
 chk "G1: bom-refs unique incl. nested" '[..|objects|select(has("bom-ref"))."bom-ref"]|length==(unique|length)'
 chk "G1: webkit2gtk dependsOn its embedded components" \
   '(.dependencies[]|select(.ref|startswith("deb:webkit2gtk@"))|.dependsOn|sort)==([.components[]|select(.name=="webkit2gtk")|.components[]."bom-ref"]|sort)'
+# the release path (sbom-local.sh) merges this fragment and runs sbom-validate.sh on the result: a
+# nested-component SBOM must survive both (Release dry run 45174250029 failed exactly here)
+if mo=$(bash "$here/sbom-merge.sh" -o "$t/merged" -v 0.0.1 "$t/sbom.json" 2>"$t/merr") \
+   && bash "$here/sbom-validate.sh" "$mo" 2>"$t/verr"; then ok "G1: merged SBOM with nested components passes sbom-validate.sh"
+else cat "$t/merr" "$t/verr" 2>/dev/null; bad "G1: merged SBOM with nested components passes sbom-validate.sh"; fi
 WK_EMBEDDED=$t/nope expect_fail "G1: missing embedded table fails closed" "embedded-component table" run
 grep -v '^2\.50\.1' "$t/emb.tsv" >"$t/emb2.tsv"
 WK_EMBEDDED=$t/emb2.tsv expect_fail "G1: webkit version absent from table fails closed" "no embedded-component rows for webkit 2.50.1" run
