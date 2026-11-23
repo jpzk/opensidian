@@ -457,6 +457,37 @@ What (a) means concretely:
   in the native window title (inserted
   before the census tokens). Census `[secl:<latched>/<stored>/<dialog>]`.
 
+### 13 — Microphone (#295, audit F-8)
+
+- **Values:** `ask` (default) / `off`, stored as `security.microphone` (a string, kept out of
+  the boolean `FIELDS` and their `[secp:]`/`[secv:]` census). Written only by
+  `cfgstore::Op::SecurityMic` after `security::mic_validate`, sent by the command
+  `security_mic_set`; `off` → `ask` lowers a protection and asks the native "lower
+  protection?" confirm first. Missing / malformed = `ask`. Lockdown forces `off` (the stored
+  value is kept).
+- **Boundary:** backend, `main.rs` `audio_rec_start`. After the page token: `off` (or
+  lockdown) refuses with `NotAllowedError … (Settings › Security › Microphone)` before any
+  dialog; otherwise EVERY start asks the native consent `consent::Kind::Mic` (title
+  `opensidian: record audio?`, text from Rust constants, the vault path Debug-quoted,
+  buttons Cancel / Record, default Cancel). Only Record mints the one-shot grant
+  (`audiorec::grant`, `GRANT_TTL` 10 s); `audiorec::start_check` consumes it before the
+  recorder webview is created and refuses `NotAllowedError` without a fresh grant even
+  with a valid page token. A page (re)load voids the grant.
+- **Indicator:** while recording, the NATIVE window title starts with `● Recording — `
+  (`audiorec::REC_MARK`). Linux: a GTK `notify::title` handler re-applies it on every title
+  change, so the page's own `setTitle` cannot drop it. macOS: re-applied every 250 ms, next
+  to the system's own microphone-in-use indicator. Chosen over a tray icon / notification:
+  the app ships neither (no tray-icon feature, no notification plugin), the title needs no
+  new dependency and is shown by the window manager, taskbar and window switcher.
+- **Page hardening:** the recorder's start function is no longer on the page-global
+  `AREC`; the ribbon button and the command `audio-recorder:start` (palette, hotkeys) reach
+  it from the recorder's closure — and every route meets the same native consent.
+- **Files:** `audiorec.rs` (grant, `start_check`, `indicator_title`, tests), `security.rs`
+  (`Mic`, `mic_*`, tests), `consent.rs` (`Kind::Mic`, `mic_question`), `cfgstore.rs`
+  (`Op::SecurityMic`), `main.rs` (`audio_rec_start`, `rec_indicator`, `security_mic_set`),
+  `ui/security.js` (Privacy › Microphone row, census `[secmic:<stored>/<effective>/<forced>@x,y]`),
+  `ui/main.js` (recorder block).
+
 ## 2. Settings tab
 
 - A **Security** entry in the settings left nav, after "Community plugins" in the

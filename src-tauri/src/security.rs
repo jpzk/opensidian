@@ -297,6 +297,99 @@ pub fn spawn_check(eff: &Eff, what: &str, plugin: Option<&str>) -> Result<(), St
     }
     Ok(())
 }
+/* #295 (audit F-8) — Microphone. Values "ask" (the default: every recording start of the Audio
+   recorder asks in a NATIVE consent, consent::Kind::Mic) and "off" (every start is refused before
+   any dialog). Stored as security.microphone = "ask" | "off", written ONLY by cfgstore
+   Op::SecurityMic after `mic_validate`; a missing or malformed value = "ask" (the default, which
+   still asks natively). Lockdown forces "off" (the stored value is kept and comes back, like
+   every other toggle). Kept OUT of FIELDS / Sec: those are the boolean switches, and their
+   census ([secp:]/[secv:]) is pinned by the T3 phases; this is a two-value choice of its own,
+   reported under report()["microphone"]. Turning it from off back to ask lowers a protection:
+   main.rs security_mic_set asks the native Security confirm first. */
+pub const MIC_FIELD: &str = "microphone";
+pub const MIC_NAME: &str = "Microphone";
+pub const MIC_OFF: &str = "the microphone is off";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mic {
+    Ask,
+    Off,
+}
+
+impl Mic {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mic::Ask => "ask",
+            Mic::Off => "off",
+        }
+    }
+}
+
+/// a requested value, validated: exactly "ask" or "off"
+pub fn mic_validate(v: &str) -> Result<Mic, String> {
+    match v {
+        "ask" => Ok(Mic::Ask),
+        "off" => Ok(Mic::Off),
+        _ => Err(format!("unknown value {v:?} for Settings › Security › {MIC_NAME} (ask | off)")),
+    }
+}
+
+/// the stored value out of the WHOLE config (missing / malformed = Ask)
+pub fn mic_stored(cfg: &Value) -> Mic {
+    cfg[KEY].get(MIC_FIELD).and_then(Value::as_str).and_then(|s| mic_validate(s).ok()).unwrap_or(Mic::Ask)
+}
+
+/// stored -> effective, pure: lockdown (as latched, `eff.lockdown`) forces Off
+pub fn mic_effective_with(stored: Mic, eff: &Eff) -> Mic {
+    if eff.lockdown {
+        Mic::Off
+    } else {
+        stored
+    }
+}
+
+pub fn mic_effective(cfg: &Value) -> Mic {
+    mic_effective_with(mic_stored(cfg), &effective(cfg))
+}
+
+/// Err while the effective value is Off: the start is refused, nothing is asked
+pub fn mic_check(m: Mic) -> Result<(), String> {
+    match m {
+        Mic::Ask => Ok(()),
+        Mic::Off => Err(format!("NotAllowedError: audio recorder: {MIC_OFF} (Settings › Security › {MIC_NAME})")),
+    }
+}
+
+/// off -> ask lowers protection (needs the native Security confirm); everything else does not
+pub fn mic_weakens(stored: Mic, new: Mic) -> bool {
+    stored == Mic::Off && new == Mic::Ask
+}
+
+/// the confirm text for off -> ask (Rust data only)
+pub fn mic_weaken_text(new: Mic) -> String {
+    format!(
+        "Setting: Settings › Security › {MIC_NAME}\nNew value: {}\n\n\
+         This lowers a protection: the Audio recorder may ask to record again. Confirm only if you \
+         changed it yourself in Settings: page or plugin code cannot answer this window.",
+        match new {
+            Mic::Ask => "ask before every recording",
+            Mic::Off => "off",
+        }
+    )
+}
+
+/// report()["microphone"]: {stored, effective, forced: "lockdown" | null}
+pub fn mic_report(cfg: &Value) -> Value {
+    let (s, e) = (mic_stored(cfg), mic_effective(cfg));
+    serde_json::json!({
+        "stored": s,
+        "effective": e,
+        "forced": if s != e { Value::from("lockdown") } else { Value::Null },
+        "name": MIC_NAME,
+    })
+}
+
 /// a requested change, validated: (field, value). Unknown field = refused.
 pub fn validate(field: &str, on: bool) -> Result<(&'static str, bool), String> {
     FIELDS
@@ -354,6 +447,8 @@ pub fn report(cfg: &Value) -> Value {
         // toggles 8 + 9: has community code entered THIS page; what the native key gate enforces
         "realmPlugin": REALM_PLUGIN.load(std::sync::atomic::Ordering::SeqCst),
         "pageAppClipboard": PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst),
+        // #295: the Microphone choice (ask | off), kept apart from the boolean switches above
+        "microphone": mic_report(cfg),
     })
 }
 
@@ -1284,6 +1379,46 @@ mod tests {
         let le = effective_with(l, Some(l));
         assert!(["mathjax", "prism", "mermaid"].iter().all(|f| engine_refusal(&le, &format!("/vendor/{f}/x.js")).is_some()), "lockdown turns all three off");
         assert_eq!(norm_path("/a/%zz/../b%2"), "/a/b%2", "malformed escapes stay literal");
+    }
+
+    /// #295 Microphone: default ask; only "ask" / "off" are values (malformed stored = ask, a
+    /// requested unknown value is refused); off refuses naming the setting; lockdown forces off
+    /// and keeps the stored value; only off -> ask lowers protection (native confirm)
+    #[test]
+    fn mic295_microphone_setting() {
+        assert_eq!(mic_stored(&json!({})), Mic::Ask, "default = ask");
+        assert_eq!(mic_stored(&json!({"security": {"microphone": "off"}})), Mic::Off);
+        assert_eq!(mic_stored(&json!({"security": {"microphone": "ask"}})), Mic::Ask);
+        for bad in [json!("OFF"), json!(false), json!(0), json!(null), json!("allow"), json!({})] {
+            assert_eq!(mic_stored(&json!({"security": {"microphone": bad}})), Mic::Ask, "{bad}");
+        }
+        for bad in ["", "Ask", "allow", "on", "off ", "__proto__"] {
+            assert!(mic_validate(bad).is_err(), "{bad:?} accepted");
+        }
+        assert_eq!(mic_validate("off"), Ok(Mic::Off));
+        assert!(mic_check(Mic::Ask).is_ok());
+        let e = mic_check(Mic::Off).unwrap_err();
+        assert_eq!(e, "NotAllowedError: audio recorder: the microphone is off (Settings › Security › Microphone)");
+        // lockdown forces off; the stored ask is kept
+        let d = Sec::default();
+        assert_eq!(mic_effective_with(Mic::Ask, &effective_with(d, Some(d))), Mic::Ask);
+        let mut l = d;
+        l.lockdown = true;
+        let le = effective_with(l, Some(l));
+        assert_eq!(mic_effective_with(Mic::Ask, &le), Mic::Off, "lockdown must force the microphone off");
+        assert_eq!(mic_effective_with(Mic::Off, &le), Mic::Off);
+        assert!(mic_check(mic_effective_with(Mic::Ask, &le)).is_err());
+        // stored lockdown not latched yet (stands in for the latch) forces off too
+        assert_eq!(mic_effective_with(Mic::Ask, &effective_with(l, None)), Mic::Off);
+        assert!(mic_weakens(Mic::Off, Mic::Ask), "off -> ask lowers protection");
+        assert!(!mic_weakens(Mic::Ask, Mic::Off) && !mic_weakens(Mic::Ask, Mic::Ask) && !mic_weakens(Mic::Off, Mic::Off));
+        assert!(mic_weaken_text(Mic::Ask).contains("Settings › Security › Microphone"));
+        // the report: its own key, the boolean switches untouched
+        let r = report(&json!({"security": {"microphone": "off"}}));
+        assert_eq!(r["microphone"]["stored"], json!("off"));
+        assert_eq!(r["microphone"]["name"], json!("Microphone"));
+        assert!(r["stored"].get("microphone").is_none() && r["effective"].get("microphone").is_none(), "not one of FIELDS");
+        assert!(validate("microphone", true).is_err(), "the boolean path cannot write it");
     }
 
     /// #144 toggle 12: the lockdown CSP drops 'wasm-unsafe-eval' from script-src only; off

@@ -251,7 +251,46 @@
         nRows++; if (lock) nForced++;
       }
     }
+    micRow(pg);
     if (typeof updateTitle === "function") updateTitle();
+  }
+  /* #295 (audit F-8) Microphone: "ask" (default, the switch reads ON) | "off". Not one of the boolean
+     switches above (security.rs keeps it apart; [secp:]/[secv:]/[secf:] stay theirs): its own row
+     (data-secmic, not data-sec), its own command security_mic_set (off -> ask asks the native
+     confirm), its own census [secmic:<stored>/<effective>/<forced 1|0>@<cx>,<cy>]. The decision
+     itself is native: audio_rec_start asks before every recording, or refuses while this is off. */
+  async function setMic(v) {
+    if (busy) return; busy = true;
+    try { R = await inv("security_mic_set", { value: v }); publish(); }
+    catch (e) { console.error("[sec] set microphone:", e); if (typeof say === "function") say("Security: " + String(e && e.message || e)); }
+    busy = false;
+    if (typeof settingsOpen !== "undefined" && settingsOpen && sPane === "security") build(document.getElementById("spage"));
+  }
+  function micRow(pg) {
+    const M = R.microphone;
+    if (!M) return;
+    pg.appendChild(el("div", "ssec", "Privacy"));
+    const card = el("div", "scard"); pg.appendChild(card);
+    const lock = !!M.forced;
+    const r = el("div", "srow" + (lock ? " dis" : ""));
+    r.dataset.secmic = "1";
+    if (lock) r.setAttribute("aria-disabled", "true");
+    const info = el("div", "sinfo");
+    info.appendChild(el("div", "slabel", M.name || "Microphone"));
+    info.appendChild(el("div", "sdesc", "On = ask: the Audio recorder asks in a separate system window before every recording, and the window title shows \"● Recording\" while the microphone is on. Off: every recording is refused, no window is shown."));
+    if (lock) info.appendChild(el("div", "sdesc ssecforced", "Forced off by " + (WHY[M.forced] || M.forced) + "."));
+    r.appendChild(info);
+    const on = (lock ? M.effective : M.stored) === "ask";
+    const t = toggle(on, () => setMic(M.stored === "ask" ? "off" : "ask"), lock);
+    t.id = "ssecmic";
+    r.appendChild(t);
+    card.appendChild(r);
+  }
+  function micTok() {
+    const M = R && R.microphone, t = document.getElementById("ssecmic");
+    if (!M || !t) return "";
+    const b = t.getBoundingClientRect();
+    return " [secmic:" + M.stored + "/" + M.effective + "/" + (M.forced ? 1 : 0) + "@" + Math.round(b.x + b.width / 2) + "," + Math.round(b.y + b.height / 2) + "]";
   }
   function tok() {
     if (!R) return "";
@@ -274,7 +313,7 @@
     }).join(",");
     const nt = document.querySelector('#spage .srow[data-sec="offline"] .sctl.toggle'), nb = nt && nt.getBoundingClientRect();
     const sn = nb ? " [secn:" + Math.round(nb.x + nb.width / 2) + "," + Math.round(nb.y + nb.height / 2) + "]" : "";
-    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + ld;
+    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + micTok() + ld;
   }
   /* [secg:nav=<h>/<font>/<padT>/<padL>/<radius>/<same 1|0>,row=<padT>/<padB>,lbl=<font>,desc=<font>,tg=<w>x<h>]
      the painted chrome of the Security tab, read with getComputedStyle — the T3 phase compares it to

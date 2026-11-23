@@ -53,6 +53,8 @@ pub const SPAWN_TITLE: &str = "opensidian: run program?";
 pub const SECURITY_TITLE: &str = "opensidian: lower protection?";
 /// #144 toggle 3: the confirm before a link opens in the browser while offline
 pub const OFFLINE_OPEN_TITLE: &str = "opensidian: open in browser while offline?";
+/// #295: the confirm before EVERY recording start of the Audio recorder (Record / Cancel, default Cancel)
+pub const MIC_TITLE: &str = "opensidian: record audio?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -64,6 +66,8 @@ pub enum Kind {
     Security,
     /// #144 toggle 3: open_external while offline mode is on
     OfflineOpen,
+    /// #295: every recording start of the Audio recorder (main.rs audio_rec_start)
+    Mic,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -317,6 +321,37 @@ const SPAWN_HEAD: &str = "A plugin wants to run a program. Read all of it (scrol
 const OPEN_HEAD: &str = "Open this with the default application? It may run it. Read all of it (scroll) before you answer.";
 const SECURITY_HEAD: &str = "Lower a protection in Settings › Security?";
 const OFFLINE_OPEN_HEAD: &str = "Offline mode is on. Open this link in your browser?";
+const MIC_HEAD: &str = "Start recording from the microphone?";
+
+/// #295: the mic prompt's body. `vault` = the open vault's path as Rust holds it (cur_vault, never
+/// page data), Debug-quoted like every value in these dialogs; the rest is ours.
+pub fn mic_text(vault: &str) -> String {
+    format!(
+        "The Audio recorder wants to record from your microphone.\n\n\
+         Vault: {}\n\n\
+         Press Record only if you started this recording yourself just now (ribbon button, \
+         command or hotkey): page or plugin code can ask for a recording, but cannot answer \
+         this window. While it records, the window title starts with \"{}\". The recording is \
+         saved as an attachment when you stop it.\n\n\
+         This answer covers this one recording only: every new recording asks again. \
+         Settings › Security › {} = off refuses every recording without asking.",
+        shown(vault),
+        crate::audiorec::REC_MARK.trim_end_matches(" — "),
+        crate::security::MIC_NAME
+    )
+}
+
+/// #295: the question asked before EVERY recording start (Record / Cancel, default Cancel)
+pub fn mic_question(vault: &str) -> Question {
+    let text = mic_text(vault);
+    Question { head: MIC_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
+/// #295: the confirm for Settings › Security › Microphone off -> ask (security::mic_weakens)
+pub fn security_mic_question(new: crate::security::Mic) -> Question {
+    let text = crate::security::mic_weaken_text(new);
+    Question { head: SECURITY_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
@@ -470,6 +505,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
         Kind::Spawn => "spawn",
         Kind::Security => "security",
         Kind::OfflineOpen => "offline-open",
+        Kind::Mic => "mic",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -497,6 +533,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+        Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
@@ -572,6 +609,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+        Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
     };
     // GTK mnemonics ("_Trust") have no meaning in AppKit
     let plain = |s: &str| s.replace('_', "");
@@ -683,6 +721,28 @@ mod tests {
         // a name with a '/' is the child's cwd + name, made absolute
         assert_eq!(resolve_program(&with_path("./fakeprog", &v, "")).map(|p| p.canonicalize().unwrap()), Some(v.join("fakeprog").canonicalize().unwrap()));
         let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// #295: the mic prompt is ours (head, title, buttons); the only outside value, the vault path,
+    /// is Debug-quoted (a newline cannot fake a line); a NO (no answer / closed / Cancel) is NO
+    #[test]
+    fn mic295_question_text_and_default_no() {
+        let t = mic_text("/home/u/V\nPress Record: safe");
+        assert!(t.contains("Vault: \"/home/u/V\\nPress Record: safe\""), "{t}");
+        assert_eq!(t.matches("\nPress Record").count(), 0, "a page-shaped line got into the dialog: {t}");
+        assert!(t.contains("\"● Recording\"") && t.contains("Settings › Security › Microphone"), "{t}");
+        let q = mic_question("/v");
+        assert_eq!(q.head, MIC_HEAD);
+        assert!(q.remember.is_none() && !q.always, "no Always button on the mic question");
+        assert_eq!(MIC_TITLE, "opensidian: record audio?");
+        assert!(!ask_with(Kind::Mic, mic_question("/v"), |_, _, _| false), "not presented = NO");
+        assert!(!ask_with(Kind::Mic, mic_question("/v"), |_, _, tx| tx.send(Answer::No).is_ok()), "Cancel = NO");
+        assert!(!ask_with(Kind::Mic, mic_question("/v"), |_, _, tx| { drop(tx); true }), "closed without answer = NO");
+        assert!(!ask_with(Kind::Mic, mic_question("/v"), |_, _, tx| tx.send(Answer::Always).is_ok()), "Always without a Remember = NO");
+        assert!(ask_with(Kind::Mic, mic_question("/v"), |_, _, tx| tx.send(Answer::Once).is_ok()), "Record = yes");
+        let s = security_mic_question(crate::security::Mic::Ask);
+        assert_eq!(s.head, SECURITY_HEAD);
+        assert!(s.text.contains("Settings › Security › Microphone"));
     }
 
     #[test]

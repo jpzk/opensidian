@@ -1189,6 +1189,14 @@ const REC_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 fn rec_close(app: &tauri::AppHandle, parent: &str) {
     use tauri::Manager;
     audiorec::sess_drop(parent);
+    if audiorec::indicator_on(parent) {
+        match app.get_webview_window(parent) {
+            Some(w) => rec_indicator(&w, false),
+            None => {
+                audiorec::indicator_set(parent, false);
+            }
+        }
+    }
     if let Some(rw) = app.get_webview_window(&audiorec::rec_label(parent)) {
         let _ = audiorec::mic_off(&rw); // reason: the webview is destroyed next either way
         audiorec::rec_offscreen_drop(&rw);
@@ -1196,6 +1204,86 @@ fn rec_close(app: &tauri::AppHandle, parent: &str) {
             eprintln!("[audiorec] recorder webview not closed: {e}");
         }
     }
+}
+
+/* #295 (audit F-8) the recording indicator the page cannot hide: while app window <label>
+   records, its NATIVE window title starts with audiorec::REC_MARK ("● Recording — "). Chosen over
+   a tray icon / desktop notification because the app has neither (no tray-icon feature, no
+   notification plugin: adding one = a new dependency), while the title is what the window manager,
+   the taskbar and the window switcher show on both platforms and is set from Rust here.
+   - Linux (GTK): a notify::title handler on the GtkWindow re-applies the mark on EVERY title change,
+     synchronously, so the page's own setTitle (pushTitle, or a plugin's) cannot drop it; removed
+     with the mark when the recording ends (rec_close).
+   - macOS / other: no title-change hook in our code, so a thread re-applies the mark every
+     audiorec::REC_MARK_TICK while the recording lasts; macOS also shows its own system
+     microphone-in-use indicator (menu bar), which no app code can hide. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static REC_TITLE_HOOK: std::cell::RefCell<std::collections::HashMap<String, gtk::glib::SignalHandlerId>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(target_os = "linux")]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    audiorec::indicator_set(win.label(), on);
+    let w2 = win.clone();
+    let r = win.run_on_main_thread(move || {
+        use gtk::glib::prelude::ObjectExt;
+        use gtk::prelude::GtkWindowExt;
+        let Ok(gw) = w2.gtk_window() else {
+            eprintln!("[audiorec] indicator: no GTK window for {}", w2.label());
+            return;
+        };
+        let fix = |gw: &gtk::ApplicationWindow, on: bool| {
+            let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
+            if let Some(t) = audiorec::indicator_title(&cur, on) {
+                gw.set_title(&t);
+            }
+        };
+        let label = w2.label().to_string();
+        REC_TITLE_HOOK.with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some(id) = h.remove(&label) {
+                gw.disconnect(id);
+            }
+            fix(&gw, on);
+            if on {
+                let id = gw.connect_notify_local(Some("title"), move |gw, _| fix(gw, true));
+                h.insert(label, id);
+            }
+        });
+        eprintln!("[audiorec] indicator {}: {}", w2.label(), if on { "on" } else { "off" });
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] indicator not applied: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    let gen = audiorec::indicator_set(win.label(), on);
+    let fix = |w: &tauri::WebviewWindow, on: bool| {
+        if let Ok(cur) = w.title() {
+            if let Some(t) = audiorec::indicator_title(&cur, on) {
+                let _ = w.set_title(&t); // reason: a window being destroyed takes its title with it
+            }
+        }
+    };
+    fix(win, on);
+    if let Some(gen) = gen {
+        let w = win.clone();
+        std::thread::spawn(move || {
+            while audiorec::indicator_live(w.label(), gen) {
+                fix(&w, true);
+                std::thread::sleep(audiorec::REC_MARK_TICK);
+            }
+            // a re-apply that raced the off: take the mark down again (unless a new recording runs)
+            if !audiorec::indicator_on(w.label()) {
+                fix(&w, false);
+            }
+        });
+    }
+    eprintln!("[audiorec] indicator {}: {}", win.label(), if on { "on" } else { "off" });
 }
 
 /// block (off the async runtime) on a hand-off from the recorder page
@@ -1207,11 +1295,28 @@ async fn rec_recv<T: Send + 'static>(rx: std::sync::mpsc::Receiver<T>, wait: std
 /// Err("<DOMException name>: <message>") when it could not (the webview is closed again)
 #[tauri::command]
 async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    use tauri::Manager;
     let parent = win.label().to_string();
     audiorec::authorized(&parent, &token)?;
     if audiorec::is_rec(&parent) {
         return Err("SecurityError: not an app window".into());
     }
+    /* #295 (audit F-8): the decision is NATIVE. Settings › Security › Microphone off (or lockdown)
+       refuses before any dialog; otherwise EVERY start asks the user in the native consent
+       (Record / Cancel, default Cancel) and only Record mints the one-shot grant that
+       audiorec::start_check consumes below. A page script driving the core recorder gets the
+       dialog, never a silent recording. */
+    security::mic_check(security::mic_effective(&cfg_value()))?;
+    let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let slot = consent::admit()?;
+    if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
+        eprintln!("[audiorec] start: cancelled in the native consent, nothing started");
+        return Err(audiorec::NO_GRANT.into());
+    }
+    audiorec::grant(&parent, std::time::Instant::now());
+    // the setting is read AGAIN after the dialog (turned off / lockdown meanwhile = refused);
+    // the grant is consumed here, whatever the outcome
+    audiorec::start_check(&parent, &token, security::mic_check(security::mic_effective(&cfg_value())), std::time::Instant::now())?;
     rec_close(&app, &parent);
     let (gtx, grx) = std::sync::mpsc::channel();
     let (stx, srx) = std::sync::mpsc::channel();
@@ -1248,6 +1353,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     match rec_recv(srx, REC_START_WAIT).await {
         Some(Ok(())) => {
             eprintln!("[audiorec] recording in {}", rw.label());
+            rec_indicator(&win, true);
             Ok(())
         }
         r => {
@@ -5014,6 +5120,27 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     Ok(security::report(&cfg_value()))
 }
 
+/// #295 Settings › Security › Microphone = "ask" | "off": validated, off -> ask (lowers a
+/// protection) asks the native Security confirm first; only Op::SecurityMic writes it
+#[tauri::command]
+async fn security_mic_set(win: tauri::Window, value: String) -> Result<serde_json::Value, String> {
+    let m = security::mic_validate(&value)?;
+    if security::mic_weakens(security::mic_stored(&cfg_value()), m) {
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_mic_question(m)).await? {
+            eprintln!("[sec] set microphone={}: cancelled in the confirm, nothing written", m.as_str());
+            return Ok(security::report(&cfg_value()));
+        }
+    }
+    cfg_update(&[cfgstore::Op::SecurityMic(m.as_str().into())]);
+    eprintln!("[sec] set microphone={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", security::MIC_FIELD);
+    }
+    Ok(security::report(&cfg_value()))
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -8475,7 +8602,7 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -10000,6 +10127,43 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #295 (audit F-8): audio_rec_start decides natively before it builds the recorder webview —
+    /// token, then Microphone off refuses (before any dialog), then the native Kind::Mic consent,
+    /// then the grant (only after a yes), then start_check consumes it; the grant is minted
+    /// nowhere else; the indicator goes on with the recording and off in rec_close
+    #[test]
+    fn mic295_audio_rec_start_asks_natively_before_the_recorder_exists() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let order = [
+            "audiorec::authorized(&parent, &token)?",
+            "security::mic_check(security::mic_effective(&cfg_value()))?",
+            "consent::admit()?",
+            concat!("consent::Kind::", "Mic, consent::mic_question(&vault)"),
+            "return Err(audiorec::NO_GRANT.into())",
+            concat!("audiorec::", "grant(&parent,"),
+            "audiorec::start_check(&parent, &token,",
+            "rec_close(&app, &parent);",
+            "tauri::WebviewWindowBuilder::new(",
+            "rec_indicator(&win, true)",
+        ];
+        for w in order.windows(2) {
+            assert!(at(w[0]) < at(w[1]), "audio_rec_start: {} must come before {}", w[0], w[1]);
+        }
+        assert_eq!(src.matches(concat!("audiorec::", "grant(")).count(), 1, "a grant is minted only after the native consent");
+        assert_eq!(src.matches(concat!("consent::Kind::", "Mic")).count(), 1, "one mic question");
+        let rc = src.find("fn rec_close(").expect("rec_close");
+        assert!(src[rc..rc + 600].contains("rec_indicator(&w, false)"), "the indicator outlives the recording");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_mic_set,"), "not registered");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (w, c) = (mb.find("security::mic_weakens(").expect("weakens"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(w < c && mb[w..c].contains("consent::Kind::Security"), "off -> ask written without the native confirm");
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityMic(")).count(), 1, "one writer of the microphone");
     }
 
     /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the

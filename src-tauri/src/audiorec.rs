@@ -109,6 +109,7 @@ pub fn page_started(label: &str) {
     with_slot(label, |s| *s = Slot::default());
     if !is_rec(label) {
         with_slot(&rec_label(label), |s| s.armed = None);
+        grant_drop(label); // #295: an Allow given to the old page never starts the new one
     }
 }
 
@@ -184,6 +185,108 @@ pub fn parent_of(label: &str) -> Option<&str> {
 /// is this a token the window handed out (audio_save)
 pub fn authorized(label: &str, tok: &str) -> Result<(), String> {
     with_slot(label, |s| check(s, tok))
+}
+
+/* #295 (audit F-8) THE START DECISION LIVES OUTSIDE THE PAGE. The token only proves "the core
+   recorder of this page load asks"; plugins share that page realm and can make the core ask
+   (its ribbon / command / any page function). So a token is no longer enough to open the mic:
+   every recording start needs a fresh GRANT, and a grant exists only after the user pressed
+   Record in the NATIVE consent (consent::Kind::Mic, asked by main.rs audio_rec_start; Settings ›
+   Security › Microphone "off" refuses before any dialog, lockdown forces "off").
+     - one grant per app window, minted by `grant` right after the native Allow, valid GRANT_TTL;
+     - `start_check` (the gate audio_rec_start passes before it creates the recorder webview):
+       valid token AND the Microphone setting not off AND a fresh grant, which it CONSUMES — so a
+       grant opens exactly one start; no grant, an expired or a used one = NotAllowedError, even
+       with a valid token (fail closed);
+     - a page (re)load voids the window's grant (page_started).
+   No env var, cfg flag or test hook mints a grant: `grant` is called from audio_rec_start only,
+   after consent::ask returned Ok(true) (main.rs T0 pins the order). */
+/// how long a native Allow stays good for the start it was asked for
+pub const GRANT_TTL: Duration = Duration::from_secs(10);
+/// the refusal a start without a fresh native grant gets (the page maps NotAllowedError to
+/// "Microphone access was denied.")
+pub const NO_GRANT: &str = "NotAllowedError: audio recorder: the recording was not allowed in the native consent";
+
+/// app window label -> the deadline of its one-shot grant
+static GRANTS: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// the user pressed Record in the native consent for app window `parent` (main.rs audio_rec_start only)
+pub fn grant(parent: &str, now: Instant) {
+    GRANTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(parent.to_string(), now + GRANT_TTL);
+}
+
+/// take (consume) the grant of `parent`: Ok only for one that exists and has not expired;
+/// an expired one is consumed too
+pub fn take_grant(parent: &str, now: Instant) -> Result<(), String> {
+    match GRANTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(parent) {
+        Some(t) if now <= t => Ok(()),
+        _ => Err(NO_GRANT.into()),
+    }
+}
+
+/// a page (re)load: the old page's grant is void
+fn grant_drop(parent: &str) {
+    if let Some(m) = GRANTS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.remove(parent);
+    }
+}
+
+/// THE start gate: the fresh native grant (taken = consumed FIRST, so every start attempt burns
+/// it, refused or not), the page's token, the effective Microphone setting (`mic` =
+/// security::mic_check of it). Ok only when all three hold; every Err is a refusal (nothing is
+/// created).
+pub fn start_check(parent: &str, tok: &str, mic: Result<(), String>, now: Instant) -> Result<(), String> {
+    let g = take_grant(parent, now);
+    authorized(parent, tok)?;
+    mic?;
+    g
+}
+
+/* #295 the recording indicator the page cannot hide: while app window <label> records, its NATIVE
+   window title starts with REC_MARK. main.rs rec_indicator keeps it there (Linux: a GTK
+   notify::title handler re-applies it on every title change, so the page's own setTitle cannot
+   drop it; macOS: re-applied every REC_MARK_TICK, next to the system's own microphone-in-use
+   indicator). At the START because a long title is cut at its end. */
+pub const REC_MARK: &str = "● Recording — ";
+/// macOS / other: how often the title mark is re-applied while recording
+#[cfg_attr(target_os = "linux", allow(dead_code))] // the Linux mark rides a GTK notify::title handler instead
+pub const REC_MARK_TICK: Duration = Duration::from_millis(250);
+
+/// the title the window must carry: Some(new) when `cur` is not already it. On = exactly one
+/// REC_MARK, first; off = no REC_MARK anywhere (a page cannot leave a fake one either)
+pub fn indicator_title(cur: &str, on: bool) -> Option<String> {
+    let bare = cur.replace(REC_MARK, "");
+    let want = if on { format!("{REC_MARK}{bare}") } else { bare };
+    (want != cur).then_some(want)
+}
+
+/// app window label -> the generation of its current recording indicator (absent = off)
+static INDICATOR: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+static INDICATOR_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// turn the indicator state of `parent` on (Some(generation)) or off (None)
+pub fn indicator_set(parent: &str, on: bool) -> Option<u64> {
+    let mut g = INDICATOR.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::new);
+    if on {
+        let n = INDICATOR_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        m.insert(parent.to_string(), n);
+        Some(n)
+    } else {
+        m.remove(parent);
+        None
+    }
+}
+
+/// is the indicator generation `generation` of `parent` still the live one
+#[cfg_attr(target_os = "linux", allow(dead_code))] // the macOS / other ticker only
+pub fn indicator_live(parent: &str, generation: u64) -> bool {
+    INDICATOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(parent)).copied() == Some(generation)
+}
+
+/// is app window `parent` recording (its indicator on)
+pub fn indicator_on(parent: &str) -> bool {
+    INDICATOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|m| m.contains_key(parent))
 }
 
 /// what the gate answers a user-media request with
@@ -607,5 +710,131 @@ mod tests {
         assert!(!out.join("victim.webm").exists());
         let _ = fs::remove_dir_all(&r); // reason: test cleanup
         let _ = fs::remove_dir_all(&out); // reason: test cleanup
+    }
+
+    /* #295 (audit F-8): the start gate. A valid page token is NOT enough: a fresh native grant is needed too */
+
+    /// a valid token without a grant is refused with NotAllowedError (the core recorder driven by a
+    /// page script, no native Record pressed)
+    #[test]
+    fn mic295_valid_token_without_grant_is_not_allowed() {
+        let w = "t295-nogrant";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        let e = start_check(w, &t, Ok(()), now).unwrap_err();
+        assert!(e.starts_with("NotAllowedError: "), "{e}");
+        assert_eq!(e, NO_GRANT);
+        // a wrong token is refused too (and never reaches the grant question)
+        grant(w, now);
+        assert!(start_check(w, "00000000000000000000000000000000", Ok(()), now).is_err());
+        // ... and that refused attempt BURNED the grant: the right token now finds none
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "a refused start must consume the grant");
+    }
+
+    /// one native Record = one start: the grant is consumed by the first start_check
+    #[test]
+    fn mic295_grant_is_single_use() {
+        let w = "t295-once";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        grant(w, now);
+        start_check(w, &t, Ok(()), now).unwrap();
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "second start on one grant");
+        assert_eq!(take_grant(w, now).unwrap_err(), NO_GRANT);
+        // a grant belongs to its window: window A's Record never starts window B
+        let o = "t295-once-other";
+        page_started(o);
+        let to = token(o).unwrap();
+        grant(w, now);
+        assert_eq!(start_check(o, &to, Ok(()), now).unwrap_err(), NO_GRANT, "a grant crossed windows");
+        start_check(w, &t, Ok(()), now).unwrap();
+    }
+
+    /// a grant older than GRANT_TTL is refused (and consumed: it cannot be used later either)
+    #[test]
+    fn mic295_expired_grant_is_refused() {
+        let w = "t295-ttl";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        grant(w, now);
+        start_check(w, &t, Ok(()), now + GRANT_TTL).expect("at the deadline: still good");
+        grant(w, now);
+        let late = now + GRANT_TTL + Duration::from_millis(1);
+        assert_eq!(start_check(w, &t, Ok(()), late).unwrap_err(), NO_GRANT, "an expired grant opened the mic");
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "an expired grant was kept");
+        assert!(GRANT_TTL <= Duration::from_secs(30), "the grant must be short-lived");
+    }
+
+    /// Settings › Security › Microphone off (security::mic_check(Off)) refuses even with a fresh
+    /// grant and a valid token, and the grant is consumed
+    #[test]
+    fn mic295_microphone_off_refuses_even_with_grant() {
+        let w = "t295-off";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        grant(w, now);
+        let e = start_check(w, &t, crate::security::mic_check(crate::security::Mic::Off), now).unwrap_err();
+        assert!(e.starts_with("NotAllowedError: ") && e.contains("(Settings › Security › Microphone)"), "{e}");
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "the off refusal left the grant usable");
+        // lockdown: the effective value is off -> the same refusal
+        let mut l = crate::security::Sec::default();
+        l.lockdown = true;
+        let eff = crate::security::effective_with(l, Some(l));
+        grant(w, now);
+        let m = crate::security::mic_effective_with(crate::security::Mic::Ask, &eff);
+        assert!(start_check(w, &t, crate::security::mic_check(m), now).unwrap_err().contains("the microphone is off"));
+    }
+
+    /// a page (re)load voids the window's grant (an Allow given to the old page starts nothing)
+    #[test]
+    fn mic295_page_load_voids_the_grant() {
+        let w = "t295-reload";
+        let now = Instant::now();
+        page_started(w);
+        grant(w, now);
+        page_started(w);
+        let t = token(w).unwrap();
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT);
+        // a recorder webview's own load does not touch the app window's grant
+        grant(w, now);
+        page_started(&rec_label(w));
+        start_check(w, &t, Ok(()), now).unwrap();
+    }
+
+    /// the native title mark: exactly one, first, while on; none at all while off; no write when
+    /// the title already is what it must be
+    #[test]
+    fn mic295_indicator_title_mark() {
+        let t = "Note - Vault - Opensidian [panes:1]";
+        let on = indicator_title(t, true).unwrap();
+        assert_eq!(on, format!("{REC_MARK}{t}"));
+        assert_eq!(indicator_title(&on, true), None, "already marked: no write (no notify loop)");
+        assert_eq!(indicator_title(&on, false).as_deref(), Some(t));
+        assert_eq!(indicator_title(t, false), None);
+        // a page that moves the mark to the end (where a long title is cut), doubles it or fakes it
+        let moved = format!("{t}{REC_MARK}");
+        assert_eq!(indicator_title(&moved, true).as_deref(), Some(on.as_str()));
+        let twice = format!("{REC_MARK}{REC_MARK}{t}");
+        assert_eq!(indicator_title(&twice, true).as_deref(), Some(on.as_str()));
+        assert_eq!(indicator_title(&moved, false).as_deref(), Some(t), "a fake mark survives the off");
+        assert_eq!(indicator_title("", true).as_deref(), Some(REC_MARK));
+    }
+
+    /// the indicator generation: on = a new live generation, off = none live, a later on
+    /// supersedes an earlier ticker
+    #[test]
+    fn mic295_indicator_generations() {
+        let w = "t295-ind";
+        assert!(!indicator_on(w));
+        let g1 = indicator_set(w, true).unwrap();
+        assert!(indicator_on(w) && indicator_live(w, g1));
+        let g2 = indicator_set(w, true).unwrap();
+        assert!(!indicator_live(w, g1) && indicator_live(w, g2), "the old ticker must stop");
+        assert_eq!(indicator_set(w, false), None);
+        assert!(!indicator_on(w) && !indicator_live(w, g2));
     }
 }
