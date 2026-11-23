@@ -1682,7 +1682,9 @@ const Ed = {
       ["x" + FAM, 9, true, 1], ["x" + FAM, 1, false, 9],
       ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, true, 4], ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, false, 4],
       ["\u{1F44D}\u{1F3FD}", 4, true, 0], ["éx", 0, false, 2], ["éx", 2, true, 0],
-      ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2]);
+      ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2],
+      // #274 review: c - 1 is the HIGH half of a pair (a caret inside it): still that cluster's edge
+      ["a\u{1F600}b", 2, true, 1], ["a" + FP + "b", 2, true, 1], ["x" + FAM, 8, true, 1]);
     for (const [t, c, back, want, seg] of gc)
       if (Ed.cluster(t, c, back, seg) !== want) fail("cluster:" + c + (back ? "<" : ">") + (seg === null ? "cp" : "") + ":" + t.length);
     // #274 Backspace stop [text, col, want, seg] (stock 1.13.7 oracle): a cluster goes whole unless it
