@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Linux PR build + test (operator 2026-11-23: PRs that are not macOS-specific were only tested on
+# Linux by the release workflow and on the coordinator box). Runs on EVERY pull_request to develop
+# or main (no paths filter) and by workflow_dispatch.
+#
+# Jobs:
+#   test          ubuntu-26.04 (x86_64). packaging/ci/linux-test.sh runs, INSIDE the pinned release
+#                 build container of packaging/ci/appimage-build.sh (image digest, snapshot.ubuntu.com
+#                 date, pkg=version list + appimage-snapshot.lock.tsv .deb sha256, sha256-checked Rust
+#                 1.98.0 - all read from appimage-build.sh, never copied):
+#                   cargo test --locked --no-fail-fast   (src-tauri, = box T0 scope; fails on any red test
+#                                                         AND if fewer than 669 tests / 592 lib tests pass)
+#                   cargo build --locked --profile devfast
+#                 The host step runs scripts/supply-chain/rust-toolchain.sh --manifest-only first (the pin
+#                 the container's tarball check derives from). Logs are uploaded as an artifact.
+#   supply-chain  .github/workflows/supply-chain.yml via workflow_call (operator 2026-11-23, supersedes the
+#                 2026-11-17 "no pull_request" decision): pin-check, cargo audit / deny / vet, vendored JS
+#                 CVE, glib vendor check, VEX check, gate self-tests on every PR, same fail-closed jobs.
+#   NOT here - AppImage build + headless launch smoke (stays in release.yml + the coordinator box):
+#     - release.yml has no Linux launch smoke to reuse; Linux GUI smokes run on the box through boxd
+#       display leases (T1 phases), which a GitHub runner does not have.
+#     - a headless launch here needs an X server (xvfb / weston): apt on the runner host outside the
+#       pinned snapshot set, or a NEW pin in appimage-snapshot.lock.tsv (a release-env change), and it
+#       would only prove exec + WebKit start, which T1 already proves on every release candidate.
+#     - both AppImages = a copy of the release `appimage` job (podman + appimagetool + a second,
+#       release-profile build) on every PR.
+#   Floors: TOTAL_MIN / LIB_MIN in linux-test.sh (box count for develop 3b46919). Raise them when the
+#   suite grows; never lower them to make a PR green.
+#
+# workflow_dispatch input `pr` (a PR number): test that PR's head (refs/pull/<pr>/head) with THIS
+# workflow, without pushing to the PR branch. 0 / empty = the dispatched ref itself.
+#
+# Hardening (same rules as supply-chain.yml / macos.yml):
+#   - pull_request only, NEVER pull_request_target: a fork PR runs with a read-only GITHUB_TOKEN and
+#     no secrets (GitHub's default for fork PRs), and on top of that every job here is contents: read.
+#   - top-level permissions contents: read; no job widens it; no secrets referenced.
+#   - checkout never persists the token (persist-credentials: false).
+#   - every action pinned to a full commit SHA (the pins release.yml / supply-chain.yml already use).
+#   - NO caches (no actions/cache, no rust-cache, no setup-* cache): nothing a PR run writes can be
+#     restored by a release, scan or push run (audit F-17, CodeQL actions/cache-poisoning). The cargo
+#     home and target dir live in the job's workspace and are deleted at the end of the container run.
+#   - no continue-on-error; bash -eo pipefail.
+name: Linux build + test
+
+on:
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'test the head of this PR number (refs/pull/<pr>/head); 0 = the dispatched ref'
+        type: number
+        default: 0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.event.pull_request.number || github.ref }}-${{ inputs.pr || 0 }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'        # = rust-toolchain.toml = appimage-build.sh; checked by rust-toolchain.sh + linux-test.sh
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: cargo test + build (x86_64, pinned build container)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || '' }}
+      - name: what is tested
+        shell: bash
+        env:
+          PR_INPUT: ${{ inputs.pr }}
+        run: |
+          echo "event ${GITHUB_EVENT_NAME} ref ${GITHUB_REF} pr-input ${PR_INPUT:-none} head $(git rev-parse HEAD)"
+          echo "image: ${ImageOS:-?} ${ImageVersion:-?} $(uname -m)"; grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          { echo "### Linux test of $(git rev-parse HEAD)"; echo "event ${GITHUB_EVENT_NAME}, pr input ${PR_INPUT:-none}"; } >> "$GITHUB_STEP_SUMMARY"
+      - name: free disk (debug test build + devfast build of src-tauri)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} dist manifest pin (scripts/supply-chain/rust-toolchain.sh)
+        run: bash scripts/supply-chain/rust-toolchain.sh --manifest-only
+      - name: packaging/ci/linux-test.sh (cargo test --locked full + cargo build --locked devfast)
+        shell: bash
+        env:
+          OUT: ${{ runner.temp }}/linux-test
+        run: |
+          rc=0
+          bash packaging/ci/linux-test.sh "$GITHUB_WORKSPACE" || rc=$?
+          {
+            echo '```'
+            cat "$OUT/summary.txt" 2>/dev/null || echo "no summary (stage failed before the tests)"
+            grep -E '^test result:|^     Running' "$OUT/cargo-test.log" 2>/dev/null | head -80 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          df -h /
+          exit "$rc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # the logs, also when the step above failed (the job stays red)
+        if: ${{ !cancelled() }}
+        with:
+          name: linux-test-x86_64
+          path: |
+            ${{ runner.temp }}/linux-test/summary.txt
+            ${{ runner.temp }}/linux-test/cargo-test.log
+            ${{ runner.temp }}/linux-test/cargo-build.log
+            ${{ runner.temp }}/linux-test/apt.log
+            ${{ runner.temp }}/linux-test/pkgset.tsv
+          if-no-files-found: warn
+          retention-days: 14
+
+  supply-chain:
+    name: supply chain
+    permissions:
+      contents: read
+    uses: ./.github/workflows/supply-chain.yml
+    with:
+      ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || '' }}

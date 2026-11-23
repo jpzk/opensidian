@@ -17,16 +17,22 @@
 #   codemirror-rebuild opt-in (workflow_dispatch input / weekly cron): rebuild cm6.js, compare sha256
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
-# Triggers (OPERATOR DECISION 2026-11-17, #188): push to main, develop and release/**, tags v*, the
-#   weekly cron, workflow_dispatch, and workflow_call (release.yml calls this workflow and its
-#   publish job needs it). There is NO pull_request trigger (and never pull_request_target).
-#   CONSEQUENCE, accepted by the operator: cargo vet / cargo deny / cargo audit and the CVE scans
-#   no longer gate PRs. An unaudited crate or a vulnerable dependency is only caught AFTER it has
-#   landed on develop (the push run turns red), not before the merge. Review new dependencies in
-#   the PR by hand; fix forward on develop.
+# Triggers: push to main, develop and release/**, tags v*, the weekly cron, workflow_dispatch, and
+#   workflow_call (release.yml calls this workflow and its publish job needs it; linux.yml calls it
+#   on every pull_request).
+#   OPERATOR DECISION 2026-11-23 (supersedes the 2026-11-17 "no pull_request" decision, #188):
+#   PRs to develop/main run every job here through .github/workflows/linux.yml (pull_request ->
+#   workflow_call), so pin-check, cargo audit / deny / vet, the vendored-JS CVE scan, the VEX check
+#   and the gate self-tests gate PRs again, without a manual dispatch. Same jobs, same fail-closed
+#   semantics as a push run. There is still no pull_request trigger HERE (the PR path is linux.yml)
+#   and never pull_request_target: a fork PR gets GitHub's read-only GITHUB_TOKEN and no secrets,
+#   and the caller job is contents: read (a called workflow can only narrow its caller's token).
+#   workflow_call / workflow_dispatch input `ref` (default empty = the triggering ref): the ref to
+#   check out, so linux.yml's dispatch can scan an open PR's head (refs/pull/<n>/head) push-free.
 #
 # Hardening:
-#   - push/tag/schedule/dispatch/call only (see Triggers): nothing here needs secrets or PR context.
+#   - push/tag/schedule/dispatch/call only (PRs via linux.yml, see Triggers): nothing here needs
+#     secrets or PR context; a fork PR gets a read-only token and no secrets.
 #   - top-level permissions contents: read; no secrets; checkout does not persist the token. No job needs
 #     id-token or attestations (attest-sbom was removed with the CI SBOM, 2026-11-19).
 #   - every action pinned to a full commit SHA (# vX.Y.Z) and the Rust toolchain pinned; every
@@ -46,7 +52,8 @@
 name: Supply chain
 
 on:
-  # see "Triggers" in the header: NO pull_request / pull_request_target (operator 2026-11-17).
+  # see "Triggers" in the header: PRs reach this workflow through linux.yml (workflow_call,
+  # operator 2026-11-23); no pull_request trigger here and never pull_request_target.
   # Note: release.yml's v<ver>-release branches are not matched; release branches are
   # expected under release/**. release.yml reaches this workflow through workflow_call.
   push:
@@ -61,8 +68,18 @@ on:
         description: 'also run the opt-in CodeMirror reproducible-rebuild check'
         type: boolean
         default: false
-  # no inputs since 2026-11-19 (the `attest` input fed the removed attest-sbom job)
+      ref:
+        description: 'ref to check out (empty = the dispatched ref)'
+        type: string
+        default: ''
+  # `ref` only (the `attest` input fed the removed attest-sbom job, gone 2026-11-19)
   workflow_call:
+    inputs:
+      ref:
+        description: 'ref to check out (empty = the caller ref; linux.yml passes refs/pull/<n>/head on a dispatched PR test)'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -70,7 +87,9 @@ permissions:
 concurrency:
   # github.workflow is the CALLER's name under workflow_call, so a tag push running this
   # workflow directly and release.yml calling it on the same tag do not cancel each other.
-  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  # The `ref` suffix exists only when a ref input is given (linux.yml dispatch for PR <n>), so two
+  # dispatched PR tests from the same branch do not cancel each other; every other group is unchanged.
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}${{ inputs.ref && format('-{0}', inputs.ref) || '' }}
   cancel-in-progress: true
 
 env:
@@ -87,6 +106,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
           bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
@@ -112,6 +132,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
           bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
@@ -136,6 +157,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
           bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)
@@ -164,6 +186,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: pin-check self-test (one red fixture per rule + mutations of a green tree)
         run: bash scripts/supply-chain/tests/pin-check.test.sh
       - name: pin-check on the repository
@@ -177,6 +200,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: vendor-verify (registry integrity, tarball bytes, embedded versions, coverage, 6-week rule)
         run: scripts/supply-chain/vendor-verify.sh
       - name: vendor SBOM from vendor.lock.json + codemirror/build/package-lock.json
@@ -212,6 +236,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: vendor/glib-0.18.5 == crates.io glib 0.18.5 + glib-fix/variantstriter.patch only
         run: scripts/supply-chain/glib-vendor-check.sh
 
@@ -223,6 +248,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: VEX == deny.toml / audit.toml ignores, nothing expired
         run: scripts/supply-chain/vex-check.sh
 
@@ -239,6 +265,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: scripts/supply-chain/tests/*.test.sh
         run: |
           rc=0
@@ -276,6 +303,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          ref: ${{ inputs.ref }}   # empty = the triggering ref (see Triggers)
       - name: install pinned node (sha256-verified)
         run: |
           set -euo pipefail
