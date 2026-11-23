@@ -1088,6 +1088,17 @@ const Ed = {
     }
     return stop > k ? stop : k;
   },
+  /* #274 review (CodeAnt 4654882322): a caret the editor API placed INSIDE a
+     cluster (setCursor accepts any UTF-16 ch). Returns [s, e] of the cluster that
+     strictly contains c (s < c < e), else null. Backspace and Delete then remove
+     that whole cluster instead of a part of it. Same segmenter / code-point
+     fallback as Ed.cluster, so the fallback only reports a split surrogate pair. Pure. */
+  inside(t, c, seg) {
+    t = String(t || "");
+    if (c <= 0 || c >= t.length) return null;
+    const s = Ed.cluster(t, c, true, seg), e = Ed.cluster(t, s, false, seg);
+    return s < c && e > c ? [s, e] : null;
+  },
   // one CHARACTER left/right (a grapheme cluster, #274), crossing the line edge
   // (R17.5 M69-M71). Pure: covered by Ed.selfTest. null = the document edge,
   // leave it to the browser.
@@ -1284,6 +1295,8 @@ const Ed = {
   del(g, s, forward, word) {                     // Backspace / Delete
     if (!s.empty) return Ed.replace(g, s, "", "del");
     const L = Ed.lines(g), { l, c } = s.a;
+    const ins = word ? null : Ed.inside(L[l], c);       // #274 review: never leave part of a cluster
+    if (ins) return Ed.replace(g, { a: { l, c: ins[0] }, b: { l, c: ins[1] }, empty: false }, "", "del");
     if (!forward) {
       if (c > 0) {
         let k = Ed.backDel(L[l], c);                      // #274: a whole character, not one code unit
@@ -1684,6 +1697,15 @@ const Ed = {
     for (const [u, want] of [[0x1F3FB, true], [0x1F3FF, true], [0x0301, true], [0x20E3, true], [0xFE0F, false],
                              [0xFE00, false], [0x200D, false], [0x41, false], [0x1F44D, false]])
       if (Ed.isStop(u) !== want) fail("isStop:" + u.toString(16));
+    // #274 review: Ed.inside [text, col, want "s,e" | "-", seg] — only a caret strictly inside a cluster
+    const ia = [["a\u{1F600}b", 2, "1,3", null], ["a\u{1F600}b", 1, "-", null], ["a\u{1F600}b", 3, "-", null],
+                ["a\u{1F600}b", 0, "-", null], ["a\u{1F600}b", 4, "-", null], ["", 0, "-", null], ["ab", 1, "-", null]];
+    if (Ed.gseg()) ia.push(["a" + FP + "b", 3, "1,6"], ["a" + FP + "b", 2, "1,6"], ["a" + FP + "b", 5, "1,6"],
+      ["a" + FP + "b", 1, "-"], ["a" + FP + "b", 6, "-"], ["x" + FAM, 4, "1,9"], ["aéb", 2, "1,3"], ["ab", 1, "-"]);
+    for (const [t, c, want, seg] of ia) {
+      const r = Ed.inside(t, c, seg);
+      if ((r ? r.join(",") : "-") !== want) fail("inside:" + c + (seg === null ? "cp" : "") + ":" + t.length);
+    }
     for (const [t, c, want, seg] of bd)
       if (Ed.backDel(t, c, seg) !== want) fail("backDel:" + c + (seg === null ? "cp" : "") + ":" + t.length);
     const eg2 = { view: { lines: ["a" + FP, "b"] } };
