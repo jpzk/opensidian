@@ -1786,6 +1786,15 @@ const Ed = {
         ["a\u{1F600}b", 0, 3, "bs", "ab", 0, 1],                                         // a surrogate pair, any engine
         ["a\u{1F600}b", 0, 1, "del", "ab", 0, 1],
         ["a\n\u{1F600}", 1, 0, "bs", "a\u{1F600}", 0, 1],                                // line join unchanged
+        // #274 review (CodeAnt 4654882322): a caret INSIDE a cluster (editor API) removes the whole cluster
+        ["a\u{1F600}b", 0, 2, "bs", "ab", 0, 1],                                         // inside a surrogate pair, any engine
+        ["a\u{1F600}b", 0, 2, "del", "ab", 0, 1],
+        ...(Ed.gseg() ? [
+          ["a\u{1F926}‍♂️b", 0, 3, "bs", "ab", 0, 1],                     // inside the ZWJ sequence
+          ["a\u{1F926}‍♂️b", 0, 3, "del", "ab", 0, 1],
+          ["a\u{1F926}‍♂️b", 0, 5, "bs", "ab", 0, 1],                     // before the VS16
+          ["x\u{1F468}‍\u{1F469}‍\u{1F467}y", 0, 4, "del", "xy", 0, 1],     // family
+        ] : []),
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
