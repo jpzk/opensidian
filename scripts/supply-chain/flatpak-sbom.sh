@@ -57,12 +57,16 @@ jq -R -s --arg ts "$ts" --arg applic "$applic" --arg rt "$rt" --arg rv "$rv" --a
       then error("module without a known license (add it to MODLIC): \($a | map(select($lic[.mod] == null) | .mod) | join(", "))")
     else . end
   | def comp($x):
-      ($x.url | capture("^https://github\\.com/(?<o>[^/]+)/(?<r>[^/]+)/archive/refs/tags/(?<tag>.+)\\.tar\\.gz$")?) as $g
+      # first(...)? // null: a bare capture()? on a non-matching url yields NO value, which made
+      # `as $g` emit nothing and silently dropped the module from the SBOM
+      (first($x.url | capture("^https://github\\.com/(?<o>[^/]+)/(?<r>[^/]+)/archive/refs/tags/(?<tag>.+)\\.tar\\.gz$"))? // null) as $g
       | if $g then
           {type: "library", "bom-ref": "\($g.r)@\($g.tag | ltrimstr("v"))", name: $g.r, version: ($g.tag | ltrimstr("v")),
            purl: "pkg:github/\($g.o)/\($g.r)@\($g.tag)",
            cpe: ($cpe["\($g.o)/\($g.r)"] // error("github module without a CPE mapping (add it to MODCPE): \($g.o)/\($g.r)")
                  | "cpe:2.3:a:\(.):\($g.tag | ltrimstr("v")):*:*:*:*:*:*:*")}
+        elif ($x.url | test("^https?://([^/]*\\.)?(github\\.com|githubusercontent\\.com)/"; "i")) then
+          error("github-hosted archive not in the https://github.com/<o>/<r>/archive/refs/tags/<tag>.tar.gz form (it would ship as a CPE-less pkg:generic no scanner matches): \($x.mod) \($x.url)")
         else
           {type: "library", "bom-ref": "flatpak-module:\($x.mod)", name: $x.mod,
            purl: "pkg:generic/\($x.mod)?download_url=\($x.url | @uri)"}
