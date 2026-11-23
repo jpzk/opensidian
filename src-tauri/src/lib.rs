@@ -9029,6 +9029,31 @@ mod tests {
         assert!(zoom_next(0.0, "").is_none());
     }
 
+    /* PR #38 CodeAnt (appdirs.rs:40): on android cfg_path() is "" until android_boot
+       runs in setup(), so the `.manage(ZoomLevel(read_zoom_cfg()))` on the builder
+       reads {} -> 0.0. The run must re-read the level AFTER android_boot, inside the
+       same android block, or the first zoom press steps from 0 and overwrites the saved
+       level. android-only code cannot run here, so this pins the ORDER in the source:
+       production code only, comments are not code. */
+    #[test]
+    fn zoom_level_is_reread_after_android_boot_sets_the_config_path() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+        let tests_at = src.find("#[cfg(test)]\nmod tests").expect("tests module");
+        let code: Vec<&str> = src[..tests_at]
+            .lines()
+            .map(str::trim)
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .collect();
+        let boot = code.iter().position(|l| l.starts_with("android_boot(app)")).expect("setup calls android_boot(app)");
+        assert!(boot > 0 && code[boot - 1] == "{" && code[boot - 2] == "#[cfg(target_os = \"android\")]",
+            "android_boot must open an android-only block in setup: {:?}", &code[boot.saturating_sub(2)..=boot]);
+        let block_end = boot + code[boot..].iter().position(|l| *l == "}").expect("android block unterminated");
+        let reread = code[boot..block_end]
+            .iter()
+            .any(|l| l.contains("app.state::<ZoomLevel>()") && l.contains("= read_zoom_cfg()"));
+        assert!(reread, "ZoomLevel is not re-read after android_boot in the android setup block: {:?}", &code[boot..block_end]);
+    }
+
     #[test]
     fn block_lines_maps_every_top_level_block_to_its_source_line() {
         // one of each shape the scroll fixture uses. The mapping is what the
