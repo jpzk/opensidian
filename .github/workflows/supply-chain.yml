@@ -229,8 +229,12 @@ jobs:
 
   sbom-crosscheck:
     name: SBOM cross-check (osv-scanner vs grype)
-    # #299: the SAME release SBOMs (latest PUBLISHED release, every *.cdx.json asset, each verified
-    # against its .sha256 asset) scanned by two independent scanners, both pinned by version +
+    permissions:
+      contents: read
+      actions: read   # fetch-android: the sbom-scan-android artifact of the latest successful SBOM scan run
+    # #299: the SAME SBOMs as code scanning (latest PUBLISHED release, every *.cdx.json asset, each verified
+    # against its .sha256 asset; android = artifact sbom-scan-android of the latest successful SBOM
+    # scan run, digest-verified) scanned by two independent scanners, both pinned by version +
     # per-arch sha256 (osv-scanner.pins, grype.pins): a CVE one scanner misses shows up as a
     # one-sided row in crosscheck-diff.tsv. Informational: findings do not fail the job (the
     # gates are cargo audit / deny and release.yml); a scanner that does not complete DOES.
@@ -246,8 +250,9 @@ jobs:
           persist-credentials: false
       - name: install pinned osv-scanner + grype (sha256-verified)
         run: |
-          echo "OSV=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")" >> "$GITHUB_ENV"
-          echo "GRYPE=$(scripts/supply-chain/grype-install.sh "$RUNNER_TEMP/grype")" >> "$GITHUB_ENV"
+          osv=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")      # a bare assignment fails the step;
+          grype=$(scripts/supply-chain/grype-install.sh "$RUNNER_TEMP/grype") # echo "X=$(...)" would not
+          printf "OSV=%s\nGRYPE=%s\n" "$osv" "$grype" >> "$GITHUB_ENV"
       - name: fetch + verify the latest published release's SBOMs
         run: |
           tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
@@ -256,6 +261,10 @@ jobs:
           echo "release $tag: $SBOMS"
           echo "TAG=$tag" >> "$GITHUB_ENV"
           SBOMS=$SBOMS scripts/supply-chain/sbom-crosscheck.sh fetch "$tag" "$RUNNER_TEMP/xc/sbom"
+      - name: fetch + verify the android SBOMs (artifact of the latest successful SBOM scan run)
+        run: |
+          run=$(scripts/supply-chain/sbom-crosscheck.sh fetch-android "$RUNNER_TEMP/xc/sbom")   # fails the step on error
+          echo "ANDROID_RUN=$run" >> "$GITHUB_ENV"
       - name: grype DB (fresh)
         run: |
           export GRYPE_DB_CACHE_DIR=$RUNNER_TEMP/grypedb GRYPE_CHECK_FOR_APP_UPDATE=false
@@ -278,7 +287,7 @@ jobs:
             echo "::endgroup::"
           done
           "$x" diff "$o/osv.tsv" "$o/grype.tsv" > "$o/crosscheck-diff.tsv"
-          { echo "### SBOM cross-check $TAG (osv-scanner $(awk '$1=="version"{print $2}' scripts/supply-chain/osv-scanner.pins) vs grype $(awk '$1=="version"{print $2}' scripts/supply-chain/grype.pins))"
+          { echo "### SBOM cross-check $TAG + android SBOMs of SBOM scan run $ANDROID_RUN (osv-scanner $(awk '$1=="version"{print $2}' scripts/supply-chain/osv-scanner.pins) vs grype $(awk '$1=="version"{print $2}' scripts/supply-chain/grype.pins))"
             "$x" summary "$o/crosscheck-diff.tsv"
             echo; echo "rows: matched by id/alias per sbom+package+version; one-sided rows in artifact crosscheck-diff.tsv"
           } >> "$GITHUB_STEP_SUMMARY"

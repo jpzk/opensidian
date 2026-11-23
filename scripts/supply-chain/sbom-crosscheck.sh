@@ -6,6 +6,8 @@
 #   fetch <tag> <dir>                download every <name>.cdx.json of release <tag> listed in
 #                                    $SBOMS (space-separated basenames) + its .sha256; verify each
 #                                    (missing / mismatch -> rc 1)
+#   fetch-android <dir>              android SBOMs from the latest successful SBOM scan run (artifact
+#                                    digest + .sha256 verified); prints the run id
 #   norm-osv <osv.json> <sbom-label>   osv-scanner JSON  -> normalized TSV on stdout
 #   norm-grype <grype.json> <sbom-label> grype JSON      -> normalized TSV on stdout
 #   diff <osv.tsv> <grype.tsv>       one line per finding: both|osv-only|grype-only <TAB> row
@@ -36,6 +38,32 @@ cmd_fetch() {
   done
 }
 
+
+# fetch-android <dir>: the android SBOMs are not release assets (no APK released yet); sbom-scan.yml
+# builds them from the android branch and keeps them as artifact sbom-scan-android. Take that artifact
+# from the latest SUCCESSFUL SBOM scan run, verify the zip against the artifact's sha256 digest and
+# every SBOM against its .sha256 file. Prints the run id on stdout.
+cmd_fetch_android() {
+  local dir=${1:?fetch-android <dir>} repo=${GITHUB_REPOSITORY:-jpzk/opensidian} run id dg f n=0
+  run=$(gh run list --repo "$repo" --workflow sbom-scan.yml --status success -L 1 --json databaseId --jq '.[0].databaseId')
+  [[ "$run" =~ ^[0-9]+$ ]] || die "fetch-android: no successful SBOM scan run"
+  id=$(gh api "repos/$repo/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "sbom-scan-android" and (.expired | not))][0].id')
+  dg=$(gh api "repos/$repo/actions/runs/$run/artifacts" --jq '[.artifacts[] | select(.name == "sbom-scan-android" and (.expired | not))][0].digest')
+  [[ "$id" =~ ^[0-9]+$ ]] || die "fetch-android: run $run has no sbom-scan-android artifact"
+  [[ "$dg" =~ ^sha256:[0-9a-f]{64}$ ]] || die "fetch-android: artifact $id has no sha256 digest"
+  mkdir -p "$dir"
+  gh api "repos/$repo/actions/artifacts/$id/zip" >"$dir/a.zip" || die "fetch-android: download of artifact $id failed"
+  echo "${dg#sha256:}  $dir/a.zip" | sha256sum -c - >&2 || die "fetch-android: artifact zip != digest $dg"
+  unzip -q -o -j "$dir/a.zip" '*.cdx.json' '*.cdx.json.sha256' -d "$dir" || die "fetch-android: unzip failed"
+  rm -f "$dir/a.zip"
+  for f in "$dir"/*.cdx.json; do
+    [ -f "$f.sha256" ] || die "fetch-android: $(basename "$f") has no .sha256"
+    (cd "$dir" && sha256sum -c "$(basename "$f").sha256" >&2) || die "fetch-android: sha256 mismatch for $f"
+    n=$((n + 1))
+  done
+  [ "$n" -gt 0 ] || die "fetch-android: artifact has no SBOM"
+  printf '%s\n' "$run"
+}
 # shared jq: id set normalization
 JQ_IDS='def ids($xs): [$xs[] | select(type == "string" and . != "")
           | ., (capture("^(?:DEBIAN|UBUNTU)-(?<c>CVE-[0-9]+-[0-9]+)$")?.c // empty)] | unique | join(",");
@@ -90,9 +118,10 @@ cmd_summary() {
 c=${1:-}; shift || true
 case "$c" in
   fetch) cmd_fetch "$@" ;;
+  fetch-android) cmd_fetch_android "$@" ;;
   norm-osv) cmd_norm_osv "$@" ;;
   norm-grype) cmd_norm_grype "$@" ;;
   diff) cmd_diff "$@" ;;
   summary) cmd_summary "$@" ;;
-  *) die "usage: $0 fetch|norm-osv|norm-grype|diff|summary ..." ;;
+  *) die "usage: $0 fetch|fetch-android|norm-osv|norm-grype|diff|summary ..." ;;
 esac
