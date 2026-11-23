@@ -18,7 +18,7 @@ expect_fail() { local name=$1 pat=$2; shift 2
   set +e; "$@" >"$t/so" 2>"$t/se"; rc=$?; set -e
   if [ "$rc" -ne 0 ] && grep -qF -- "$pat" "$t/se"; then ok "$name: rc=$rc"
   else cat "$t/se"; bad "$name: rc=$rc (want !=0 and '$pat')"; fi; }
-mut() { jq "$1" "$fx" >"$t/m.json"; echo "$t/m.json"; }
+mut() { jq "$@" "$fx" >"$t/m.json"; echo "$t/m.json"; }
 
 expect_pass "green fixture (every license form, scoped exceptions, root)" "$gate" "$fx"
 
@@ -89,6 +89,31 @@ expect_fail "RED: policy exception without scope" "matches nothing" "$gate" -p "
 printf '[licenses]\nversion = 2\n' >"$t/deny-empty.toml"
 expect_fail "RED: deny.toml without allow list" "no [licenses] allow" "$gate" -d "$t/deny-empty.toml" "$fx"
 
+
+# #306 (CodeAnt): nested components (CycloneDX components[].components[], e.g. the code compiled into
+# libwebkit2gtk, webkit-embedded.tsv) are checked like top-level ones, at any depth, with their OWN purl
+# for exception scoping: a deb-scoped exception does not cover a pkg:generic child, and a child of a
+# part root does not inherit the root exception
+wk='(.components[] | select(.name == "webkit2gtk"))'
+nest() { mut "$wk.components = [{type: \"library\", \"bom-ref\": \"deb:webkit2gtk/embedded:$1\", name: \"$1\", purl: \"pkg:generic/$1@1.0\", licenses: $2}]"; }
+expect_fail "RED: nested component with a denied license (SSPL-1.0)" "DENY deb:webkit2gtk/embedded:x: not allowed: SSPL-1.0" \
+  "$gate" "$(nest x '[{expression: "SSPL-1.0"}]')"
+expect_fail "RED: nested pkg:generic BSD-2-Clause-Patent is not covered by the webkit2gtk deb exception" "DENY deb:webkit2gtk/embedded:other: not allowed: BSD-2-Clause-Patent" \
+  "$gate" "$(nest other '[{expression: "BSD-2-Clause-Patent"}]')"
+expect_fail "RED: nested component without a license" "DENY deb:webkit2gtk/embedded:x: no license" "$gate" "$(nest x '[]')"
+expect_fail "RED: second-level nested component with a denied license" "DENY deep: not allowed: GPL-2.0-only" \
+  "$gate" "$(mut "$wk.components = [{type: \"library\", \"bom-ref\": \"mid\", name: \"mid\", licenses: [{expression: \"MIT\"}], components: [{type: \"library\", \"bom-ref\": \"deep\", name: \"deep\", licenses: [{expression: \"GPL-2.0-only\"}]}]}]")"
+expect_fail "RED: child of a part root gets no root exception" "DENY child: not allowed: GPL-3.0-or-later" \
+  "$gate" "$(mut '(.components[] | select(."bom-ref" == "opensidian-flatpak")).components = [{type: "library", "bom-ref": "child", name: "child", licenses: [{expression: "GPL-3.0-or-later"}]}]')"
+expect_fail "RED: nested components not an array" "components is not an array" "$gate" "$(mut "$wk.components = {}")"
+# GREEN: the shipped table's rows, nested exactly as webkit-bundle-sbom.sh emits them, pass the shipped policy
+emb=$(grep -v '^#' "$here/webkit-embedded.tsv" | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t")
+      | {type: "library", "bom-ref": "deb:webkit2gtk@x/embedded:\(.[1])@\(.[2])", name: .[1], version: .[2], purl: .[3], licenses: [{expression: .[4]}]}]')
+[ "$(jq length <<<"$emb")" -ge 5 ] && ok "webkit-embedded.tsv: $(jq length <<<"$emb") rows" || bad "webkit-embedded.tsv rows"
+expect_pass "shipped webkit-embedded.tsv licenses pass as nested components (scoped exceptions per child purl)" \
+  "$gate" "$(mut --argjson e "$emb" "$wk.components = \$e")"
+"$gate" "$(nest x '[{expression: "MIT"}]')" 2>"$t/se" && grep -q "PASS .* (16 components + root" "$t/se" \
+  && ok "component count includes nested components" || { cat "$t/se"; bad "nested count"; }
 # every violation is listed, not just the first
 "$gate" "$(mut '(.components[] | select(.name == "serde" or .name == "d3-array") | .licenses) = [{license: {id: "SSPL-1.0"}}]')" 2>"$t/se" && bad "two violations: passed" \
   || { [ "$(grep -c '^license-policy: DENY' "$t/se")" -eq 2 ] && grep -q 'FAILED 2 violation' "$t/se" && ok "two violations both reported" || { cat "$t/se"; bad "two violations"; }; }
