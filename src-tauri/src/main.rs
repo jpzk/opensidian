@@ -5155,6 +5155,33 @@ async fn security_mic_set(win: tauri::Window, value: String) -> Result<serde_jso
     Ok(security::report(&cfg_value()))
 }
 
+/// devaccess: one Settings › Security › Device access row (security::DEV_ROWS) = "ask" | "always" |
+/// "off": validated (known row, known value); a weakening change (off -> ask, off / ask -> always)
+/// asks the native Security confirm first and is written only after Lower protection
+/// (security::dev_decide); a revoke is written at once with no dialog; only Op::SecurityDev writes it.
+/// Keyed by the row alone: nothing the page reports (plugin id, vault, origin) enters the decision.
+#[tauri::command]
+async fn security_dev_set(win: tauri::Window, field: String, value: String) -> Result<serde_json::Value, String> {
+    let (f, m) = security::dev_validate(&field, &value)?;
+    let stored = security::dev_stored(&cfg_value(), f);
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_dev_question(f, m)).await?;
+    }
+    let Some(m) = security::dev_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set {f}={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityDev(f.into(), m.as_str().into())]);
+    eprintln!("[sec] set {f}={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", f);
+    }
+    Ok(security::report(&cfg_value()))
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -8616,7 +8643,7 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, security_dev_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -10208,6 +10235,28 @@ mod tests {
         let (d, c) = (mb.find("security::mic_decide(stored, m, confirmed)").expect("decide"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
         assert!(d < c && mb[..d].contains("confirmed = consent::ask(") && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind mic_decide + the native confirm");
         assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+    }
+
+    /// devaccess: a Device access row is written only by security_dev_set, behind dev_decide and
+    /// the native Security confirm (confirmed defaults to NO); the setter takes only (field, value),
+    /// nothing page-reported (no plugin id / vault / origin) enters it; one writer of Op::SecurityDev
+    #[test]
+    fn devacc_row_written_only_behind_the_native_confirm() {
+        let src = include_str!("main.rs");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_dev_set,"), "not registered");
+        let ms = src.find("async fn security_dev_set(").expect("security_dev_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        assert!(mb.starts_with("async fn security_dev_set(win: tauri::Window, field: String, value: String) ->"), "the setter must take only the row and the value");
+        let at = |s: &str| mb.find(s).unwrap_or_else(|| panic!("security_dev_set lacks {s}"));
+        assert!(at("security::dev_validate(&field, &value)?") < at("security::mic_weakens(stored, m)"));
+        assert!(at("security::mic_weakens(stored, m)") < at("consent::Kind::Security, consent::security_dev_question(f, m)"));
+        let (d, c) = (at("security::dev_decide(stored, m, confirmed)"), at(concat!("cfgstore::Op::", "SecurityDev(")));
+        assert!(d < c && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind dev_decide");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+        for page in ["plugin", "vault", "origin"] {
+            assert!(!mb.contains(page), "security_dev_set must not be keyed by page-reported {page}");
+        }
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityDev(")).count(), 1, "one writer of the Device access rows");
     }
 
     /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the

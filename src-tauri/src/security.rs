@@ -436,6 +436,125 @@ pub fn mic_report(cfg: &Value) -> Value {
     })
 }
 
+
+/* devaccess (Settings › Security › Device access): the rows besides the Microphone, one per device
+   surface stock 1.13.7 offers to the app and plugins (black box, goal devaccess RESULT.md §2):
+   Camera, Location, Notifications, Pointer lock. Same three values as the Microphone (security::Mic:
+   ask | always | off) and the same strictness order (off > ask > always). Stored FLAT as
+   security.<field> = "ask" | "always" | "off", written ONLY by cfgstore Op::SecurityDev after
+   `dev_validate`; a missing or malformed value = the row's default = TODAY's behaviour on develop
+   (camera / location / notifications denied by WebKit's default, pointer lock granted by WebKit's
+   class default for an unhandled request). Lockdown forces every row Off (stored value kept).
+   A weakening change goes through the native Security confirm in main.rs security_dev_set; a
+   revoke applies at once. "always" is app-wide and keyed by nothing the page reports. */
+pub const DEV_ROWS: &[(&str, &str, Mic)] = &[
+    ("camera", "Camera", Mic::Off),
+    ("location", "Location", Mic::Off),
+    ("notifications", "Notifications", Mic::Off),
+    ("pointerLock", "Pointer lock", Mic::Always),
+];
+
+/// surfaces a webview can request that have NO row: always denied (devperm::decide), listed in
+/// Settings as "not available" (stock 1.13.7 does not offer them, RESULT.md §2)
+pub const DEV_NOT_AVAILABLE: &[&str] = &["Screen capture", "Device names", "Protected media (EME)", "Website data access", "WebXR", "MIDI"];
+
+fn dev_row(field: &str) -> Option<&'static (&'static str, &'static str, Mic)> {
+    DEV_ROWS.iter().find(|r| r.0 == field)
+}
+
+/// a requested change, validated: a known row and exactly "ask" | "always" | "off"
+pub fn dev_validate(field: &str, v: &str) -> Result<(&'static str, Mic), String> {
+    let r = dev_row(field).ok_or_else(|| format!("unknown device access row {field:?}"))?;
+    match v {
+        "ask" => Ok((r.0, Mic::Ask)),
+        "always" => Ok((r.0, Mic::Always)),
+        "off" => Ok((r.0, Mic::Off)),
+        _ => Err(format!("unknown value {v:?} for Settings › Security › Device access › {} (ask | always | off)", r.1)),
+    }
+}
+
+pub fn dev_name(field: &str) -> &'static str {
+    dev_row(field).map(|r| r.1).unwrap_or("?")
+}
+
+/// the stored value of one row out of the WHOLE config (missing / malformed / unknown row = default;
+/// an unknown row has no default and reads Off)
+pub fn dev_stored(cfg: &Value, field: &str) -> Mic {
+    let Some(r) = dev_row(field) else { return Mic::Off };
+    cfg[KEY].get(r.0).and_then(Value::as_str).and_then(|s| dev_validate(r.0, s).ok()).map(|x| x.1).unwrap_or(r.2)
+}
+
+/// stored -> effective: lockdown forces Off
+pub fn dev_effective_with(stored: Mic, lockdown: bool) -> Mic {
+    if lockdown {
+        Mic::Off
+    } else {
+        stored
+    }
+}
+
+/// the stored rows as devperm reads them (lockdown is applied by devperm::decide)
+pub fn dev_rows(cfg: &Value) -> crate::devperm::Rows {
+    crate::devperm::Rows {
+        camera: dev_stored(cfg, "camera"),
+        location: dev_stored(cfg, "location"),
+        notifications: dev_stored(cfg, "notifications"),
+        pointer_lock: dev_stored(cfg, "pointerLock"),
+    }
+}
+
+/// security_dev_set's decision, pure (same rule as the microphone): a weakening change is written
+/// only with confirmed = true; a revoke or no change at once
+pub fn dev_decide(stored: Mic, new: Mic, confirmed: bool) -> Option<Mic> {
+    mic_decide(stored, new, confirmed)
+}
+
+/// what "off" says when a request is refused (names the switch)
+pub fn dev_off_text(field: &str) -> String {
+    format!("NotAllowedError: {} is off (Settings › Security › Device access › {})", dev_name(field).to_lowercase(), dev_name(field))
+}
+
+/// the confirm text for a weakening change of a row (Rust data only)
+pub fn dev_weaken_text(field: &str, new: Mic) -> String {
+    let n = dev_name(field);
+    match new {
+        Mic::Always => format!(
+            "Setting: Settings › Security › Device access › {n}\nNew value: always allow\n\n\
+             This lowers a protection: every request for {} from the app or from ANY community \
+             plugin, in every vault, is granted WITHOUT asking you first. Set it back to ask or off \
+             in Settings at any time; that applies at once. Confirm only if you changed it yourself: \
+             page or plugin code cannot answer this window.",
+            n.to_lowercase()
+        ),
+        _ => format!(
+            "Setting: Settings › Security › Device access › {n}\nNew value: ask before every request\n\n\
+             This lowers a protection: the app and community plugins may ask you for {} again, each \
+             time in a separate system window. Confirm only if you changed it yourself in Settings: \
+             page or plugin code cannot answer this window.",
+            n.to_lowercase()
+        ),
+    }
+}
+
+/// report()["device"]: {rows: [{field, name, stored, effective, forced}], notAvailable: [..]}
+pub fn dev_report(cfg: &Value) -> Value {
+    let lockdown = effective(cfg).lockdown;
+    let rows: Vec<Value> = DEV_ROWS
+        .iter()
+        .map(|(f, n, _)| {
+            let s = dev_stored(cfg, f);
+            let e = dev_effective_with(s, lockdown);
+            serde_json::json!({
+                "field": f,
+                "name": n,
+                "stored": s,
+                "effective": e,
+                "forced": if s != e { Value::from("lockdown") } else { Value::Null },
+            })
+        })
+        .collect();
+    serde_json::json!({"rows": rows, "notAvailable": DEV_NOT_AVAILABLE})
+}
 /// a requested change, validated: (field, value). Unknown field = refused.
 pub fn validate(field: &str, on: bool) -> Result<(&'static str, bool), String> {
     FIELDS
@@ -495,6 +614,8 @@ pub fn report(cfg: &Value) -> Value {
         "pageAppClipboard": PAGE_APPCLIP.load(std::sync::atomic::Ordering::SeqCst),
         // #295: the Microphone choice (ask | off), kept apart from the boolean switches above
         "microphone": mic_report(cfg),
+        // devaccess: the other Device access rows (camera, location, notifications, pointer lock)
+        "device": dev_report(cfg),
     })
 }
 
@@ -1533,5 +1654,55 @@ mod tests {
         assert!(!l.contains("wasm"));
         // nothing else is touched (same directives, same order)
         assert_eq!(l.split("; ").count(), h.split("; ").count());
+    }
+
+    /// devaccess: Device access rows. Defaults = today (camera / location / notifications off,
+    /// pointer lock always); malformed stored = default; unknown row / value refused; lockdown forces
+    /// every row off and keeps the stored value; weakening needs the confirm, a revoke does not;
+    /// the report carries every row + the not-available list; texts name the switch
+    #[test]
+    fn devacc_rows_setting() {
+        let e = json!({});
+        assert_eq!(dev_rows(&e), crate::devperm::DEFAULT_ROWS, "defaults = today's behaviour");
+        for (f, _, d) in DEV_ROWS {
+            let f: &str = f;
+            assert_eq!(dev_stored(&e, f), *d);
+            for bad in [json!("OFF"), json!(true), json!(1), json!(null), json!("allow"), json!({})] {
+                assert_eq!(dev_stored(&json!({"security": {f: bad.clone()}}), f), *d, "{f} {bad}");
+            }
+            for v in ["ask", "always", "off"] {
+                assert_eq!(dev_stored(&json!({"security": {f: v}}), f).as_str(), v);
+                assert_eq!(dev_validate(f, v).map(|x| x.1.as_str()), Ok(v));
+                assert_eq!(dev_effective_with(dev_validate(f, v).unwrap().1, true), Mic::Off, "lockdown must force {f} off");
+                assert_eq!(dev_effective_with(dev_validate(f, v).unwrap().1, false).as_str(), v);
+            }
+            for bad in ["", "Ask", "allow", "on", "always ", "__proto__"] {
+                assert!(dev_validate(f, bad).is_err(), "{f}={bad:?} accepted");
+            }
+            assert!(dev_off_text(f).contains(&format!("(Settings › Security › Device access › {})", dev_name(f))), "off must name the switch");
+            let a = dev_weaken_text(f, Mic::Always);
+            assert!(a.contains("always allow") && a.contains("WITHOUT asking") && a.contains("page or plugin code cannot answer this window"));
+            assert!(dev_weaken_text(f, Mic::Ask).contains("ask before every request"));
+        }
+        for bad in ["microphone", "screen", "display", "lockdown", "Camera", ""] {
+            assert!(dev_validate(bad, "always").is_err(), "row {bad:?} accepted");
+        }
+        assert_eq!(dev_stored(&json!({"security": {"screen": "always"}}), "screen"), Mic::Off, "an unknown row reads off");
+        // weakening: off -> ask / always and ask -> always need the confirm; a revoke applies at once
+        assert_eq!(dev_decide(Mic::Off, Mic::Always, false), None, "always allow without the native confirm");
+        assert_eq!(dev_decide(Mic::Off, Mic::Ask, false), None);
+        assert_eq!(dev_decide(Mic::Ask, Mic::Always, false), None);
+        assert_eq!(dev_decide(Mic::Ask, Mic::Always, true), Some(Mic::Always));
+        assert_eq!(dev_decide(Mic::Always, Mic::Off, false), Some(Mic::Off), "a revoke must not ask");
+        assert_eq!(dev_decide(Mic::Always, Mic::Ask, false), Some(Mic::Ask));
+        // report
+        let r = dev_report(&json!({"security": {"camera": "always"}}));
+        let rows = r["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), DEV_ROWS.len());
+        assert_eq!(rows[0], json!({"field": "camera", "name": "Camera", "stored": "always", "effective": "always", "forced": null}));
+        assert_eq!(rows[3]["stored"], "always", "pointer lock default");
+        assert_eq!(r["notAvailable"].as_array().unwrap().len(), DEV_NOT_AVAILABLE.len());
+        assert!(DEV_NOT_AVAILABLE.contains(&"Screen capture"));
+        assert!(report(&json!({}))["device"]["rows"].is_array(), "security_get must carry the rows");
     }
 }

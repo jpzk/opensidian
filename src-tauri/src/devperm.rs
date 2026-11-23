@@ -112,11 +112,12 @@ pub fn decide(label: &str, kind: Kind, rows: Rows, lockdown: bool, now: Instant)
     }
 }
 
-/// the rows in force now: the stored rows (Settings › Security › Device access) and the lockdown
-/// latch. No latch (cannot happen after main()) = lockdown: fail closed.
+/// the rows in force now: the stored rows (Settings › Security › Device access, read fresh from the
+/// config so a change applies to the next request) and the lockdown latch. No latch (cannot happen
+/// after main()) = lockdown: fail closed.
 pub fn current() -> (Rows, bool) {
     let lockdown = crate::security::booted().map(|s| s.lockdown).unwrap_or(true);
-    (DEFAULT_ROWS, lockdown)
+    (crate::security::dev_rows(&crate::cfg_value()), lockdown)
 }
 
 #[cfg(test)]

@@ -359,6 +359,13 @@ pub fn security_mic_question(new: crate::security::Mic) -> Question {
     Question { head: SECURITY_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
+/// devaccess: the confirm for a weakening Settings › Security › Device access change
+/// (security::mic_weakens on that row: off -> ask, off / ask -> always)
+pub fn security_dev_question(field: &str, new: crate::security::Mic) -> Question {
+    let text = crate::security::dev_weaken_text(field, new);
+    Question { head: SECURITY_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
     Question { head: TRUST_HEAD.into(), log: text.clone(), text, remember: None, always: false }

@@ -488,7 +488,7 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
 pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
     let label = w.label().to_string();
     let r = w.with_webview(move |pw| {
-        crate::macos::media_gate(pw.inner(), &label, |l, a, v| crate::devperm::decide(l, crate::devperm::Kind::UserMedia { audio: a, video: v, display: false }, crate::devperm::current().0, crate::devperm::current().1, Instant::now()) == crate::devperm::Decision::Allow);
+        crate::macos::media_gate(pw.inner(), &label, |l, a, v| { let (rows, lockdown) = crate::devperm::current(); crate::devperm::decide(l, crate::devperm::Kind::UserMedia { audio: a, video: v, display: false }, rows, lockdown, Instant::now()) == crate::devperm::Decision::Allow });
         done();
     });
     if let Err(e) = r {

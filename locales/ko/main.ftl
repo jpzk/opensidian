@@ -361,7 +361,18 @@ menu-from-vault-folder = 보관함 폴더 기준
 
 ## Settings > Security > Privacy > Microphone (#295)
 
-secmic-section = 개인 정보 보호
+secdev-section = 기기 접근
+secdev-camera = 카메라
+secdev-camera-desc = 앱과 커뮤니티 플러그인의 카메라 접근. 카메라가 켜져 있는 동안 창 제목이 "● Camera"로 시작합니다.
+secdev-location = 위치
+secdev-location-desc = 앱과 커뮤니티 플러그인에 제공되는 사용자의 위치.
+secdev-notifications = 알림
+secdev-notifications-desc = 앱과 커뮤니티 플러그인의 데스크톱 알림.
+secdev-pointerlock = 포인터 잠금
+secdev-pointerlock-desc = 클릭한 뒤 앱이나 커뮤니티 플러그인이 마우스 포인터를 숨기고 붙잡을 수 있습니다(3D 보기, 게임). Esc를 누르면 풀립니다.
+secdev-values = 묻기: 요청할 때마다 별도의 시스템 창에서 묻습니다. 항상 허용: 그 창 없이 허용합니다(이 선택은 시스템 창에서 한 번만 확인합니다). 끄기: 모든 요청을 거부하고 창도 표시하지 않습니다.
+secdev-na = 사용할 수 없음
+secdev-na-desc = 앱에도 플러그인에도 허용되지 않으며 창도 표시되지 않습니다: 화면 캡처, 기기 이름, 보호된 미디어(EME), 웹사이트 데이터 접근, WebXR, MIDI.
 secmic-label = 마이크
 secmic-desc = 묻기: 녹음기가 녹음을 시작할 때마다 별도의 시스템 창에서 묻습니다. 항상 허용: 그 창 없이 녹음을 시작합니다(이 선택은 시스템 창에서 한 번만 확인합니다). 끄기: 모든 녹음을 거부하고 창도 표시하지 않습니다. 마이크가 켜져 있는 동안 창 제목은 "● Recording"으로 시작합니다.
 secmic-ask = 묻기

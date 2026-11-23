@@ -364,7 +364,18 @@ menu-from-vault-folder = from vault folder
 
 ## Settings > Security > Privacy > Microphone (#295)
 
-secmic-section = Privacy
+secdev-section = Device access
+secdev-camera = Camera
+secdev-camera-desc = Camera access for the app and community plugins. While the camera is on, the window title starts with "● Camera".
+secdev-location = Location
+secdev-location-desc = Your location, for the app and community plugins.
+secdev-notifications = Notifications
+secdev-notifications-desc = Desktop notifications from the app and community plugins.
+secdev-pointerlock = Pointer lock
+secdev-pointerlock-desc = The app or a community plugin may hide and capture the mouse pointer after you click (3D views, games); Esc releases it.
+secdev-values = Ask: every request is asked in a separate system window. Always allow: granted without that window (you confirm this choice once, in a system window). Off: every request is refused and no window is shown.
+secdev-na = Not available
+secdev-na-desc = Never granted to the app or to plugins, and no window is shown: screen capture, device names, protected media (EME), website data access, WebXR, MIDI.
 secmic-label = Microphone
 secmic-desc = Ask: the Audio recorder asks in a separate system window before every recording. Always allow: recordings start without that window (you confirm this choice once, in a system window). Off: every recording is refused and no window is shown. While the microphone is on, the window title starts with "● Recording".
 secmic-ask = Ask
