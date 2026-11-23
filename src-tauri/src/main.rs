@@ -135,12 +135,15 @@ fn bind_vault(v: &Vault, p: &Path) -> Result<(), String> {
 enum BindErr {
     Bound(PathBuf, PathBuf),
     Lock(vaultlock::LockErr),
+    /// #293: the sandbox was asked for and is not in force (sandbox::boot_may_bind)
+    Sandbox(String),
 }
 impl std::fmt::Display for BindErr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             BindErr::Bound(cur, p) => write!(f, "this window already has a vault open ({}); open {} in a new window", cur.display(), p.display()),
             BindErr::Lock(e) => write!(f, "{e}"),
+            BindErr::Sandbox(why) => write!(f, "{} {why}", sandbox::REFUSED_HEAD),
         }
     }
 }
@@ -160,6 +163,11 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
 /// The claim half of a bind: everything but the walk + index (refuse if bound,
 /// flock, set-once root, built-in themes, app.json).
 fn claim_vault(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    // #293: every bind (boot, picker, create) consults the ONE decision first: asked for and
+    // not in force binds nothing — before the lock, the root or any vault write
+    if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome()) {
+        return Err(BindErr::Sandbox(why));
+    }
     if let Some(cur) = cur_vault(v) {
         return Err(BindErr::Bound(cur, p.to_path_buf()));
     }
@@ -4928,7 +4936,10 @@ async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> R
    raises a protection is written at once. Only Op::SecuritySet writes the key. */
 #[tauri::command]
 fn security_get() -> serde_json::Value {
-    security::report(&cfg_value())
+    let mut r = security::report(&cfg_value());
+    // #293: the sandbox state of THIS process (off / enforced / not-enforced), shown read-only
+    r["sandbox"] = sandbox::state_json();
+    r
 }
 
 /* #144 toggle 12 "Restart now" (also JIT / canvas "Applies after restart"): a switch onto THIS
@@ -8211,9 +8222,11 @@ fn main() {
             // vaultbleed D: the unconfined spawner, started BEFORE the ruleset
             // closes (an exec after enforce() is confined for life)
             let helper = spawner::start();
-            match sandbox::enforce(p) {
-                Ok(s) => eprintln!("landlock: {s:?}"),
-                Err(e) => eprintln!("landlock: off ({e})"),
+            // #293: the answer is published (sandbox::outcome) and decides the bind below
+            let o = sandbox::record(sandbox::enforce(p));
+            eprintln!("{}", o.log_line());
+            if let sandbox::Outcome::Partial { dropped } = o {
+                eprintln!("[sandbox] partially enforced: this kernel lacks {dropped:?}");
             }
             match helper {
                 // only a CONFINED window routes through it; otherwise the
@@ -8241,6 +8254,11 @@ fn main() {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
         let restart = switched.as_ref().and_then(|s| spawn::restart_of(&s.token));
+        // #293 (audit F-7): fail closed. The sandbox was asked for and is not in force => the
+        // vault is NOT bound: a native dialog says why, the process exits non-zero.
+        if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome()) {
+            sandbox::refuse_and_exit(&why, p);
+        }
         match bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart) {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
@@ -14065,6 +14083,81 @@ fn nob_probe() -> bool {
 #[tauri::command]
 fn psg_probe() -> bool {
     std::env::var("OPENSIDIAN_PSGPROBE").as_deref() == Ok("1")
+}
+
+/// #293 (audit F-7): no bind without the fail-closed decision — SOURCE SHAPE, since the
+/// refusal itself (a kernel that cannot enforce) is not reachable from a unit test
+#[cfg(test)]
+mod ll293_tests {
+    /// main.rs without its #[cfg(test)] modules: what ships
+    fn prod_src() -> String {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let mut out = String::new();
+        let mut rest = src.as_str();
+        while let Some(i) = rest.find("#[cfg(test)]\nmod ") {
+            let eol = i + rest[i + 13..].find('\n').expect("line end") + 13;
+            if !rest[i..eol].ends_with('{') {
+                // `mod x;` — a file module, nothing inline to cut
+                out.push_str(&rest[..eol]);
+                rest = &rest[eol..];
+                continue;
+            }
+            out.push_str(&rest[..i]);
+            let end = rest[i..].find("\n}\n").expect("test module end");
+            rest = &rest[i + end + 3..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let i = src.find(sig).unwrap_or_else(|| panic!("{sig}"));
+        &src[i..i + src[i..].find("\n}\n").expect("end")]
+    }
+
+    const DECIDE: &str = "sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome())";
+
+    #[test]
+    fn ll293_main_consults_the_decision_between_enforce_and_the_boot_bind() {
+        let src = prod_src();
+        let m = body(&src, "\nfn main() {");
+        let enforce = m.find("sandbox::record(sandbox::enforce(p))").expect("enforce's answer is recorded");
+        let decide = m.find(DECIDE).expect("main consults boot_may_bind");
+        let refuse = m.find("sandbox::refuse_and_exit(&why, p)").expect("a refusal exits");
+        let bind = m.find("bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart)").expect("boot bind");
+        assert!(enforce < decide && decide < refuse && refuse < bind, "enforce -> decide -> refuse -> bind");
+        assert_eq!(m.matches("bind_vault_boot_after(").count(), 1, "one boot bind");
+        assert_eq!(m.matches("sandbox::enforce(").count(), 1, "one enforce, its answer recorded");
+    }
+
+    #[test]
+    fn ll293_every_bind_goes_through_claim_vault_which_decides_first() {
+        let src = prod_src();
+        let c = body(&src, "\nfn claim_vault(");
+        let decide = c.find(DECIDE).expect("claim_vault consults boot_may_bind");
+        for later in ["vaultlock::acquire_in(", "v.root.set(", "builtins::seed_and_record(", "ensure_app_json("] {
+            assert!(decide < c.find(later).unwrap_or_else(|| panic!("{later}")), "{later} before the sandbox decision");
+        }
+        let first = c.lines().skip(2).map(str::trim).find(|t| !t.is_empty() && !t.starts_with("//")).expect("a statement");
+        assert!(first.starts_with("if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind("), "the decision is the first statement: {first}");
+        // the root is assigned in claim_vault only, and claim_vault is called by the two binders only
+        assert_eq!(src.matches(".root.set(").count(), 1, "one place assigns a vault root");
+        assert_eq!(src.matches("claim_vault(").count(), 3, "definition + bind_vault_locked + bind_vault_boot");
+        assert!(body(&src, "\nfn bind_vault_locked(").contains("claim_vault(v, p, lock_dir)?;"));
+        assert!(body(&src, "\nfn bind_vault_boot(").contains("claim_vault(v, p, lock_dir)?;"));
+        // and nothing else in main.rs consults or skips it
+        assert_eq!(src.matches("boot_may_bind(").count(), 2, "main() and claim_vault");
+        for f in ["sandbox.rs", "spawn.rs", "spawner.rs", "security.rs"] {
+            let s = std::fs::read_to_string(format!("{}/src/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            assert!(!s.contains(".root.set("), "{f} assigns a vault root");
+        }
+    }
+
+    #[test]
+    fn ll293_security_get_reports_the_sandbox_state() {
+        let src = prod_src();
+        assert!(body(&src, "\nfn security_get(").contains("r[\"sandbox\"] = sandbox::state_json();"));
+    }
 }
 
 /* vaultbleed (operator 2026-10-03, SEVERE): "i see tags from another vault in

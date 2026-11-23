@@ -184,6 +184,37 @@
     if (m) m.hidden = !R.lockdown;
     try { if (typeof pushTitle === "function" && tWant) pushTitle(tWant); } catch (_) {}
   }
+  /* #293 (audit F-7) Sandbox: the Landlock state of THIS process as Rust reports it (security_get
+     .sandbox.state = "enforced" | "not-enforced" | "off", sandbox::state_json). Read-only: there is
+     no in-app switch, the sandbox is asked for at start (OPENSIDIAN_LANDLOCK=1) and a boot that asks
+     for it and cannot enforce it never opens the vault. Census [secsb:<state>]. Strings: secsb-*. */
+  const SB_I18 = window.I18N;   // captured at load, before any plugin script
+  const sbTr = (id, en) => { try { const s = SB_I18 && SB_I18.t(id); if (s && s !== id) return s; } catch (_) {} return en; };
+  const SB_TEXT = {
+    "enforced": ["secsb-enforced", "Enforced", "secsb-desc-enforced", "This window can write only inside its vault and the folders the app needs. Turned on at start with OPENSIDIAN_LANDLOCK=1."],
+    "not-enforced": ["secsb-not-enforced", "Not enforced", "secsb-desc-not-enforced", "The sandbox is turned on but is not in force in this window, so no vault is opened here."],
+    "off": ["secsb-off", "Off", "secsb-desc-off", "Not turned on. Start Opensidian with OPENSIDIAN_LANDLOCK=1 to confine it to the vault (Linux only)."],
+  };
+  function sandboxRow(pg) {
+    const S = R && R.sandbox, t = S && SB_TEXT[S.state];
+    if (!t) return;
+    pg.appendChild(el("div", "ssec", sbTr("secsb-section", "Sandbox")));
+    const card = el("div", "scard"); pg.appendChild(card);
+    const r = el("div", "srow"); r.dataset.secsb = S.state;
+    const info = el("div", "sinfo");
+    info.appendChild(el("div", "slabel", sbTr("secsb-label", "Landlock sandbox")));
+    info.appendChild(el("div", "sdesc", sbTr(t[2], t[3])));
+    if (S.detail) info.appendChild(el("div", "sdesc ssecforced", S.detail));
+    r.appendChild(info);
+    const v = el("div", "sctl ssecsbstate", sbTr(t[0], t[1])); v.id = "ssecsb";
+    r.appendChild(v);
+    card.appendChild(r);
+  }
+  function sbTok() {
+    if (!R || !R.sandbox || typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return "";
+    const v = document.getElementById("ssecsb");
+    return " [secsb:" + R.sandbox.state + "/" + (v ? v.textContent : "-") + "]";
+  }
   async function refresh() { R = await inv("security_get"); publish(); return R; }
   async function set(f, on) {
     if (busy) return; busy = true;
@@ -252,10 +283,12 @@
       }
     }
     if (typeof updateTitle === "function") updateTitle();
+    sandboxRow(pg);
   }
   function tok() {
     if (!R) return "";
     let ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
+    ld += sbTok(); // #293: only while the Security pane is open
     // [secd:<id of the focused control>] while the confirm is up (default focus = ld-no)
     if (ldOpen) { const a = document.activeElement; ld += " [secd:" + (a && a.id ? a.id : "-") + "]"; }
     // [secm:<marker rect>|<vault-name rect>] x,y,w,h while the marker shows: the harness intersects them
