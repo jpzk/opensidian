@@ -274,7 +274,9 @@ const Ed = {
           eadd(Ed.mk("![["), true);
           eadd(Ed.mk(raw, "img"), true);                          // the whole inner text, folded
           eadd(Ed.mk("]]"), true);
-          eadd(Ed.imgEl(target, bar >= 0 ? label : target), false);  // alias is the alt (image_html)
+          // CodeAnt #262: image_html decides remote by url_scheme FIRST, so ![[https://h/x.svg]] is the
+          // remote banner in reading view; pass the same flag, or live preview looked it up locally
+          eadd(Ed.imgEl(target, bar >= 0 ? label : target, /^https?:/i.test(target)), false);  // alias is the alt (image_html)
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
@@ -578,6 +580,12 @@ const Ed = {
       s.dataset.sec = "remoteMedia";
       s.dataset.why = on ? "(Settings › Security › Load external resources: only https:// addresses load)"
                          : "(Settings › Security › Load external resources is off)";
+      s.contentEditable = "false";
+      return s;
+    }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) {   // image_html: any other url_scheme -> "remote image" could not be found
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = "remote image";
       s.contentEditable = "false";
       return s;
     }
