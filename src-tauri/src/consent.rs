@@ -393,7 +393,9 @@ pub fn device_text(field: &str) -> Option<String> {
     Some(format!(
         "{what}\n\nPress Allow once only if you yourself just did something in this window that needs \
          it: page or plugin code can ask, but cannot answer this window.{live}\n\n\
-         This answer covers this one request only: every new request asks again. \
+         This answer is not remembered by opensidian, but the web engine may let this same page \
+         reuse it (e.g. turn the camera on again) without asking until the page reloads or the \
+         window closes; after that a new request asks again. \
          Settings › Security › Device access › {n} = off refuses every request without asking; \
          always allow grants without asking (after a confirm)."
     ))
@@ -1430,7 +1432,12 @@ mod tests {
             assert_eq!(q.head, *head);
             assert!(q.text.starts_with(what), "{f}");
             assert!(q.text.contains(&format!("Settings › Security › Device access › {name} = off refuses")), "{f}: names the switch");
-            assert!(q.text.contains("this one request only"), "{f}");
+            assert!(q.text.contains("not remembered by opensidian"), "{f}");
+            // box secdev: WebKit re-grants a 2nd getUserMedia in the same page without a new
+            // permission request, so the text must not promise that every request asks
+            assert!(q.text.contains("may let this same page reuse it"), "{f}: says the page may reuse it");
+            assert!(q.text.contains("until the page reloads"), "{f}");
+            assert!(!q.text.contains("every new request asks again"), "{f}: no false promise");
             assert!(q.text.contains("cannot answer this window"), "{f}");
             assert_eq!(q.log, q.text);
             assert!(!q.always && q.remember.is_none(), "{f}: no Always button, nothing remembered");
