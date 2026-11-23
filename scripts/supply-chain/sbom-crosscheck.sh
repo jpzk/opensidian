@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# sbom-crosscheck.sh — #299: scan the SAME CycloneDX SBOMs with two independent scanners
+# (pinned osv-scanner + pinned grype) and diff their findings, so a miss by one shows up.
+#
+#   fetch <tag> <dir>                download every <name>.cdx.json of release <tag> listed in
+#                                    $SBOMS (space-separated basenames) + its .sha256; verify each
+#                                    (missing / mismatch -> rc 1)
+#   norm-osv <osv.json> <sbom-label>   osv-scanner JSON  -> normalized TSV on stdout
+#   norm-grype <grype.json> <sbom-label> grype JSON      -> normalized TSV on stdout
+#   diff <osv.tsv> <grype.tsv>       one line per finding: both|osv-only|grype-only <TAB> row
+#   summary <diff.tsv>               markdown counts per sbom
+#
+# Normalized TSV: sbom  ecosystem  name  version  id  ids  severity  fixed
+#   ids = sorted, comma-joined union of the finding id, its aliases / related ids, its upstream
+#   ids, and the CVE inside DEBIAN-CVE-* / UBUNTU-CVE-* ids. Two findings MATCH when they are on the
+#   same sbom + lowercased package name + version and share at least one id. Ecosystem labels differ
+#   per scanner (crates.io vs rust-crate) and are display-only.
+# Fail closed: unreadable / wrong-shaped scanner JSON -> rc 1, never "0 findings".
+set -euo pipefail
+log() { printf '%s\n' "$*" >&2; }
+die() { log "::error::$*"; exit 1; }
+
+cmd_fetch() {
+  local tag=${1:?fetch <tag> <dir>} dir=${2:?} repo=${GITHUB_REPOSITORY:-jpzk/opensidian} f
+  case "$tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) die "fetch: bad tag '$tag'" ;; esac
+  [ -n "${SBOMS:-}" ] || die "fetch: SBOMS is empty"
+  mkdir -p "$dir"
+  for f in $SBOMS; do
+    case "$f" in *[!A-Za-z0-9._-]*|'') die "fetch: bad asset name '$f'" ;; *.cdx.json) ;; *) die "fetch: '$f' is not *.cdx.json" ;; esac
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$dir/$f.sha256" "https://github.com/$repo/releases/download/$tag/$f.sha256" || die "fetch: $f.sha256 missing"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$dir/$f" "https://github.com/$repo/releases/download/$tag/$f" || die "fetch: $f missing"
+    [ "$(awk '{print $2}' "$dir/$f.sha256")" = "$f" ] || die "fetch: $f.sha256 names another file"
+    (cd "$dir" && sha256sum -c "$f.sha256" >&2) || die "fetch: sha256 mismatch for $f"
+    jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' "$dir/$f" >/dev/null || die "fetch: $f is not a CycloneDX SBOM"
+  done
+}
+
+# shared jq: id set normalization
+JQ_IDS='def ids($xs): [$xs[] | select(type == "string" and . != "")
+          | ., (capture("^(?:DEBIAN|UBUNTU)-(?<c>CVE-[0-9]+-[0-9]+)$")?.c // empty)] | unique | join(",");
+        def orn: if . == null or . == "" then "-" else . end;'
+
+cmd_norm_osv() {
+  local j=${1:?norm-osv <osv.json> <label>} l=${2:?}
+  jq -e '.results | type == "array"' "$j" >/dev/null 2>&1 || die "norm-osv: $j is not osv-scanner JSON"
+  jq -r --arg l "$l" "$JQ_IDS"'
+    .results[].packages[]? | .package as $p | (.vulnerabilities // [])[]
+    | [$l, ($p.ecosystem | orn), ($p.name | ascii_downcase), ($p.version | orn), .id,
+       ids([.id] + (.aliases // []) + (.upstream // [])),
+       ((.database_specific.severity // .severity[0]?.score // null) | if . == null then null else tostring end | orn),
+       ([.affected[]?.ranges[]?.events[]? | .fixed // empty] | unique | join(",") | orn)]
+    | @tsv' "$j" | sort -u
+}
+
+cmd_norm_grype() {
+  local j=${1:?norm-grype <grype.json> <label>} l=${2:?}
+  jq -e '.matches | type == "array"' "$j" >/dev/null 2>&1 || die "norm-grype: $j is not grype JSON"
+  jq -r --arg l "$l" "$JQ_IDS"'
+    .matches[] | [$l, (.artifact.type | orn), (.artifact.name | ascii_downcase), (.artifact.version | orn),
+       .vulnerability.id, ids([.vulnerability.id] + [.relatedVulnerabilities[]?.id]),
+       (.vulnerability.severity | orn), ((.vulnerability.fix.versions // []) | join(",") | orn)]
+    | @tsv' "$j" | sort -u
+}
+
+cmd_diff() {
+  local a=${1:?diff <osv.tsv> <grype.tsv>} b=${2:?}
+  [ -r "$a" ] && [ -r "$b" ] || die "diff: unreadable input"
+  awk -F'\t' -v OFS='\t' '
+    NF != 8 { bad = 1; exit }
+    { key = $1 SUBSEP $3 SUBSEP $4; n = split($6, ids, ",")
+      row[side, FNR] = $0; cnt[side] = FNR
+      for (i = 1; i <= n; i++) idx[side, key, ids[i]] = 1
+      k[side, FNR] = key; il[side, FNR] = $6 }
+    END {
+      if (bad) { print "diff: malformed row (need 8 tab-separated fields)" > "/dev/stderr"; exit 1 }
+      for (s = 1; s <= 2; s++) { o = 3 - s
+        for (r = 1; r <= cnt[s]; r++) { m = 0; n = split(il[s, r], ids, ",")
+          for (i = 1; i <= n; i++) if ((o, k[s, r], ids[i]) in idx) { m = 1; break }
+          if (m && s == 1) print "both", row[s, r]
+          else if (!m) print (s == 1 ? "osv-only" : "grype-only"), row[s, r] } } }' side=1 "$a" side=2 "$b"
+}
+
+cmd_summary() {
+  local d=${1:?summary <diff.tsv>}
+  printf '| sbom | both | osv-only | grype-only |\n|---|---|---|---|\n'
+  awk -F'\t' '{ s[$2]; c[$2, $1]++ } END { for (x in s) printf "| %s | %d | %d | %d |\n", x, c[x,"both"], c[x,"osv-only"], c[x,"grype-only"] }' "$d" | sort
+}
+
+c=${1:-}; shift || true
+case "$c" in
+  fetch) cmd_fetch "$@" ;;
+  norm-osv) cmd_norm_osv "$@" ;;
+  norm-grype) cmd_norm_grype "$@" ;;
+  diff) cmd_diff "$@" ;;
+  summary) cmd_summary "$@" ;;
+  *) die "usage: $0 fetch|norm-osv|norm-grype|diff|summary ..." ;;
+esac
