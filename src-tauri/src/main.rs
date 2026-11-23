@@ -10240,6 +10240,25 @@ mod tests {
         assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
     }
 
+    /// devaccess: the app page's getUserMedia rejector (ui/main.js) forwards ONLY a rebuilt
+    /// { video } request to the native gate (devperm::decide); anything carrying audio, or with no
+    /// video, is still refused in the page. The audio key is never copied into the forwarded object.
+    #[test]
+    fn devacc_page_forwards_only_video_to_the_native_gate() {
+        let ui = include_str!("../../ui/main.js");
+        let a = ui.find("const deny = function getUserMedia(c) {").expect("rejector");
+        let body = &ui[a..a + ui[a..].find("\n  };").expect("rejector end")];
+        assert!(body.contains("!c.audio) v = c.video;"), "audio must exclude the forward: {body}");
+        assert!(body.contains("const ask = { video: (typeof v === \"object\" ? v : true) }; return gum(ask);"), "forward must be a rebuilt video-only object");
+        assert_eq!(body.matches("gum(").count(), 1, "one forward only");
+        assert!(!body.contains("gum(c"), "the caller's constraints object must never reach WebKit");
+        assert!(!body.contains("audio:"), "no audio key in the forwarded request");
+        assert!(body.contains("reserved for the Audio recorder core plugin.\", \"NotAllowedError\""), "everything else refused");
+        // both bindings still the rejector, non-writable
+        assert!(ui.contains("Object.defineProperty(md, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+        assert!(ui.contains("Object.defineProperty(MediaDevices.prototype, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+    }
+
     /// devaccess: a Device access row is written only by security_dev_set, behind dev_decide and
     /// the native Security confirm (confirmed defaults to NO); the setter takes only (field, value),
     /// nothing page-reported (no plugin id / vault / origin) enters it; one writer of Op::SecurityDev

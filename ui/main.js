@@ -8811,7 +8811,15 @@ let AREC = null;
   const IV = TAURI && TAURI.core && typeof TAURI.core.invoke === "function" ? TAURI.core.invoke : null;
   const call = (c, a) => IV ? IV(c, a) : Promise.reject(new Error("no ipc"));
   const tokP = call("audio_token").then(t => (typeof t === "string" && t ? t : null), () => null);
-  const deny = function getUserMedia() { return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError")); };
+  // devaccess (#295): a camera request — video only — goes to the NATIVE gate (devperm::decide: Settings › Security ›
+  // Device access › Camera; default off = denied there). The constraints are rebuilt here as { video } read ONCE, so
+  // no getter / Proxy can add audio after this check: a page request never carries audio, the mic stays reserved.
+  const deny = function getUserMedia(c) {
+    let v = null;
+    try { if (c && typeof c === "object" && !c.audio) v = c.video; } catch (_) { v = null; }
+    if (gum && v) { const ask = { video: (typeof v === "object" ? v : true) }; return gum(ask); }
+    return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError"));
+  };
   if (md) {
     try { Object.defineProperty(md, "getUserMedia", { value: deny, writable: false, configurable: false, enumerable: true }); } catch (_) {}
     try { if (window.MediaDevices && MediaDevices.prototype) Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: deny, writable: false, configurable: false }); } catch (_) {}
