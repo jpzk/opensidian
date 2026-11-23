@@ -1105,6 +1105,7 @@ const Ed = {
      Deferred + coalesced (30ms): the title write must never land inside the
      key_to_paint span it would otherwise inflate. */
   census() {
+    if (window.__p278 && window.__p278.flag("nocensus")) return;
     if (Ed._ct) return;
     Ed._ct = setTimeout(() => {
       Ed._ct = null;
@@ -2076,8 +2077,13 @@ Object.assign(Ed, {
   },
   selectAll(g) {
     const cm = Ed.cm(g); if (!cm) return;
-    cm.dispatch({ selection: { anchor: 0, head: cm.state.doc.length } });
+    const P = window.__p278, t0 = performance.now();
+    if (P && P.flag("selclear") && !document.getElementById("p278sc")) { const s = document.createElement("style"); s.id = "p278sc"; s.textContent = ".cm-content ::selection, .cm-content::selection { background: transparent !important }"; document.head.appendChild(s); }
+    const top = !!(P && P.flag("headtop"));
+    cm.dispatch({ selection: top ? { anchor: cm.state.doc.length, head: 0 } : { anchor: 0, head: cm.state.doc.length } });
+    const t1 = performance.now();
     Ed.census();
+    if (P && P.sa) P.sa(t1 - t0, performance.now() - t1, top);
   },
   // R17 undo/redo re-rendered the caret into the note, which took the keyboard there
   // (find bar Ctrl+Z hands focus back to the text, R26.20) — CM6 history does not focus
@@ -2325,6 +2331,10 @@ Object.assign(Ed, {
     return lp;
   },
   onUpdate(g, v, u) {
+    const P278 = window.__p278, P278t = P278 ? performance.now() : 0;
+    try { return Ed.onUpdate0(g, v, u); } finally { if (P278) P278.ul(P278t); }
+  },
+  onUpdate0(g, v, u) {
     Ed.kroMap(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
@@ -2977,6 +2987,7 @@ Ed.lpExt = function (v, G) {
   let tcrGen = 0, tcrRow = -1;   // gh #75: stale-caret repaint class tcr0/tcr1 parity + the blank task row the caret was on last build (see build)
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
+    const P278b0 = performance.now(), P278norv = !!(window.__p278 && v.lp && v.lp.classList.contains("src") && window.__p278.flag("norv"));
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const src = Ed.lpSrc(v); v._lpSrc = src;   // #278: source mode at this build (Ed.lpMk, Ed.lpSrcSync)
     const cur = doc.lineAt(sel.head).number;
@@ -3031,11 +3042,13 @@ Ed.lpExt = function (v, G) {
       if (g.lp._rvsig !== sig) { g.lp._rvs = labels; g.lp._rvsig = sig; }
     }
     tcrRow = tcrNext;
+    if (window.__p278) window.__p278.build(performance.now() - P278b0, last, labels.length, out.length);
     return Decoration.set(out, true);
   };
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
+      const P278 = window.__p278; if (P278) P278.upd0();
       if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust)))) {
         const tt = Ed._tt ? performance.now() : 0;
         this.decorations = build(u.view);
