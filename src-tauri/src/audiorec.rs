@@ -16,10 +16,11 @@
        camera/screen setting is touched).
      - permission-request: a UserMediaPermissionRequest is ALLOWED only if it is
        for an audio device, NOT for a video device, NOT for a display (screen)
-       device, AND this window is ARMED. Everything else that is a user-media
-       or device-info request is DENIED explicitly; every other request type
-       (geolocation, notifications, clipboard, ...) returns false = WebKit's
-       default handler, which denies — i.e. exactly today's behaviour.
+       device, AND this window is ARMED. devaccess: EVERY request type is now
+       decided by devperm::decide (Settings › Security › Device access rows;
+       unknown types denied) and the handler never falls back to WebKit's
+       default — which, for pointer lock, ALLOWS (that was today's behaviour,
+       kept as the Pointer lock row's default "always allow").
      - ARMED = a one-shot deadline (ARM_WINDOW) set by `audio_arm(token)` and
        CONSUMED by the first matching request, cleared by `audio_disarm` and by a
        page load. A plugin's getUserMedia outside that window is denied.
@@ -337,27 +338,28 @@ pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl F
             }
         }
         wv.connect_permission_request(move |_, req| {
+            // devaccess: EVERY request is decided here by devperm::decide and answered with allow() or
+            // deny(); the handler returns true on every path, so WebKit's class default (which ALLOWS
+            // pointer lock) never runs. An unknown request type is Kind::Unknown = Deny.
+            let ty = req.type_().name().to_string();
+            let mut kind = crate::devperm::kind_of(&ty);
             if let Some(um) = req.downcast_ref::<webkit2gtk::UserMediaPermissionRequest>() {
                 let raw: *mut webkit2gtk_sys::WebKitUserMediaPermissionRequest = um.to_glib_none().0;
                 // SAFETY: `raw` is the live request object, borrowed for the duration of the signal handler
                 let display = unsafe {
                     webkit2gtk_sys::webkit_user_media_permission_is_for_display_device(raw) != 0
                 };
-                let (a, v) = (um.is_for_audio_device(), um.is_for_video_device());
-                let verdict = decide(&label, a, v, display, Instant::now());
-                eprintln!("[audiorec] user-media request audio={a} video={v} display={display} -> {verdict:?}");
-                match verdict {
-                    Verdict::Allow => req.allow(),
-                    Verdict::Deny => req.deny(),
-                }
-                return true;
+                kind = crate::devperm::Kind::UserMedia { audio: um.is_for_audio_device(), video: um.is_for_video_device(), display };
             }
-            if req.is::<webkit2gtk::DeviceInfoPermissionRequest>() {
-                // enumerateDevices labels: not needed to record, never given
-                req.deny();
-                return true;
+            let (rows, lockdown) = crate::devperm::current();
+            let verdict = crate::devperm::decide(&label, kind, rows, lockdown, Instant::now());
+            eprintln!("[audiorec] permission request {ty} {kind:?} -> {verdict:?}");
+            match verdict {
+                crate::devperm::Decision::Allow => req.allow(),
+                // Ask: the per-request native consent is not wired yet -> fail closed
+                crate::devperm::Decision::Ask | crate::devperm::Decision::Deny => req.deny(),
             }
-            false // every other request: WebKit's default handler (deny), unchanged
+            true
         });
         done();
     });
@@ -486,7 +488,7 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
 pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
     let label = w.label().to_string();
     let r = w.with_webview(move |pw| {
-        crate::macos::media_gate(pw.inner(), &label, |l, a, v| decide(l, a, v, false, Instant::now()) == Verdict::Allow);
+        crate::macos::media_gate(pw.inner(), &label, |l, a, v| crate::devperm::decide(l, crate::devperm::Kind::UserMedia { audio: a, video: v, display: false }, crate::devperm::current().0, crate::devperm::current().1, Instant::now()) == crate::devperm::Decision::Allow);
         done();
     });
     if let Err(e) = r {

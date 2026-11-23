@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+mod devperm; // devaccess: the ONE decision for every webview permission request (Settings › Security › Device access)
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
