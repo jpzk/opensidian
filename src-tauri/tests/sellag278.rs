@@ -15,6 +15,7 @@
 //!   6. style.css: every rule revealing `.lp ... .X.rv` carries the `.lp.src ... .X` twin in the same
 //!      selector list — the premise that the swap is invisible in source mode. The checker itself is
 //!      shown to reject a rule without its twin.
+//!   7. navBtnSync (main.js) writes a nav button's .disabled only when it changes (Ctrl+A second paint).
 #![cfg(target_os = "linux")]
 
 use javascriptcore::{ContextExt, ExceptionExt, ValueExt};
@@ -142,4 +143,49 @@ fn sellag278_css_src_twins() {
     }
     let css = std::fs::read_to_string(root().join("ui/style.css")).unwrap();
     assert!(css.contains(".lp.src .mk, .lp .mk.rv"), "style.css: the base marker reveal rule moved; re-check #278");
+}
+
+/// main.js source of `function <name>(` up to its closing "\n}\n" (top-level function)
+fn main_fn(main: &str, name: &str) -> String {
+    let s = &main[main.find(&format!("function {name}(")).unwrap_or_else(|| panic!("{name} missing"))..];
+    let first = &s[..s.find('\n').unwrap_or(s.len())];
+    if first.trim_end().ends_with('}') { return first.to_string(); }   // a one-line function
+    s[..s.find("\n}").unwrap_or(s.len()) + 2].to_string()
+}
+
+#[test]
+fn sellag278_navbtn_writes_only_on_change() {
+    // #278 Ctrl+A: utLite -> navBtnSync re-set .disabled on every census tick (second paint). It must
+    // write a button only when its state changes, and still write every real change (negative cases).
+    let main = std::fs::read_to_string(root().join("ui/main.js")).unwrap();
+    let src = format!("{}\n{}", main_fn(&main, "navBtnSync"), main_fn(&main, "navDis"));
+    let ctx = javascriptcore::Context::new();
+    ctx.evaluate(&src);
+    if let Some(e) = ctx.exception() { panic!("navBtnSync/navDis did not load: {}", e.to_str()); }
+    let checks = r#"(function () {
+      const fail = m => { throw new Error(m); };
+      const btn = d => { const b = { w: 0, v: d }; Object.defineProperty(b, "disabled", { get() { return b.v; }, set(x) { b.w++; b.v = x; } }); return b; };
+      let st = { b: false, f: false };
+      const h = { navback: btn(true), navfwd: btn(true) };
+      groups = () => [h, { navback: null }];      // a pane without nav buttons is skipped
+      navState = () => st;
+      navBtnSync();                               // unchanged (both disabled): no write
+      if (h.navback.w || h.navfwd.w) fail("unchanged state wrote .disabled: " + h.navback.w + "," + h.navfwd.w);
+      navBtnSync(); navBtnSync();
+      if (h.navback.w || h.navfwd.w) fail("repeated ticks wrote .disabled");
+      st = { b: true, f: false };                 // back becomes enabled: exactly one write, on back
+      navBtnSync();
+      if (h.navback.w !== 1 || h.navback.v !== false) fail("back enable not written");
+      if (h.navfwd.w !== 0 || h.navfwd.v !== true) fail("forward touched though unchanged");
+      st = { b: true, f: true };
+      navBtnSync();
+      if (h.navfwd.w !== 1 || h.navfwd.v !== false || h.navback.w !== 1) fail("forward enable");
+      st = { b: false, f: false };                // both disabled again: one write each
+      navBtnSync();
+      if (h.navback.w !== 2 || h.navback.v !== true || h.navfwd.w !== 2 || h.navfwd.v !== true) fail("disable not written");
+      return "ok";
+    })()"#;
+    let out = ctx.evaluate(checks).map(|v| v.to_str().to_string()).unwrap_or_default();
+    if let Some(e) = ctx.exception() { panic!("#278 navbtn check failed: {}", e.to_str()); }
+    assert_eq!(out, "ok");
 }
