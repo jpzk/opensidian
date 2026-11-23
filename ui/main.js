@@ -15933,11 +15933,13 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
           h: b ? Math.round(b.contentDOM.getBoundingClientRect().height) : -1, txt: b ? b.contentDOM.textContent.slice(0, 80) : "", disp: bx ? getComputedStyle(bx).display : "none",
           col: b ? getComputedStyle(b.contentDOM).color : "" }, 0); } catch (e) { try { otel.span("p278_err", { f, msg: "post " + String(e).slice(0, 300) }, 0); } catch (_) {} } }, 1500);
     }
-    else if (has("selcl") || has("dslrm")) { if (!window.__p278sc) { window.__p278sc = 1; mode = has("selcl") ? "selcl" : "dslrm"; let k = 0;
+    else if (has("selcl") || has("dslrm") || has("mkms")) { if (!window.__p278sc) { window.__p278sc = 1; mode = has("mkms") ? "mkms" : has("selcl") ? "selcl" : "dslrm"; let k = 0;
+        // iter c2: mkms = selcl + mkm combined (both levers at once)
+        if (mode === "mkms" && !Ed._p278mkm) { Ed._p278mkm = true; const v = fg() && fg().view; if (v && v._lpFx) cm.dispatch({ effects: v._lpFx.of(null) }); }
         // iter c1: selcl = our ::selection rule SCOPED: it no longer matches the inline elements inside a .cm-line (the line
         // itself and everything outside the editor keep it); dslrm = CM6 drawSelection (layer in --text-selection) + our rule deleted
         for (const s of document.styleSheets) { let rs; try { rs = s.cssRules; } catch (_) { continue; } for (let i = rs.length - 1; i >= 0; i--) if (rs[i].selectorText === "::selection") { s.deleteRule(i); k++; } }
-        if (mode === "selcl") { const st = document.createElement("style"); st.textContent = ":not(.cm-line *)::selection { background-color: var(--text-selection) }"; document.head.appendChild(st); }
+        if (mode === "selcl" || mode === "mkms") { const st = document.createElement("style"); st.textContent = ":not(.cm-line *)::selection { background-color: var(--text-selection) }"; document.head.appendChild(st); }
         else cm.dispatch({ effects: CMs.StateEffect.appendConfig.of([CMv.drawSelection(), CMv.EditorView.theme({ ".cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": { background: "var(--text-selection)" } })]) });
         console.log("[p278] state", mode, "removed=" + k); } }
     else if (has("mkm")) { if (!Ed._p278mkm) { Ed._p278mkm = true; mode = "mkm"; const v = fg() && fg().view; if (v && v._lpFx) cm.dispatch({ effects: v._lpFx.of(null) }); } }
