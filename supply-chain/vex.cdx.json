@@ -60,20 +60,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/url@2.5.8",
-      "name": "url",
-      "version": "2.5.8",
-      "purl": "pkg:cargo/url@2.5.8"
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:cargo/cookie@0.18.2",
-      "name": "cookie",
-      "version": "0.18.2",
-      "purl": "pkg:cargo/cookie@0.18.2"
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:cargo/unic-ucd-version@0.9.0",
       "name": "unic-ucd-version",
       "version": "0.9.0",
@@ -397,78 +383,6 @@
         {
           "name": "opensidian:expires",
           "value": "2027-05-15"
-        }
-      ]
-    },
-    {
-      "bom-ref": "vex:RUSTSEC-2026-0592",
-      "id": "RUSTSEC-2026-0592",
-      "source": {
-        "name": "RustSec",
-        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0592.html"
-      },
-      "references": [
-        {
-          "id": "GHSA-hrj5-67jp-wqp9",
-          "source": {
-            "name": "GitHub",
-            "url": "https://github.com/advisories/GHSA-hrj5-67jp-wqp9"
-          }
-        }
-      ],
-      "affects": [
-        {
-          "ref": "pkg:cargo/url@2.5.8"
-        }
-      ],
-      "analysis": {
-        "state": "not_affected",
-        "detail": "Affected functions are url::Url::origin and url::quirks::origin only. Neither is called by opensidian nor by any crate in Cargo.lock that depends on url (tauri, tauri-runtime, tauri-runtime-wry, tauri-utils, tauri-codegen, wry, tao, urlpattern, schemars, reqwest 0.13.4, tower-http 0.6.11), checked by source grep on 2026-11-23. The webview's JS URL.origin is WebKit, not this crate. Fixed url 2.5.9 (2026-11-20) is < 6 weeks old (dependency age policy); the bump is PR #290. Bump by expiry.",
-        "justification": "code_not_reachable",
-        "response": [
-          "update"
-        ]
-      },
-      "properties": [
-        {
-          "name": "opensidian:expires",
-          "value": "2027-01-15"
-        }
-      ]
-    },
-    {
-      "bom-ref": "vex:RUSTSEC-2026-0594",
-      "id": "RUSTSEC-2026-0594",
-      "source": {
-        "name": "RustSec",
-        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0594.html"
-      },
-      "references": [
-        {
-          "id": "GHSA-8wcq-xq25-7fhm",
-          "source": {
-            "name": "GitHub",
-            "url": "https://github.com/advisories/GHSA-8wcq-xq25-7fhm"
-          }
-        }
-      ],
-      "affects": [
-        {
-          "ref": "pkg:cargo/cookie@0.18.2"
-        }
-      ],
-      "analysis": {
-        "state": "not_affected",
-        "detail": "Affected functions are cookie::PrivateJar::add and add_original, which exist only with the cookie 'private' feature (aes-gcm, base64, rand, subtle). Cargo.lock cookie 0.18.2 depends only on time and version_check, so the feature is off and PrivateJar is not compiled. Fixed cookie 0.18.3 is < 6 weeks old (dependency age policy). Bump by expiry.",
-        "justification": "code_not_present",
-        "response": [
-          "update"
-        ]
-      },
-      "properties": [
-        {
-          "name": "opensidian:expires",
-          "value": "2027-01-15"
         }
       ]
     }

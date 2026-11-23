@@ -30,10 +30,6 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident: transitive via urlpattern (tauri); revisit 2027-05-15" },
   { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 unmaintained: transitive via serde_with (tauri-utils); revisit 2027-05-15" },
-  # url 2.5.8 / cookie 0.18.2: affected functions not reachable / not compiled (see the VEX); fixes are < 6 weeks old
-  # on 2026-11-23 (dependency age policy). EXPIRES 2027-01-15: bump the lockfile (url: PR #290).
-  { id = "RUSTSEC-2026-0592", reason = "Url::origin / quirks::origin not called by opensidian or any url dependent in Cargo.lock; bump to >=2.5.9 by 2027-01-15" },
-  { id = "RUSTSEC-2026-0594", reason = "cookie private feature off (no PrivateJar compiled); bump to >=0.18.3 by 2027-01-15" },
 ]
 
 [sources]
