@@ -7,8 +7,10 @@
    on the opened object is refused. Parent identity uses volume serial + file
    index (BY_HANDLE_FILE_INFORMATION via MetadataExt). Import always copies
    (no hardlink path). p_chmod is a documented no-op. */
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Component, Path, PathBuf};
@@ -21,6 +23,11 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 // No FILE_SHARE_DELETE: a held directory cannot be renamed/deleted out from under us.
 const FILE_SHARE_READ: u32 = 0x0000_0001;
 const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+// Durable rename: WRITE_THROUGH flushes the rename through the FS stack.
+// FlushFileBuffers on a read-only directory handle fails on Windows, so the
+// parent sync_all path cannot provide durability — MoveFileExW does.
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
 
 // Compiled under debug_assertions too (not just cfg(test)): since lib.rs the
 // bin's tests (main.rs) link vaultfs as a DEPENDENCY, where cfg(test) is off.
@@ -162,6 +169,33 @@ fn file_id_handle(f: &File) -> io::Result<(u32, u64)> {
     let info = unsafe { info.assume_init() };
     let index = ((info.file_index_high as u64) << 32) | info.file_index_low as u64;
     Ok((info.volume_serial_number, index))
+}
+
+fn wide_z(path: &Path) -> Vec<u16> {
+    OsStr::new(path).encode_wide().chain(Some(0)).collect()
+}
+
+/// Rename with MOVEFILE_WRITE_THROUGH so a durable write survives a crash after
+/// success. Errors propagate — unlike FlushFileBuffers on a directory handle,
+/// which cannot succeed on Windows and used to be silently ignored.
+fn rename_durable(from: &Path, to: &Path) -> io::Result<()> {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    let from_w = wide_z(from);
+    let to_w = wide_z(to);
+    let ok = unsafe {
+        MoveFileExW(
+            from_w.as_ptr(),
+            to_w.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn file_id_path(path: &Path) -> io::Result<(u32, u64)> {
@@ -364,15 +398,18 @@ impl Vault {
             f.write_all(bytes)?;
             f.sync_all()?;
             drop(f);
-            fs::rename(&tmp, &target)?;
+            if durable {
+                // WRITE_THROUGH is the Windows stand-in for Unix's fsync(parent):
+                // FlushFileBuffers on a read-only dir handle always fails here.
+                rename_durable(&tmp, &target)?;
+            } else {
+                fs::rename(&tmp, &target)?;
+            }
             Ok(())
         })();
         if let Err(e) = r {
             let _ = fs::remove_file(&tmp);
             return Err(e);
-        }
-        if durable {
-            let _ = open_dir_nofollow(&d.path).and_then(|f| f.sync_all());
         }
         Ok(())
     }
@@ -1035,3 +1072,54 @@ pub fn walk_real_dirs(dir: &Path, base: &Path, out: &mut Vec<String>) {
 }
 
 pub const MAX_WALK_DEPTH: usize = 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("vaultfs-win-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn write_atomic_durable_round_trips_and_replaces() {
+        let root = fresh("durable");
+        let v = Vault::open(&root).unwrap();
+        v.write_atomic(Path::new("n.md"), b"hello", true).unwrap();
+        assert_eq!(fs::read(root.join("n.md")).unwrap(), b"hello");
+        v.write_atomic(Path::new("n.md"), b"world", true).unwrap();
+        assert_eq!(fs::read(root.join("n.md")).unwrap(), b"world");
+        let stray: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.ends_with('~') || n.contains(".tmp")
+            })
+            .collect();
+        assert!(stray.is_empty(), "no temp left after durable write: {stray:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_atomic_non_durable_still_works() {
+        let root = fresh("nondurable");
+        let v = Vault::open(&root).unwrap();
+        v.write_atomic(Path::new("a.md"), b"x", false).unwrap();
+        assert_eq!(fs::read(root.join("a.md")).unwrap(), b"x");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_durable_propagates_missing_source() {
+        let root = fresh("rename-err");
+        let from = root.join("missing.tmp");
+        let to = root.join("dest.md");
+        let e = rename_durable(&from, &to).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        let _ = fs::remove_dir_all(&root);
+    }
+}

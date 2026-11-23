@@ -75,8 +75,14 @@ pub fn carry(old: &Path, new: &Path) -> io::Result<Carry> {
         // not leave a half-populated NEW dir that would "win" next start
         let part = new.with_extension(format!("part-{}", std::process::id()));
         let _ = fs::remove_dir_all(&part);
-        copy_dir(old, &part)?;
-        fs::rename(&part, new)?;
+        if let Err(e) = copy_dir(old, &part) {
+            let _ = fs::remove_dir_all(&part);
+            return Err(e);
+        }
+        if let Err(e) = fs::rename(&part, new) {
+            let _ = fs::remove_dir_all(&part);
+            return Err(e);
+        }
         return Ok(Carry::Copied);
     }
     if old.is_file() {
@@ -84,8 +90,14 @@ pub fn carry(old: &Path, new: &Path) -> io::Result<Carry> {
             fs::create_dir_all(d)?;
         }
         let part = new.with_extension(format!("part-{}", std::process::id()));
-        fs::copy(old, &part)?;
-        fs::rename(&part, new)?;
+        if let Err(e) = fs::copy(old, &part) {
+            let _ = fs::remove_file(&part);
+            return Err(e);
+        }
+        if let Err(e) = fs::rename(&part, new) {
+            let _ = fs::remove_file(&part);
+            return Err(e);
+        }
         return Ok(Carry::Copied);
     }
     Ok(Carry::Neither)
@@ -97,17 +109,28 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
         let e = e?;
         let (src, dst) = (e.path(), to.join(e.file_name()));
         let ft = e.file_type()?;
-        if ft.is_dir() {
-            copy_dir(&src, &dst)?;
-        } else if ft.is_symlink() {
+        // Symlink before is_dir: on Windows a directory reparse point reports both.
+        if ft.is_symlink() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(fs::read_link(&src)?, &dst)?;
             #[cfg(windows)]
             {
-                // best effort: creating a symlink on Windows may need a privilege
+                // Fail-closed: pick file vs dir by the target (or the link's own
+                // FILE_ATTRIBUTE_DIRECTORY when the target is missing), then
+                // propagate. Swallowing the error used to commit a partial tree
+                // as Copied; next start NewWins and the entry is gone for good.
                 let t = fs::read_link(&src)?;
-                let _ = std::os::windows::fs::symlink_file(&t, &dst).or_else(|_| std::os::windows::fs::symlink_dir(&t, &dst));
+                let as_dir = fs::metadata(&t)
+                    .map(|m| m.is_dir())
+                    .unwrap_or_else(|_| fs::symlink_metadata(&src).map(|m| m.file_type().is_dir()).unwrap_or(false));
+                if as_dir {
+                    std::os::windows::fs::symlink_dir(&t, &dst)?;
+                } else {
+                    std::os::windows::fs::symlink_file(&t, &dst)?;
+                }
             }
+        } else if ft.is_dir() {
+            copy_dir(&src, &dst)?;
         } else {
             fs::copy(&src, &dst)?;
         }
@@ -397,5 +420,75 @@ mod tests {
         fs::write(d.join("theme.css"), "body.theme-dark { --background-primary: #010203; }\n").unwrap();
         assert!(crate::themefs::themes_scan(&v).listed.iter().any(|l| l == "Wasp"));
         let _ = fs::remove_dir_all(&v);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests_windows {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("opensidian-migrate-win-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Plain directory carry still works (no symlink involved).
+    #[test]
+    fn carry_dir_plain_copies_and_cleans_scratch() {
+        let h = tmp("plain");
+        let old = h.join("olddata");
+        let new = h.join("newdata");
+        fs::create_dir_all(old.join("sub")).unwrap();
+        fs::write(old.join("sub/f.txt"), b"x").unwrap();
+        assert_eq!(carry(&old, &new).unwrap(), Carry::Copied);
+        assert_eq!(fs::read(new.join("sub/f.txt")).unwrap(), b"x");
+        let left: Vec<_> = fs::read_dir(&h).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 2, "old + new only, no .part left: {left:?}");
+        let _ = fs::remove_dir_all(&h);
+    }
+
+    /// Fail-closed: a directory tree containing a symlink must not commit a
+    /// partial copy. If creating the fixture symlink needs a privilege we
+    /// don't have, the test is skipped (same environment the user lacks).
+    #[test]
+    fn carry_dir_with_symlink_is_fail_closed() {
+        let h = tmp("symlink");
+        let old = h.join("olddata");
+        let new = h.join("newdata");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("kept.txt"), b"k").unwrap();
+        let target = h.join("target-dir");
+        fs::create_dir_all(&target).unwrap();
+        let link = old.join("link-to-target");
+        match std::os::windows::fs::symlink_dir(&target, &link) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("skip: cannot create directory symlink ({e}); need Developer Mode or SeCreateSymbolicLinkPrivilege");
+                let _ = fs::remove_dir_all(&h);
+                return;
+            }
+        }
+        let r = carry(&old, &new);
+        // Either Copied with the symlink recreated, or Err with .part cleaned.
+        // The old "best effort" path returned Ok(Copied) while dropping the link.
+        match r {
+            Ok(Carry::Copied) => {
+                assert!(fs::symlink_metadata(new.join("link-to-target")).unwrap().file_type().is_symlink());
+                assert_eq!(fs::read(new.join("kept.txt")).unwrap(), b"k");
+            }
+            Ok(other) => panic!("unexpected carry result: {other:?}"),
+            Err(_) => {
+                assert!(!new.exists(), "failed carry must not leave the new path");
+                let parts: Vec<_> = fs::read_dir(&h)
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().contains(".part-"))
+                    .collect();
+                assert!(parts.is_empty(), "failed carry must remove .part: {parts:?}");
+            }
+        }
+        let _ = fs::remove_dir_all(&h);
     }
 }
