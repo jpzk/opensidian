@@ -292,6 +292,10 @@
         mount(g, t) {                   // main.js loadActive: t (active, kind unk) -> true if a plugin view shows it
           if (!isPvTab(t)) return false;
           let r = recs.get(t);
+          // #277 (review): during the startup plugin load no restored view of a type registered in that load is
+          // built, however its tab came to show (a click on a background tab included) — it would run inside the
+          // plugin's half-done onload. The pane stays blank (loadActive hid the rest); mountHeld builds it after.
+          if (!r && holdMount && heldTypes.has(t.utype)) return true;
           if (!r) { const st = t.raw && t.raw.state; r = makeView(t, t.utype, st && st.state); if (!r) return false; }
           const ce = r.view.containerEl;
           if (ce.parentNode !== g.content) g.content.appendChild(ce);
@@ -879,6 +883,7 @@
         // except during the startup plugin load (#277): stock builds the restored layout's views only after every
         // enabled plugin's onload, so a view never runs inside its own plugin's half-done onload. holdMount
         // (api-core.js boot) parks the remount; mountHeld() runs it once the load is done, before layout-ready.
+        if (holdMount) heldTypes.add(type);
         if (!holdMount) for (const g of M().groups()) { const t = activeTab(g); if (t && t.kind === "unk" && t.utype === type && typeof loadActive === "function") safe("remount " + type, () => loadActive(g)); }
         viewRegistry.trigger("view-registered", type);
         d.touch();
@@ -890,18 +895,36 @@
          background restored tab still mounts on its first show (switchTab -> loadActive). Fail closed: a
          throwing remount is logged and the next group still mounts; the hold is lifted whatever happens. */
       let holdMount = false;
+      /* #277 review: heldTypes = types registered while held (PV.mount defers their restored views too).
+         The onOpen wait is bounded: a view whose onOpen awaits workspace.onLayoutReady would otherwise
+         wait for layout-ready, which fires only after this wait. It ends at HOLD_OPEN_MS (one deadline
+         for all groups) or at once when anything queues an onLayoutReady callback meanwhile (lrKick);
+         boot then readies the layout and that callback runs. */
+      const HOLD_OPEN_MS = 10000, heldTypes = new Set();
+      let lrWakeRes = null;
+      function lrKick() { if (lrWakeRes) { const f = lrWakeRes; lrWakeRes = null; f(false); } }
       function holdRestore() { holdMount = true; }
       async function mountHeld() {
         if (!holdMount) return 0;
-        holdMount = false;
-        let n = 0;
-        for (const g of M().groups()) {
-          const t = activeTab(g);
-          if (!(t && t.kind === "unk" && types.has(t.utype) && typeof loadActive === "function")) continue;
-          try { await loadActive(g); } catch (e) { console.error("[plugin] remount " + t.utype + ":", e); continue; }
-          const r = recs.get(t);
-          if (r && r.opened) { try { await r.opened; } catch (_) {} n++; }
-        }
+        holdMount = false; heldTypes.clear();
+        let n = 0; const until = Date.now() + HOLD_OPEN_MS;
+        const lrWake = new Promise(res => { lrWakeRes = res; });
+        try {
+          for (const g of M().groups()) {
+            const t = activeTab(g);
+            if (!(t && t.kind === "unk" && types.has(t.utype) && typeof loadActive === "function")) continue;
+            try { await loadActive(g); } catch (e) { console.error("[plugin] remount " + t.utype + ":", e); continue; }
+            const r = recs.get(t);
+            if (!(r && r.opened)) continue;
+            const done = (async () => { try { await r.opened; } catch (_) {} return true; })();
+            let tm = null;
+            const ok = await Promise.race([done, lrWake,
+              new Promise(res => { tm = setTimeout(() => res(false), Math.max(0, until - Date.now())); })]);
+            clearTimeout(tm);
+            if (ok) n++;
+            else console.warn("[plugin] restore views: " + t.utype + " onOpen still pending, layout goes ready");
+          }
+        } finally { lrWakeRes = null; }
         return n;
       }
       function dropView(type) {         // the registry forgets now; the type's leaves detach after (Obsidian detaches them)
@@ -1119,7 +1142,7 @@
         const one = r => cs(r.type) + "@" + (r.side ? r.side[0] : "t" + gs.indexOf(groupOfTab(r.t))) + (r.view.containerEl.isConnected && !r.view.containerEl.hidden && r.view.containerEl.getClientRects().length ? "+" : "-");
         return " [pview:" + nt + "|" + [...recs.values(), ...sides].map(one).join(",") + "]";
       }
-      const host = { PV, sweep, censusTok, registerView, unregisterView, holdRestore, mountHeld, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
+      const host = { PV, sweep, censusTok, registerView, unregisterView, holdRestore, mountHeld, lrKick, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
                      reveal, leafOfGroup, leafOfTab, bindLeaf, activeTab, groupOfTab, typeOfTab, isPvTab, recs, types, sideHide, sideShowing,
                      mainRoot, newRoot() { rootGen++; }, dock, ribbon, floating };
       const layout = { WorkspaceItem, WorkspaceParent, WorkspaceSplit, WorkspaceContainer, WorkspaceRoot, WorkspaceWindow,
@@ -1519,7 +1542,7 @@
         if (name === "file-menu" || name === "editor-menu") try { PMENU = PM; } catch (_) {}
         return super.on(name, cb, ctx);
       }
-      onLayoutReady(cb) { if (K.st.layoutReady) queueMicrotask(() => { try { cb(); } catch (e) { console.error(e); } }); else this.on("layout-ready", cb); }
+      onLayoutReady(cb) { if (K.st.layoutReady) queueMicrotask(() => { try { cb(); } catch (e) { console.error(e); } }); else { views.lrKick(); this.on("layout-ready", cb); } }
       iterateAllLeaves(cb) { views.iterateLeaves(cb, true); }
       iterateRootLeaves(cb) { views.iterateLeaves(cb, false); }
       getLeavesOfType(t) { return views.leavesOfType(String(t)); }
