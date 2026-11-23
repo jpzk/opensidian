@@ -161,7 +161,7 @@ run >"$t/sbom.json" 2>"$t/err" || { cat "$t/err"; bad "G1 run rc!=0"; }
 W2='.components[]|select(.name=="webkit2gtk")'
 chk "G1: webkit2gtk carries embedded skia as nested component with version + purl" \
   "[$W2|.components[]?|select(.name==\"skia\")]|length==1 and .[0].version==\"m140\" and .[0].purl==\"pkg:generic/skia@m140\" and .[0].licenses==[{expression:\"BSD-3-Clause\"}]"
-chk "G1: embedded pdf.js has a matchable npm purl" "any($W2|.components[]?; .purl==\"pkg:npm/pdfjs-dist@5.0.1\")"
+chk "G1: embedded pdf.js has a matchable pkg:npm purl" "any($W2|.components[]?; .purl==\"pkg:npm/pdfjs-dist@5.0.1\")"
 chk "G1: only rows of THIS webkit version (2.50.1), not 9.9.9" "[$W2|.components[]?|.name]|sort==[\"pdfjs-dist\",\"skia\"]"
 chk "G1: embedded-in + evidence properties" \
   "all($W2|.components[]; any(.properties[]; .name==\"opensidian:embedded-in\" and .value==\"webkit2gtk@2.50.1-0ubuntu1\") and any(.properties[]; .name==\"opensidian:evidence\"))"
