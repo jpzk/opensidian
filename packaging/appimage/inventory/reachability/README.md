@@ -1,0 +1,34 @@
+## 2. Reachability per alerted package (evidence, not guesses)
+
+Evidence files: `evidence/reach.out` (bin/box-reach.sh) and `evidence/reach2.out` (bin/box-reach2.sh), run on the box
+against the box-unpacked bundle (libs re-verified `sha256sum -c libs.sha256` → LIBS-SHA-OK) and against pinned upstream
+source tarballs (sha256 recorded in the output; webkitgtk-2.52.6.tar.xz `179a2ea3…116fc` matches webkitgtk.org `.sums`).
+"imports X" = the symbol name is in the library's dynamic string table (`grep -a -c`), i.e. the call is linked.
+Absence of a string in a stripped binary is used only as corroboration, never alone.
+
+| package | CVE / class | present? | reachable from opensidian? | evidence | verdict |
+|---|---|---|---|---|---|
+| webkit2gtk | Skia: CVE-2024-43091 (SkEmbossMaskFilter), CVE-2024-43767 (SkBlurMaskFilterImpl) | yes — both .cpp in `Source/ThirdParty/skia/CMakeLists.txt` (l.544, l.102); `SkEmbossMaskFilter`/`SkBlurMaskFilter` strings in libwebkit2gtk | yes — WebKitGTK 2.52 renders with Skia (`USE_SKIA` ON, OptionsGTK.cmake l.153); CSS/canvas blur, emboss via SVG/canvas filters | reach.out, reach2.out | affected (fix status vs. WebKit's Skia snapshot: §4) |
+| webkit2gtk | Skia: CVE-2024-43768 (SkDeflate) | yes — `src/pdf/SkDeflate.cpp` compiled (l.606, 21 pdf files); `SkPDF` strings ×10 | only through Skia PDF output (printing) | reach2.out | affected |
+| webkit2gtk | Skia: **CVE-2025-26416** (SkBmpStandardCodec, critical) | **no** — file exists in the tarball but is **not** in the Skia CMakeLists source list (compiled codecs = SkCodec core, Jpeg*, Png*, Swizzler, Sampler, Tiff utility only); 0 `SkBmpStandardCodec` strings in libwebkit2gtk. WebKit decodes BMP with its own `BMPImageDecoder` | — | reach2.out "codec files compiled" | **not_affected: code_not_present** |
+| webkit2gtk | **CVE-2025-48622** (dng_misc_opcodes.cpp, Adobe DNG SDK) | **no** — no `dng_*` file anywhere in webkitgtk-2.52.6 Skia tree; 0 `dng_` strings | — | reach.out, reach2.out | **not_affected: code_not_present** |
+| webkit2gtk | Chrome-Skia CVE-2024-8193/8198, 2025-0436/0444, 2026-3538/3909/3931; Huawei CVE-2025-54627 | Skia core compiled | yes (renderer) | Skia in-tree | affected |
+| webkit2gtk | ANGLE CVE-2026-3536/5283/10018/10019/15109 | yes — `USE_ANGLE ${ENABLE_WEBGL}` (l.316); `ANGLE` strings ×20 | yes if a page uses WebGL | reach.out | affected |
+| webkit2gtk | CVE-2025-66286 (send-request API), CVE-2026-43670 (CSP AudioWorklet), CVE-2026-78376 (UAF) | yes | yes (WebKit core) | — | affected |
+| libsoup3 | 18 CVEs: WebSocket, HTTP/1+2 parsing, multipart, cookies/PSL, cache, NTLM, CRLF; **server-side** SoupServer CVE-2026-2436 + SoupAuthDomainDigest CVE-2026-3099 | yes (single .so) | client paths: yes (WebKitNetworkProcess + opensidian `soup_session_new`). Server: `soup_server_new` imported by libwebkit2gtk (remote inspector / automation); opensidian imports `webkit_web_context_set_automation_allowed` → not provably unreachable | reach.out | affected (all 18; fail closed) |
+| krb5 | 19 CVEs (GSSAPI/krb5 lib) | yes (4 libs) | only via libsoup `gss_init_sec_context` (imported ×1; "Negotiate" auth when a server sends `WWW-Authenticate: Negotiate`). opensidian imports no `gss_*` | reach.out | affected → **removed from bundle (§3)**: its own deps com_err/keyutils are already host-provided (EXCL), so bundling krb5 is inconsistent; upstream excludelist marks it "disputed"; Fedora 44 has all 4 sonames |
+| sqlite3 | 11 CVEs | yes | yes — libwebkit2gtk imports `sqlite3_open_v2` (localstorage.sqlite3, IndexedDB ×9); libsoup has cookie-jar-db/HSTS-db | reach.out | affected → **removed from bundle (§3)**, host libsqlite3.so.0 (F44: 3.51.2) |
+| util-linux | CVE-2026-76642 (mount helper/post-mount hooks), 78408 (nsenter), 78409 (X-mount.subdir), 78410 (restricted bind mount, SUID mount(8)) | libmount/libblkid yes; mount(8)/nsenter **not shipped** | libgio imports only `mnt_table_parse*` / `mnt_monitor*` (mount-table monitoring); **0** `mnt_context_*` imports → never mounts | reach.out | not reachable → **removed from bundle (§3)** (util-linux is on every Linux; excludelist already has libuuid) |
+| dbus | CVE-2026-120749/128885/128886/128987 | libdbus-1 client only; **no dbus-daemon** | all four are dbus-daemon / server-transport flaws | reach.out, inventory | **removed from bundle (§3)** — client lib must match the host bus anyway |
+| systemd | CVE-2026-121876 (systemd-gpt-auto-generator), CVE-2026-40228 (systemd-journald wall forwarding) | libsystemd/libudev only; **neither binary shipped** | webkit/JSC import `sd_journal_send` (client logging) — the bug is in the journald daemon, not the client | reach.out | **not_affected: code_not_present** (stays bundled: libsystemd/libudev are absent on non-systemd distros) |
+| libxml2 | CVE-2026-11979 (`xmlcatalog --shell` usershell()) | lib yes, **xmlcatalog tool not shipped** | — | inventory non-lib payload | **not_affected: code_not_present** (stays bundled: host Fedora 44 only has libxml2.so.2, webkit NEEDs .so.16) |
+| libxslt | CVE-2025-7425 (key()/tree fragments) | yes | yes — libwebkit2gtk imports `xsltApplyStylesheet` (XSLTProcessor / `<?xml-stylesheet?>`) | reach.out | affected |
+| gst-plugins-base1.0 | CVE-2026-125712 (RTCP SDES parser) | **no** — the parser lives in libgstrtp-1.0, which is **not** bundled; 0 `gst_rtcp`/`GstRTCP` strings in all 10 bundled gst libs; libwebkit2gtk imports no `gst_rtcp*` | — | reach.out, reach2.out | **not_affected: code_not_present** |
+| jpeg-xl | CVE-2026-52584 (`DecodeImageAPNG`) | **no** — APNG decoder is `lib/extras/dec/apng.cc` (jxl_extras, STATIC EXCLUDE_FROM_ALL in libjxl-0.11.1/lib/jxl_extras.cmake), not libjxl.so; 0 `APNG`/`acTL` strings in libjxl.so.0.11 | — | reach2.out | **not_affected: code_not_present** |
+| jpeg-xl | CVE-2026-82522 (64-bit box size truncated to 32-bit size_t) | yes | decoder reachable (webkit imports `JxlDecoderCreate`); truncation needs 32-bit size_t — we ship only x86_64/aarch64 | reach.out | affected (fail closed; not a code_not_present case) |
+| libjpeg-turbo | CVE-2018-10126 (`jpeg_fdct_16x16`, IJG libjpeg 9 SmartScale) | **no** — `jpeg_fdct_16x16` occurs in **0** files of libjpeg-turbo-2.1.5 source (only `jfdctint.c` islow); 0 strings in libjpeg.so.8 | — | reach2.out | **not_affected: code_not_present** |
+| gdk-pixbuf | ICO (16768), ICNS (18090), JPEG ICC (81893) | core lib yes; loader modules **not shipped**; Ubuntu build options not provable from the binary (io-ico.c/io-icns.c/io-jpeg.c exist in 2.44.5 source, may be built in) | uncertain | reach2.out | affected (fail closed) |
+| cairo | CVE-2017-7475, 2018-18064, 2025-50422 | yes | yes (GTK/WebKit drawing, FT fonts) | — | affected |
+| pixman | CVE-2023-37769 (combine_inner, float combiner) | yes (library code; the stress-test binary is only the trigger) | via cairo | — | affected |
+| glib2.0 | CVE-2026-86469 (g_file_replace) | yes | yes | — | affected |
+
