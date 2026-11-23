@@ -15879,7 +15879,8 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
   const minExt = ds => [mk, CMv.EditorView.lineWrapping, CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
     Ed.viewTheme || [], selAll, CMv.keymap.of(CMc.defaultKeymap), ds ? CMv.drawSelection() : []];
   let bareDone = false, mode = "";
-  const bare = cm => {
+  const bare = (cm, lp, sel) => {   // iter 5: lp = + OUR Ed.lpExt (same inline mark DOM), sel = + one ::selection rule in OUR resolved colour
+    const selc = sel ? (getComputedStyle(document.documentElement).getPropertyValue("--text-selection") || "").trim() : "", pv = lp ? fg().view : null;
     const r = cm.contentDOM.getBoundingClientRect(), cs = getComputedStyle(cm.contentDOM);
     let tag = null; for (const s of Object.getOwnPropertySymbols(document)) { const set = document[s]; if (set && set.styleTag) tag = set.styleTag; }
     for (const s of document.styleSheets) { try { if (s.ownerNode !== tag) s.disabled = true; } catch (_) {} }
@@ -15888,9 +15889,10 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
     const box = document.createElement("div"); box.id = "p278bare";
     box.style.cssText = "position:fixed;top:0;bottom:0;right:0;left:" + Math.round(r.left) + "px;background:#fff;color:#000;font-family:" + cs.fontFamily + ";font-size:" + cs.fontSize + ";line-height:" + cs.lineHeight;
     document.body.appendChild(box);
-    const v = new CMv.EditorView({ parent: box, state: CMs.EditorState.create({ doc: cm.state.doc, extensions: [minExt(false), CMv.EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" }, ".cm-content": { flex: "0 0 " + Math.round(r.width) + "px", maxWidth: Math.round(r.width) + "px" } })] }) });
+    const v = new CMv.EditorView({ parent: box, state: CMs.EditorState.create({ doc: cm.state.doc, extensions: [minExt(false), pv ? Ed.lpExt(pv, () => Ed.G(pv)) : [], CMv.EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" }, ".cm-content": { flex: "0 0 " + Math.round(r.width) + "px", maxWidth: Math.round(r.width) + "px" } })] }) });
+    if (sel) { const st = document.createElement("style"); st.textContent = "::selection { background-color: " + selc + " }"; document.head.appendChild(st); }
     window.__p278bare = v; v.focus();
-    console.log("[p278] bare at", Math.round(r.left), Math.round(r.width), cs.fontSize, cs.lineHeight);
+    console.log("[p278] bare lp=" + !!lp + " sel=" + JSON.stringify(selc) + " at", Math.round(r.left), Math.round(r.width), cs.fontSize, cs.lineHeight);
   };
   const tick = () => {
     let cm = null; try { cm = Ed.cm(fg()); } catch (_) {}
@@ -15920,6 +15922,9 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
       return;
     }
     if (has("min") || has("mdsel")) { if (cm.state.field(mk, false) === undefined) { mode = has("mdsel") ? "mdsel" : "min"; cm.setState(CMs.EditorState.create({ doc: cm.state.doc, extensions: minExt(mode === "mdsel") })); console.log("[p278] state", mode); } }
+    else if (has("bxlps")) { bareDone = true; mode = "bxlps"; bare(cm, true, true); }
+    else if (has("bxlp")) { bareDone = true; mode = "bxlp"; bare(cm, true, false); }
+    else if (has("bxs")) { bareDone = true; mode = "bxs"; bare(cm, false, true); }
     else if (has("bare")) { bareDone = true; mode = "bare"; bare(cm); }
     else if (has("dsel")) { if (!cm.__p278ds) { cm.__p278ds = 1; mode = "dsel"; cm.dispatch({ effects: CMs.StateEffect.appendConfig.of([CMv.drawSelection()]) }); } }
     else if (has("cvis")) { if (!document.getElementById("p278cv")) { mode = "cvis"; const s = document.createElement("style"); s.id = "p278cv"; s.textContent = ".cm-content .cm-line { content-visibility: auto; contain-intrinsic-size: auto 1.5em }"; document.head.appendChild(s); } }
