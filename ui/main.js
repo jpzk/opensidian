@@ -6854,7 +6854,7 @@ async function navAnchor(g, anchor) {
     if (!cm) flash(Ed.rowAt(g, line));
     else {
       // One scrollIntoView dispatch was not enough: the heading stayed at scrollTop 0 after
-      // a wikilink opened the note (links blob '') — the effect raced the note load's own
+      // a wikilink opened the note (links '') — the effect raced the note load's own
       // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
       // measure loop until the row is drawn and centred (re-ask / centre on its real box),
       // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
@@ -13036,7 +13036,7 @@ async function startGraph(g, cfg) {
   // We take that rule as measured: the notch lattice runs to GZ_OUT/GZ_IN and the last notch on each
   // side is clamped onto stock's exact limit (0.9^47 = 0.0071 -> 1/128, 0.9^-20 = 8.2 -> 8). The old
   // [-15, 15] cap (min 0.205) could not show a 10k-note graph whole; at 1/128 a 5000-note graph
-  // is a ~80 px blob (§1), so no vault we can open overflows it. s is a pure function of the notch,
+  // is a ~80 px (§1), so no vault we can open overflows it. s is a pure function of the notch,
   // finite and > 0 at both ends. A notch past a bound changes nothing but still redraws.
   // Factor: stock steps x2/3 per notch (§2); we keep 0.9 (R16.5) — finer steps, same bounds.
   // ANCHOR: deliberate divergence from stock (§3/§8): stock anchors zoom-OUT at the pane centre,
@@ -15863,3 +15863,51 @@ function psgPublish() {
   psgLast = t; document.title = t; pushTitle(t);
 }
 inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublish, 200); }).catch(() => {});
+/* PROBE #278 isolation (probe/278-iso, NEVER for merge). A/B flag = a note named P278-<flag> in the vault:
+   min   = the open source-mode note's EditorView gets a MINIMAL state (same vendored cm6.js, same view DOM in our .lp
+           container under our CSS): lineWrapping + contentAttributes + Ed.viewTheme + Mod-a (the same dispatch as
+           Ed.selectAll) + CM6 defaultKeymap. No lpExt/hlExt/history/listeners/plugin extensions.
+   bare  = a NEW minimal EditorView (same extensions as min) in a fixed box at our content's rect, every app/plugin
+           stylesheet disabled except CM6's own style-mod tag, every other body child display:none = a minimal CM6 page
+           in this WebKitGTK process (font family/size/line-height copied from our content so it wraps the same).
+   mdsel = min + CM6 drawSelection();  dsel = OURS + drawSelection() (appendConfig);  cvis = OURS + .cm-line content-visibility:auto
+   Per Ctrl+A (all variants): span p278_iso {q, sync (keydown capture -> bubble), r1 (rAF -> post-render, first frame), nodes}. */
+(function () {
+  const has = f => { try { return Array.isArray(notesCache) && notesCache.length > 0 && JSON.stringify(notesCache).includes("P278-" + f); } catch (_) { return false; } };
+  const mk = CMs.StateField.define({ create: () => 1, update: x => x });
+  const selAll = CMs.Prec.highest(CMv.keymap.of([{ key: "Mod-a", run: v => { v.dispatch({ selection: { anchor: 0, head: v.state.doc.length } }); return true; } }]));
+  const minExt = ds => [mk, CMv.EditorView.lineWrapping, CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+    Ed.viewTheme || [], selAll, CMv.keymap.of(CMc.defaultKeymap), ds ? CMv.drawSelection() : []];
+  let bareDone = false, mode = "";
+  const bare = cm => {
+    const r = cm.contentDOM.getBoundingClientRect(), cs = getComputedStyle(cm.contentDOM);
+    let tag = null; for (const s of Object.getOwnPropertySymbols(document)) { const set = document[s]; if (set && set.styleTag) tag = set.styleTag; }
+    for (const s of document.styleSheets) { try { if (s.ownerNode !== tag) s.disabled = true; } catch (_) {} }
+    for (const el of [...document.body.children]) el.style.setProperty("display", "none", "important");
+    document.documentElement.style.cssText = "margin:0;background:#fff"; document.body.style.cssText = "margin:0;background:#fff";
+    const box = document.createElement("div"); box.id = "p278bare";
+    box.style.cssText = "position:fixed;top:0;bottom:0;right:0;left:" + Math.round(r.left) + "px;background:#fff;color:#000;font-family:" + cs.fontFamily + ";font-size:" + cs.fontSize + ";line-height:" + cs.lineHeight;
+    document.body.appendChild(box);
+    const v = new CMv.EditorView({ parent: box, state: CMs.EditorState.create({ doc: cm.state.doc, extensions: [minExt(false), CMv.EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" }, ".cm-content": { flex: "0 0 " + Math.round(r.width) + "px", maxWidth: Math.round(r.width) + "px" } })] }) });
+    window.__p278bare = v; v.focus();
+    console.log("[p278] bare at", Math.round(r.left), Math.round(r.width), cs.fontSize, cs.lineHeight);
+  };
+  const tick = () => {
+    let cm = null; try { cm = Ed.cm(fg()); } catch (_) {}
+    if (!cm || bareDone) return;
+    if (has("min") || has("mdsel")) { if (cm.state.field(mk, false) === undefined) { mode = has("mdsel") ? "mdsel" : "min"; cm.setState(CMs.EditorState.create({ doc: cm.state.doc, extensions: minExt(mode === "mdsel") })); console.log("[p278] state", mode); } }
+    else if (has("bare")) { bareDone = true; mode = "bare"; bare(cm); }
+    else if (has("dsel")) { if (!cm.__p278ds) { cm.__p278ds = 1; mode = "dsel"; cm.dispatch({ effects: CMs.StateEffect.appendConfig.of([CMv.drawSelection()]) }); } }
+    else if (has("cvis")) { if (!document.getElementById("p278cv")) { mode = "cvis"; const s = document.createElement("style"); s.id = "p278cv"; s.textContent = ".cm-content .cm-line { content-visibility: auto; contain-intrinsic-size: auto 1.5em }"; document.head.appendChild(s); } }
+    else mode = mode || "base";
+  };
+  setInterval(tick, 300);
+  const O = performance.timeOrigin || (Date.now() - performance.now()), r2 = x => Math.round(x * 100) / 100;
+  let k = null; const mc = new MessageChannel();
+  mc.port1.onmessage = () => { const x = k; if (!x || x.r1 != null) return; x.r1 = r2(performance.now() - x.tr);
+    let n = -1; try { const v = window.__p278bare || Ed.cm(fg()); n = v.contentDOM.getElementsByTagName("*").length; } catch (_) {}
+    try { otel.span("p278_iso", { ts: Math.round((O + x.t0) * 100) / 100, mode, q: r2(x.q), sync: r2(x.sync), raf: r2(x.tr - x.t0), r1: x.r1, nodes: n }, 0); } catch (_) {} };
+  window.addEventListener("keydown", e => { if (!(e.ctrlKey && (e.key === "a" || e.key === "A"))) return; const t0 = performance.now();
+    k = { t0, q: t0 - e.timeStamp, sync: 0, tr: 0, r1: null }; requestAnimationFrame(() => { k.tr = performance.now(); mc.port2.postMessage(0); }); }, true);
+  window.addEventListener("keydown", e => { if (k && !k.sync && e.ctrlKey && (e.key === "a" || e.key === "A")) k.sync = performance.now() - k.t0; }, false);
+})();
