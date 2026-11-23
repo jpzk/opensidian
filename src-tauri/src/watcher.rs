@@ -690,4 +690,52 @@ mod tests {
         assert!(c3.is_empty(), "{c3:?}");
         let _ = fs::remove_dir_all(&root);
     }
+
+    /// #289 review (CodeAnt): a note added while its read fails (here: mode 000, the open is
+    /// refused; the walk and lstat still list it) is not in the Index. Once it can be read it is
+    /// reported ADDED — both when only the mode is restored (mtime and size unchanged, so the
+    /// fingerprint is the same: it would never be reported at all) and when it is also edited
+    /// (it would be "modified", which the UI's file model ignores for a file it does not have).
+    /// (root ignores the mode bits: nothing to check then, as in the GHOSTS test)
+    #[test]
+    fn unreadable_added_note_is_added_once_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unread289m");
+        w(&root, "A", "alpha\n");
+        let mut ix = Index::build(&root);
+        let tick = |prev: &Snapshot, ix: &mut Index| {
+            let mut cur = snapshot(&root);
+            let d = diff(prev, &cur);
+            let c = reconcile(&root, &d, ix);
+            forget_unread(&d, ix, &mut cur);
+            (c, cur)
+        };
+        let s0 = snapshot(&root);
+        w(&root, "edited", "draft\n");
+        w(&root, "locked", "kept\n");
+        for n in ["edited", "locked"] {
+            fs::set_permissions(note_file(&root, n), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        if fs::read(note_file(&root, "locked")).is_ok() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let (c1, s1) = tick(&s0, &mut ix);
+        assert!(c1.added.is_empty() && ix.content("locked").is_none() && ix.content("edited").is_none(), "an unreadable note is not read: {c1:?}");
+        assert!(s1.contains_key("A"));
+        // readable again: "locked" by chmod only (same fingerprint), "edited" also rewritten
+        for n in ["edited", "locked"] {
+            fs::set_permissions(note_file(&root, n), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        fs::write(note_file(&root, "edited"), "final text\n").unwrap();
+        let (c2, s2) = tick(&s1, &mut ix);
+        assert_eq!(c2.added, vec!["edited".to_string(), "locked".to_string()], "{c2:?}");
+        assert!(c2.modified.is_empty(), "{c2:?}");
+        assert_eq!(ix.content("locked"), Some("kept\n"));
+        assert_eq!(ix.content("edited"), Some("final text\n"));
+        // steady state afterwards
+        let (c3, _) = tick(&s2, &mut ix);
+        assert!(c3.is_empty(), "{c3:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
 }
