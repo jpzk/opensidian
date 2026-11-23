@@ -186,7 +186,7 @@ while IFS=$'\t' read -r eh ehv ef en ev el ei em ee extra || [ -n "$eh" ]; do
                   {name: "opensidian:source", value: $src},
                   {name: "opensidian:embedded-marker", value: $m},
                   {name: "opensidian:evidence", value: $e},
-                  {name: "opensidian:hash-note", value: "SHA-512 = npm registry integrity of the package tarball; the code is compiled into ui/vendor/\($f), whose sha256 is on the \($in) component"}]}' >>"$tmp/comps"
+                  {name: "opensidian:hash-note", value: "SHA-512 = registry.npmjs.org integrity of the package tarball; the code is compiled into ui/vendor/\($f), whose sha256 is on the \($in) component"}]}' >>"$tmp/comps"
 done <"$et"
 # every locked host the table knows about must have rows for its locked version
 while IFS= read -r eh; do
