@@ -6,7 +6,7 @@
 # The runner is only a host: nothing it ships ends up in an artifact.
 # Container: ubuntu:resolute-20261105.1 (26.04), pinned by manifest-list digest (multi-arch index:
 # podman picks amd64 or arm64/v8 from the SAME index; pushed 2026-11-16).
-# apt reads ONLY snapshot.ubuntu.com 20261119T120000Z (resolute, -updates, -security; main
+# apt reads ONLY snapshot.ubuntu.com 20261123T150000Z (resolute, -updates, -security; main
 # universe; amd64 and arm64 are both served under /ubuntu), signatures still checked with the
 # image's ubuntu-archive-keyring. OPERATOR DECISION 2026-11-19: this snapshot (and the image it
 # sits on) tracks the NEWEST dated snapshot - an explicit exception to the 6-week age rule for
@@ -31,7 +31,7 @@ say(){ echo "[$(date +%H:%M:%S)] [appimage] $*"; }
 die(){ say "FAIL: $*"; exit 1; }
 DIGEST=sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 IMG=docker.io/library/ubuntu@$DIGEST
-SNAP=20261119T120000Z
+SNAP=20261123T150000Z
 PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.2 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3ubuntu0.1 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260816ubuntu0.26.04.2 curl=8.18.0-1ubuntu2.8 xz-utils=5.8.3-1ubuntu0.1"
 RUST=1.98.0   # = release.yml RUST_TOOLCHAIN (checked below)
 RUST_MANIFEST_SHA256=3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a

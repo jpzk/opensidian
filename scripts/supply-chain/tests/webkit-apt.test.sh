@@ -15,7 +15,7 @@ expect_fail() { local name=$1 pat=$2; run "$t/ab.sh"
   if [ "$rc" -ne 0 ] && grep -q -- "$pat" "$t/out"; then ok "$name: rc=$rc"; else cat "$t/out"; bad "$name: rc=$rc (want !=0 and '$pat')"; fi; }
 
 run "$AB"; if [ "$rc" = 0 ]; then ok "repo: rc=0 ($(tail -1 "$t/out" | cut -c1-60))"; else cat "$t/out"; bad "repo: rc=$rc"; fi
-sed 's/^SNAP=20261119T120000Z/SNAP=20261101T000000Z/' "$AB" >"$t/ab.sh"
+sed 's/^SNAP=20261123T150000Z/SNAP=20261101T000000Z/' "$AB" >"$t/ab.sh"
 expect_fail "appimage-build.sh SNAP bumped alone" "!= appimage-build.sh SNAP"
 sed 's/libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.2/libwebkit2gtk-4.1-dev=2.52.7-0ubuntu0.26.04.1/' "$AB" >"$t/ab.sh"
 expect_fail "appimage-build.sh WebKit pin bumped alone" "is not in appimage-build.sh PKGS"

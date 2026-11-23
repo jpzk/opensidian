@@ -1,4 +1,4 @@
-# snapshot.ubuntu.com 20261119T120000Z  suites resolute resolute-updates resolute-security  components main universe
+# snapshot.ubuntu.com 20261123T150000Z  suites resolute resolute-updates resolute-security  components main universe
 # name	version	deb-arch	sha256	suite	filename
 build-essential	12.12ubuntu2.26.04.2	amd64	2c71d57ea0c4107f652896b91566a4b8b694f8fa75e53df96420b4c6747a6dae	resolute-updates	pool/main/b/build-essential/build-essential_12.12ubuntu2.26.04.2_amd64.deb
 build-essential	12.12ubuntu2.26.04.2	arm64	71f6f12ced2b38f656befccf232599abbc9457ddced1b582e9ed3027773f7a5c	resolute-updates	pool/main/b/build-essential/build-essential_12.12ubuntu2.26.04.2_arm64.deb
