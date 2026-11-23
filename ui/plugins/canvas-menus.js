@@ -392,6 +392,9 @@
           const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
           if (!/EPERM/.test(String((e && e.message) || e)) || !/^(mp3|m4a|ogg|oga|opus|wav|flac|webm|mp4|m4v|mov|ogv|png|jpe?g|gif|webp|svg)$/.test(ext) || !inv) throw e;
           await inv("media_rename", { from: old, to });
+          // CodeAnt #262/#283: the move was on disk only — the file model follows before relink repaints the card
+          const d = C(c) && C(c).ctx.deps;
+          if (d && typeof d.mediaMoved === "function") await d.mediaMoved(old, to);
         }
       } catch (e) { notify(c, "Canvas: " + old + " was not renamed — " + String((e && e.message) || e)); return; }
       relink(c, old, to);

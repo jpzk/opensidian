@@ -27,6 +27,8 @@ const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "fun
 const PLGVS = window.__osPluginHost && typeof __osPluginHost.vaultSync === "function" ? __osPluginHost.vaultSync : null;
 // goal cv-journeys: the app's own note rename reaches the file model (api-vault host.noteMoved: the watcher never reports it)
 const PLGNM = window.__osPluginHost && typeof __osPluginHost.noteMoved === "function" ? __osPluginHost.noteMoved : null;
+// CodeAnt #262/#283: the core media_rename (restricted-vault canvas Rename) reaches the file model (api-vault host.mediaMoved)
+const PLGMM = window.__osPluginHost && typeof __osPluginHost.mediaMoved === "function" ? __osPluginHost.mediaMoved : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -8737,6 +8739,11 @@ let CANVAS = null;
         io: (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data }),
         readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
         model: PLGVM,
+        // CodeAnt #262/#283: a media_rename the watcher never reports -> the file model, then the explorer
+        mediaMoved: async (o, n) => {
+          if (PLGMM) try { PLGMM(o, n); } catch (e) { console.error("[plugin] mediaMoved:", e); }
+          try { await refreshTree(); } catch (_) {}
+        },
         notify: m => say(m, "canvas"),
         changed: () => { cvLinkDirty(); updateTitle(); },   // cvf-links: the canvas link model re-reads
         pref: {
