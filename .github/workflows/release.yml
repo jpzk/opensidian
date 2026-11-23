@@ -169,6 +169,8 @@ jobs:
           scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
           W=dist/sbom/parts/webkit.cdx.json
           echo "WebKit part: $(jq '.components | length' "$W") components"
+          # #298: the SBOM describes the slimmed bundle - no EXCL'd library may be listed as bundled
+          scripts/supply-chain/appimage-excl-check.sh --sbom "$W"
           scripts/supply-chain/osv-json.sh "$RUNNER_TEMP/osv-webkit.json" \
             "$OSV" scan source --config "$RUNNER_TEMP/osvcfg/osv-scanner.toml" --format json -L "$W"
           scripts/supply-chain/osv-fixed-gate.sh "$RUNNER_TEMP/osv-webkit.json"
