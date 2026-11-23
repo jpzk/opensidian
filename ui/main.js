@@ -4123,11 +4123,18 @@ function updateTitleNow() {      // flush: publish the census in this task
    when it CHANGES, so a keystroke costs no IPC. */
 let utPlain = "";
 function utLite() {
+  const P278 = window.__p278, P278s = P278 ? P278.utBegin() : null;
+  try { return utLite0(P278, P278s); } finally { if (P278) P278.utEnd(P278s); }
+}
+function utLite0(P278, P278s) {
   navBtnSync();
+  if (P278) P278.utStep(P278s, "nav");
   caFace($("fecabtn"), feCaState().lab);
   caFace($("bmcabtn"), bmCaState().lab);
+  if (P278) P278.utStep(P278s, "ca");
   const H = window.__osPluginHost;
-  if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
+  if (H && H.censusTick && !(P278 && P278.flag("notick"))) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
+  if (P278) P278.utStep(P278s, "tick");
   const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
   // #177: a view tab (graph, local graph, plugin view) carries its display text in name, the same text its tab
   // header shows ("Graph view", "Graph of note") — stock 1.13.7 titles the window with it; there is no tb.title
@@ -4135,7 +4142,9 @@ function utLite() {
   const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
   const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
   if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
+  if (P278) P278.utStep(P278s, "title");
   wsTouch();
+  if (P278) P278.utStep(P278s, "ws");
 }
 function utBuild() {             // pane/focus census in the window title (headless probe)
   /* No layout yet (boot, before the first vault load sets `state`): there is nothing
@@ -15862,3 +15871,81 @@ function psgPublish() {
   psgLast = t; document.title = t; pushTitle(t);
 }
 inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublish, 200); }).catch(() => {});
+/* PROBE #278 (probe/278-sellag, NEVER for merge): in-app timing of the selection path.
+   Spans go through otel (written only with OPENSIDIAN_OTEL). Every record carries ts = epoch ms
+   (performance.timeOrigin + now) so it lines up with the box's XDamage clock.
+   p278_key   one keydown: q (event queue delay), dur (sync handling), u0 (keydown -> first view-plugin update =
+              the command's own work incl. any forced layout), build ms/lines/rv/deco, ul (update listener ms)
+   p278_frame one rAF: gap, render (rAF -> message after the rendering update = style+layout+paint),
+              keys since the last frame, mutations inside .cm-content (cm, lines added) and outside (other + targets)
+   p278_ut    one utLite: per step ms + mutations (nav ca tick title ws)
+   A/B flags = a note named P278-<flag> in the vault: norv nocensus notick noframe */
+(function () {
+  const now = () => performance.now(), O = performance.timeOrigin || (Date.now() - performance.now());
+  const ep = t => Math.round((O + t) * 100) / 100, r2 = x => Math.round(x * 100) / 100;
+  let fl = null, k = null, last = 0, rafOn = false, lastFrame = 0, fb = null;
+  const nb = () => ({ keys: 0, cm: 0, cmAdd: 0, cmAttr: 0, other: 0, tg: new Map() });
+  fb = nb();
+  const span = (name, a) => { try { otel.span(name, a, 0); } catch (_) {} };
+  const desc = n => {
+    const e = n && (n.nodeType === 1 ? n : n.parentElement);
+    if (!e) return "?";
+    const id = e.closest("[id]");
+    const c = typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\s+/).slice(0, 2).join(".") : "";
+    return e.tagName.toLowerCase() + c + (id ? "@" + id.id : "");
+  };
+  const tally = (recs, b) => {
+    for (const m of recs) {
+      const e = m.target && (m.target.nodeType === 1 ? m.target : m.target.parentElement);
+      if (e && e.closest && e.closest(".cm-content")) {
+        b.cm++;
+        if (m.type === "attributes") b.cmAttr++;
+        for (const a of m.addedNodes || []) if (a.nodeType === 1 && a.classList && a.classList.contains("cm-line")) b.cmAdd++;
+      } else {
+        b.other++; const d = desc(m.target) + ":" + m.type + (m.attributeName ? "=" + m.attributeName : "");
+        b.tg.set(d, (b.tg.get(d) || 0) + 1);
+      }
+    }
+  };
+  const mo = new MutationObserver(recs => tally(recs, fb));
+  const drain = b => tally(mo.takeRecords(), b);
+  const tgs = b => [...b.tg].sort((x, y) => y[1] - x[1]).slice(0, 6).map(x => x[0] + "x" + x[1]).join(" ");
+  const mc = new MessageChannel();
+  let pend = [];
+  mc.port1.onmessage = () => { const tm = now(); const f = pend.shift(); if (f) { f.render = r2(tm - f.tr); span("p278_frame", Object.assign(f, { tr: undefined })); } };
+  const frame = () => {
+    const tr = now(); drain(fb); const b = fb; fb = nb();
+    if (k && !k.done) closeKey("frame");
+    pend.push({ ts: ep(tr), tr, gap: r2(tr - lastFrame), keys: b.keys, cm: b.cm, cmAdd: b.cmAdd, cmAttr: b.cmAttr, other: b.other, tg: tgs(b) });
+    lastFrame = tr; mc.port2.postMessage(0);
+    if (now() - last < 600) requestAnimationFrame(frame); else rafOn = false;
+  };
+  const poke = () => { last = now(); if (!rafOn && !P.flag("noframe")) { rafOn = true; requestAnimationFrame(frame); } };
+  const closeKey = why => {
+    const x = k; if (!x || x.done) return; x.done = true;
+    span("p278_key", { ts: ep(x.t0), key: x.key, q: r2(x.q), dur: r2(now() - x.t0), u0: x.u0 ? r2(x.u0 - x.t0) : -1, nupd: x.nupd,
+      build: r2(x.b), blines: x.bl, brv: x.brv, bdeco: x.bd, ul: r2(x.ul), end: why });
+  };
+  const P = {
+    flag(f) {
+      if (fl == null) { let n = []; try { n = typeof notesCache !== "undefined" && Array.isArray(notesCache) ? notesCache : []; } catch (_) {} if (!n.length) return false; fl = JSON.stringify(n); }
+      return fl.includes("P278-" + f);
+    },
+    upd0() { if (k && !k.done) { if (!k.u0) k.u0 = now(); k.nupd++; } },
+    build(ms, lines, rv, deco) { if (k && !k.done) { k.b += ms; k.bl = lines; k.brv = rv; k.bd = deco; } else span("p278_build", { ts: ep(now() - ms), ms: r2(ms), lines, rv, deco }); },
+    ul(t0) { if (k && !k.done) k.ul += now() - t0; },
+    utBegin() { const s = { t0: now(), t: now(), a: { ts: ep(now()) }, b: nb() }; drain(fb); return s; },
+    utStep(s, n) { const b = nb(); drain(b); s.a[n + "_ms"] = r2(now() - s.t); s.a[n + "_mut"] = b.other + b.cm; if (b.other) s.a[n + "_tg"] = tgs(b); for (const [d, c] of b.tg) fb.tg.set(d, (fb.tg.get(d) || 0) + c); fb.other += b.other; fb.cm += b.cm; s.t = now(); },
+    utEnd(s) { s.a.dur = r2(now() - s.t0); span("p278_ut", s.a); poke(); },
+  };
+  window.__p278 = P;
+  const start = () => mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+  if (document.documentElement) start();
+  window.addEventListener("keydown", e => {
+    if (k && !k.done) closeKey("next");
+    k = { t0: now(), q: now() - e.timeStamp, key: (e.ctrlKey ? "C-" : "") + (e.shiftKey ? "S-" : "") + e.key, u0: 0, nupd: 0, b: 0, bl: 0, brv: 0, bd: 0, ul: 0, done: false };
+    fb.keys++; poke();
+  }, true);
+  window.addEventListener("keydown", () => closeKey("bubble"), false);
+  document.addEventListener("selectionchange", () => { if (rafOn) last = now(); });
+})();

@@ -1104,6 +1104,7 @@ const Ed = {
      Deferred + coalesced (30ms): the title write must never land inside the
      key_to_paint span it would otherwise inflate. */
   census() {
+    if (window.__p278 && window.__p278.flag("nocensus")) return;
     if (Ed._ct) return;
     Ed._ct = setTimeout(() => {
       Ed._ct = null;
@@ -2324,6 +2325,10 @@ Object.assign(Ed, {
     return lp;
   },
   onUpdate(g, v, u) {
+    const P278 = window.__p278, P278t = P278 ? performance.now() : 0;
+    try { return Ed.onUpdate0(g, v, u); } finally { if (P278) P278.ul(P278t); }
+  },
+  onUpdate0(g, v, u) {
     Ed.kroMap(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
@@ -2957,6 +2962,7 @@ Ed.lpExt = function (v, G) {
   let tcrGen = 0, tcrRow = -1;   // gh #75: stale-caret repaint class tcr0/tcr1 parity + the blank task row the caret was on last build (see build)
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
+    const P278b0 = performance.now(), P278norv = !!(window.__p278 && v.lp && v.lp.classList.contains("src") && window.__p278.flag("norv"));
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const cur = doc.lineAt(sel.head).number;
     const tcrLeft = tcrRow !== cur ? tcrRow : -1, tp = " tcr" + (++tcrGen & 1);   // gh #75: see the tcr comment below
@@ -2998,7 +3004,7 @@ Ed.lpExt = function (v, G) {
         out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
-          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) && !P278norv ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
         // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
         // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)
@@ -3010,11 +3016,13 @@ Ed.lpExt = function (v, G) {
       if (g.lp._rvsig !== sig) { g.lp._rvs = labels; g.lp._rvsig = sig; }
     }
     tcrRow = tcrNext;
+    if (window.__p278) window.__p278.build(performance.now() - P278b0, last, labels.length, out.length);
     return Decoration.set(out, true);
   };
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
+      const P278 = window.__p278; if (P278) P278.upd0();
       if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust)))) {
         const tt = Ed._tt ? performance.now() : 0;
         this.decorations = build(u.view);
