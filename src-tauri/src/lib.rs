@@ -9042,7 +9042,7 @@ mod tests {
         let code: Vec<&str> = src[..tests_at]
             .lines()
             .map(str::trim)
-            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with("* ") || *t == "*" || t.starts_with("*/")))
             .collect();
         let boot = code.iter().position(|l| l.starts_with("android_boot(app)")).expect("setup calls android_boot(app)");
         assert!(boot > 0 && code[boot - 1] == "{" && code[boot - 2] == "#[cfg(target_os = \"android\")]",
@@ -9059,7 +9059,7 @@ mod tests {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/mobile.js")).unwrap();
         src.lines()
             .map(str::trim)
-            .filter(|t| !(t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .filter(|t| !(t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with("* ") || *t == "*" || t.starts_with("*/")))
             .map(String::from)
             .collect()
     }
