@@ -2731,21 +2731,27 @@ fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
 }
 
 /// #281: map the vault-boot window (once; the caller won BOOT_GATE). Maximize first
-/// when the restored record says so, so no resize is ever on screen.
+/// when the restored record says so, so no resize is ever on screen. The log line carries
+/// wall-clock ms (call / after show) so a startup trace can split boot time from map latency.
 fn boot_show(app: &tauri::AppHandle, why: reveal::Why) {
     use tauri::Manager;
+    let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let t0 = ms();
     if let Some(w) = app.webview_windows().values().next() {
         if BOOT_MAX.load(std::sync::atomic::Ordering::SeqCst) {
             let _ = w.maximize();
         }
         let _ = w.show();
     }
+    let t1 = ms();
     match why {
-        reveal::Why::Ready => eprintln!("[reveal] pid={} shown: UI ready", std::process::id()),
+        reveal::Why::Ready => eprintln!("[reveal] pid={} shown: UI ready t_call_ms={} t_shown_ms={}", std::process::id(), t0, t1),
         reveal::Why::Timeout => eprintln!(
-            "[reveal] pid={} UI did not report ready in {:?}; showing anyway (fail open)",
+            "[reveal] pid={} UI did not report ready in {:?}; showing anyway (fail open) t_call_ms={} t_shown_ms={}",
             std::process::id(),
-            reveal::FALLBACK
+            reveal::FALLBACK,
+            t0,
+            t1
         ),
     }
 }
