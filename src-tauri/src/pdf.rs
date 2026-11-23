@@ -44,6 +44,9 @@ pub const MAX_LISTED: usize = 2000;
 const MAX_PAGE_NO: usize = 1_000_000;
 const DOC_CACHE: usize = 4;
 const PNG_CACHE_BYTES: usize = 32 * 1024 * 1024;
+/// jobs waiting for the worker, each holding one open file (#289 review): well under
+/// the usual 1024 soft descriptor limit, far above what one view has on screen
+pub const QUEUE_MAX: usize = 256;
 
 /// what `pdf_info` answers: total page count + the first MAX_LISTED page
 /// sizes in PDF points (w, h), as displayed (rotation applied).
@@ -234,10 +237,20 @@ impl Worker {
     }
 }
 
-fn worker() -> Option<&'static mpsc::Sender<Job>> {
-    static TX: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+type Tx = mpsc::SyncSender<Job>;
+
+/// the worker queue: bounded at QUEUE_MAX (see enqueue_on)
+fn new_queue() -> (Tx, mpsc::Receiver<Job>) {
+    mpsc::sync_channel(QUEUE_MAX)
+}
+
+fn worker() -> Option<&'static Tx> {
+    static TX: OnceLock<Option<Tx>> = OnceLock::new();
     TX.get_or_init(|| {
-        let (tx, rx) = mpsc::channel();
+        // #289 review: bounded. Every queued job holds an OPEN file (#250), so an
+        // unbounded queue let a burst of requests hold one descriptor each until
+        // the process ran out of them; past QUEUE_MAX a request is answered None
+        let (tx, rx) = new_queue();
         std::thread::Builder::new()
             .name("pdf-render".into())
             .spawn(move || Worker::default().run(rx))
@@ -247,28 +260,38 @@ fn worker() -> Option<&'static mpsc::Sender<Job>> {
     .as_ref()
 }
 
+/// answer a job that will not run (queue full, no worker): its file is closed here
+fn refuse(j: Job) {
+    match j {
+        Job::Info(_, r) => r(None),
+        Job::Render(_, _, _, r) => r(None),
+    }
+}
+
+fn enqueue(j: Job) {
+    enqueue_on(worker(), j)
+}
+
+fn enqueue_on(tx: Option<&Tx>, j: Job) {
+    let Some(tx) = tx else { return refuse(j) };
+    match tx.try_send(j) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(j)) => {
+            eprintln!("[pdf] render queue full ({QUEUE_MAX} waiting): request answered empty");
+            refuse(j)
+        }
+        Err(mpsc::TrySendError::Disconnected(j)) => refuse(j),
+    }
+}
+
 /// queue an info request for a file main.rs already OPENED (`pdf_open_in`)
 pub fn queue_info_file(f: File, reply: Reply<Info>) {
-    match worker() {
-        Some(tx) => {
-            if let Err(mpsc::SendError(Job::Info(_, r))) = tx.send(Job::Info(f, reply)) {
-                r(None)
-            }
-        }
-        None => reply(None),
-    }
+    enqueue(Job::Info(f, reply))
 }
 
 /// queue a page render for a file main.rs already OPENED (`pdf_open_in`)
 pub fn queue_render_file(f: File, page: usize, w: u32, reply: Reply<Arc<Vec<u8>>>) {
-    match worker() {
-        Some(tx) => {
-            if let Err(mpsc::SendError(Job::Render(_, _, _, r))) = tx.send(Job::Render(f, page, w, reply)) {
-                r(None)
-            }
-        }
-        None => reply(None),
-    }
+    enqueue(Job::Render(f, page, w, reply))
 }
 
 /// path form (tests, tools): the leaf is opened NOW by vaultfs, then queued
@@ -456,6 +479,32 @@ pub mod tests {
         let (tx, rx) = mpsc::channel();
         queue_render(p.clone(), 9, 100, Box::new(move |r| tx.send(r.is_none()).unwrap()));
         assert!(rx.recv().unwrap(), "a page that does not exist renders nothing");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// #289 review (CodeAnt): every queued job holds an open file. With the worker busy
+    /// (nothing taken off this queue), requests past QUEUE_MAX are answered None AT ONCE
+    /// and their file is closed; they do not pile up one descriptor each without bound.
+    #[test]
+    fn a_full_queue_answers_at_once_instead_of_holding_descriptors() {
+        let p = tmp("queue.pdf", &mini_pdf(1));
+        let (tx, rx) = new_queue();
+        let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for _ in 0..QUEUE_MAX + 3 {
+            let a = answered.clone();
+            enqueue_on(Some(&tx), Job::Info(File::open(&p).unwrap(), Box::new(move |r| {
+                assert!(r.is_none());
+                a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })));
+        }
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 3, "past QUEUE_MAX each request is answered at once");
+        assert_eq!(rx.try_iter().count(), QUEUE_MAX, "exactly QUEUE_MAX jobs (open files) wait");
+        // no worker at all: answered at once too
+        let a = answered.clone();
+        enqueue_on(None, Job::Info(File::open(&p).unwrap(), Box::new(move |_| {
+            a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 4);
         let _ = std::fs::remove_file(&p);
     }
 }

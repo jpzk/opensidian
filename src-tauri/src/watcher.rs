@@ -261,6 +261,21 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     c
 }
 
+/// #289 review (CodeAnt): an ADDED note whose read failed in `reconcile` (refused by the
+/// no-follow fd read, over the cap, unreadable) is not in the Index. Left in the snapshot
+/// that becomes the next baseline, it would never be "added" again: a later edit is only
+/// "modified" (which the UI's file model ignores for a file it does not have), and a note
+/// made readable again without a new mtime/size (chmod) would never appear at all. So it
+/// is taken out of `cur`: the next tick sees it as added and reads it again.
+/// Caller holds the index lock (the same one reconcile ran under).
+pub fn forget_unread(d: &Diff, ix: &Index, cur: &mut Snapshot) -> Vec<String> {
+    let gone: Vec<String> = d.added.iter().filter(|n| ix.content(n).is_none()).cloned().collect();
+    for n in &gone {
+        cur.remove(n);
+    }
+    gone
+}
+
 /* ---------- GHOSTS: our own create, deleted from outside before a walk saw it ----------
    create_note / write_note put a new note into the Index under the index lock.
    If something outside removes it (an `rm -rf` of the folder the app just made)
@@ -641,6 +656,38 @@ mod tests {
         assert_eq!(ix.names(), ["A"]);
         assert!(ix.backlinks("A").is_empty());
         // own delete-equivalent: a name the index never had vanishing is silent
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #289 review (CodeAnt): a note added while its read fails (here: over the note cap)
+    /// is not in the Index; the next tick still reports it ADDED once it can be read,
+    /// not "modified" for a file the UI's model does not have
+    #[test]
+    fn added_note_whose_read_failed_is_added_on_a_later_tick() {
+        let root = tmp("unread289");
+        w(&root, "A", "alpha\n");
+        let mut ix = Index::build(&root);
+        let tick = |prev: &Snapshot, ix: &mut Index| {
+            let mut cur = snapshot(&root);
+            let d = diff(prev, &cur);
+            let c = reconcile(&root, &d, ix);
+            forget_unread(&d, ix, &mut cur);
+            (c, cur)
+        };
+        let s0 = snapshot(&root);
+        let big = note_file(&root, "big");
+        fs::OpenOptions::new().create(true).write(true).open(&big).unwrap().set_len(crate::index::MAX_NOTE_BYTES + 1).unwrap();
+        let (c1, s1) = tick(&s0, &mut ix);
+        assert!(!c1.added.contains(&"big".to_string()) && ix.content("big").is_none(), "an over-cap note is not read: {c1:?}");
+        // it becomes readable (shrunk by whoever wrote it)
+        fs::write(&big, "now readable\n").unwrap();
+        let (c2, s2) = tick(&s1, &mut ix);
+        assert_eq!(c2.added, vec!["big".to_string()], "{c2:?}");
+        assert!(c2.modified.is_empty(), "{c2:?}");
+        assert_eq!(ix.content("big"), Some("now readable\n"));
+        // steady state afterwards
+        let (c3, _) = tick(&s2, &mut ix);
+        assert!(c3.is_empty(), "{c3:?}");
         let _ = fs::remove_dir_all(&root);
     }
 }

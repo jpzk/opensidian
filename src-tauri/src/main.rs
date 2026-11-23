@@ -7162,7 +7162,11 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
             } else {
                 vault_hook("watch_tick:pre_lock");
                 let mut ix = v.index.lock().unwrap();
-                span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+                let c = span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix));
+                // #289 review: an added note whose read failed is retried next tick (no log:
+                // a note that stays unreadable would print on every tick)
+                watcher::forget_unread(&d, &ix, &mut cur);
+                c
             };
             // GHOSTS (media CVR-B-063): our own create that an outside delete
             // removed before any walk listed it is in no Diff; ask the Index.

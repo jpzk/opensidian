@@ -510,7 +510,8 @@ pub fn attachments_of(root: &Path) -> Vec<String> {
         if t.is_dir() {
             return true;
         }
-        if !name.ends_with(".md") {
+        // #289 review: a regular file only — a FIFO, socket or device is no attachment node
+        if t.is_file() && !name.ends_with(".md") {
             out.push(e.rel.to_string_lossy().into_owned());
         }
         false
@@ -1065,4 +1066,23 @@ pub fn link_mention(content: &str, base: &str, line: u32, col: u32, len: u32) ->
     let nl = format!("{}[[{}]]{}", &l[..a], hit, &l[b..]);
     lines[line as usize] = &nl;
     Some(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    /// #289 review (CodeAnt nitpick index.rs:513): only regular files are attachments —
+    /// a FIFO with a non-.md name is not offered to the filtered graph as a file node
+    #[test]
+    fn attachments_are_regular_files_only() {
+        let root = std::env::temp_dir().join(format!("osd-attach289-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("img.png"), b"png").unwrap();
+        std::fs::write(root.join("sub/doc.pdf"), b"pdf").unwrap();
+        std::fs::write(root.join("note.md"), b"n").unwrap();
+        let c = std::ffi::CString::new(root.join("pipe.png").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(super::attachments_of(&root), vec!["img.png".to_string(), "sub/doc.pdf".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

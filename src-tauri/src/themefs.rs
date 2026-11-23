@@ -403,8 +403,14 @@ pub fn themes_scan(root: &Path) -> ThemesScan {
                 },
             }
         }
-        if why.is_none() && !c.is_file() {
-            why = Some(("theme.css", "no theme.css".into()));
+        if why.is_none() {
+            // #289 review: lstat, like the no-follow read load_theme does — a theme.css
+            // symlink is not offered in the picker as a theme that then cannot load
+            match fs::symlink_metadata(&c) {
+                Ok(m) if m.file_type().is_symlink() => why = Some(("theme.css", "theme.css is a symlink (not followed)".into())),
+                Ok(m) if m.is_file() => {}
+                _ => why = Some(("theme.css", "no theme.css".into())),
+            }
         }
         match why {
             None => scan.listed.push(b),
@@ -1939,5 +1945,23 @@ mod tests {
                 t.name
             );
         }
+    }
+
+    /// #289 review (CodeAnt): a theme whose theme.css is a symlink is not listed (the
+    /// no-follow read in load_theme refuses it) — it is excluded, naming why
+    #[test]
+    fn theme_with_a_symlinked_css_is_excluded_not_offered() {
+        let root = tmp_vault("thlink289");
+        mk_theme(&root, "Linked", Some(r#"{"name": "Linked", "version": "1.0.0"}"#), false);
+        let outside = root.join("outside.css");
+        fs::write(&outside, "body { color: red }").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join(".obsidian/themes/Linked/theme.css")).unwrap();
+        mk_theme(&root, "Good", Some(r#"{"name": "Good", "version": "1.0.0"}"#), true);
+        let s = themes_scan(&root);
+        assert_eq!(s.listed, vec!["Good".to_string()], "{:?}", s.listed);
+        let x = s.excluded.iter().find(|e| e.dir == "Linked").expect("Linked is excluded");
+        assert_eq!((x.file.as_str(), x.reason.as_str()), ("theme.css", "theme.css is a symlink (not followed)"));
+        assert!(load_theme(&root, "Linked").is_err(), "and it indeed cannot load");
+        assert!(load_theme(&root, "Good").is_ok());
     }
 }
