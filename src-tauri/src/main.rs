@@ -12342,6 +12342,32 @@ mod tests {
         assert!(exts.contains(&"svg"));
     }
 
+    /// CodeAnt #262 (ui/editor.js:478): `![[https://host/logo.svg]]` is a REMOTE
+    /// image in reading view (image_html checks url_scheme before any vault
+    /// lookup), so it is the remote banner, never "<url> could not be found" —
+    /// for svg exactly as for png. Live preview must take the same decision: its
+    /// wikilink image branch hands imgEl the remote flag (as the `![](…)` branch
+    /// does), and imgEl mirrors image_html's other-scheme banner. Phase svgrender
+    /// pins the painted result in both views on the box.
+    #[test]
+    fn remote_wikilink_image_embed_is_the_remote_banner_in_both_views() {
+        for t in ["https://host/logo.svg", "https://host/logo.png", "HTTPS://HOST/LOGO.SVG", "http://host/logo.svg"] {
+            for reading in [true, false] {
+                let h = render_with(&format!("![[{t}]]"), &[], &["logo.svg".into(), "logo.png".into()], reading);
+                assert!(h.contains("data-sec=\"remoteMedia\"") && h.contains("\u{201c}remote image\u{201d} was blocked."), "{t} reading={reading}: {h}");
+                assert!(!h.contains("could not be found") && !h.contains("<img") && !h.contains("host/"), "{t} reading={reading}: {h}");
+            }
+        }
+        let h = render_with("![[ftp://host/logo.svg]]", &[], &["logo.svg".into()], true);
+        assert!(h.contains("\u{201c}remote image\u{201d} could not be found.") && !h.contains("<img"), "{h}");
+        let js = include_str!("../../ui/editor.js");
+        let wl = js.lines().find(|l| l.contains("eadd(Ed.imgEl(target,")).expect("live preview wikilink image branch");
+        assert!(wl.contains("/^https?:/i.test(target)"), "live preview ![[url]] does not pass image_html's remote decision: {wl}");
+        let body = js.split("  imgEl(target, alt, remote) {").nth(1).and_then(|s| s.split("\n  },").next()).expect("Ed.imgEl");
+        let (sch, src) = (body.find("/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)"), body.find("Ed.imgSrc(target)"));
+        assert!(sch.is_some() && sch < src, "Ed.imgEl looks a scheme target up in the vault before image_html's banner");
+    }
+
     /// R29 images, POSITIVE half: the shapes that MUST serve bytes. Kept next
     /// to the traversal test because a containment check that refuses
     /// everything also passes the negative one.
