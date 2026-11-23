@@ -85,6 +85,13 @@
       "name": "chrono",
       "version": "0.4.45",
       "purl": "pkg:cargo/chrono@0.4.45"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/pdfjs-dist@6.1.200",
+      "name": "pdfjs-dist",
+      "version": "6.1.200",
+      "purl": "pkg:npm/pdfjs-dist@6.1.200"
     }
   ],
   "vulnerabilities": [
@@ -383,6 +390,41 @@
         {
           "name": "opensidian:expires",
           "value": "2027-05-15"
+        }
+      ]
+    },
+    {
+      "id": "GHSA-hq66-cqwq-w95j",
+      "source": {
+        "name": "GitHub Advisory Database",
+        "url": "https://github.com/advisories/GHSA-hq66-cqwq-w95j"
+      },
+      "references": [
+        {
+          "id": "CVE-2026-16633",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-16633"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:npm/pdfjs-dist@6.1.200"
+        }
+      ],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_reachable",
+        "detail": "pdf.js 6.1.200 compiled into the bundled libwebkit2gtk 2.52.6 (built-in PDF viewer; nested component of webkit2gtk in the portable AppImage SBOM, #299). Exploit needs WebKit to open an attacker PDF. opensidian never hands one to a webview: vault PDFs are rasterised natively by hayro and served as PNG only (src-tauri/src/pdf.rs, raw bytes never reach the webview); every navigation of every webview is limited to tauri://localhost (main.rs nav_allowed + on_navigation); CSP default-src self with no frame-src/object-src override blocks frames/embeds of any other origin, blob: and data:; ui/ ships no PDF. The vendored ui/vendor pdfjs-dist 6.3.289 is outside the affected range (< 6.2.108). Fix = a WebKitGTK bundling pdf.js >= 6.2.108 (AppImage WebKit, #298).",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
         }
       ]
     }
