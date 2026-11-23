@@ -15940,7 +15940,7 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
     wrap(cm) {
       if (cm.__p3) return cm.__p3; const A = cm.__p3 = { on: false, t: {}, pl: [] };
       const tw = (o, m, n) => { const f = o[m]; if (typeof f !== "function") return; o[m] = function (...a) { if (!A.on) return f.apply(this, a); const s = now(); try { return f.apply(this, a); } finally { A.t[n] = (A.t[n] || 0) + now() - s; } }; };
-      tw(cm.viewState, "update", "vs"); tw(cm, "updatePlugins", "plug"); tw(cm.docView, "update", "dv"); tw(cm.docView, "updateSelection", "dsel"); tw(cm, "updateAttrs", "attrs");
+      tw(cm.viewState, "update", "vs"); tw(cm, "updatePlugins", "plug"); tw(cm.docView, "update", "dv"); { const f = cm.docView.updateSelection; cm.docView.updateSelection = function (...a) { if (!A.on) return f.apply(this, a); let s = now(); void cm.contentDOM.offsetHeight; A.t.lay = (A.t.lay || 0) + now() - s; s = now(); try { return f.apply(this, a); } finally { A.t.dsel = (A.t.dsel || 0) + now() - s; s = now(); void cm.contentDOM.offsetHeight; A.t.lay2 = now() - s; A.t.nodes = cm.contentDOM.getElementsByTagName("*").length; } }; } tw(cm, "updateAttrs", "attrs");
       { const f = cm.measure; if (typeof f === "function") cm.measure = function (...a) { if (now() - (A.last || -1e9) > 300) return f.apply(this, a); const s = now(); try { return f.apply(this, a); } finally { span("p278_meas", { ts: ep(s), ms: r2(now() - s), since: r2(s - A.last) }); } }; }
       tw(cm, "requestMeasure", "rqm"); tw(cm, "update", "upd"); tw(cm.state.constructor.prototype, "update", "stup");
       return A;
