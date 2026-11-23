@@ -361,3 +361,13 @@ menu-zoom-to-selection = Zoom to selection
 menu-as-obsidian-url = as Obsidian URL
 menu-from-system-root = from system root
 menu-from-vault-folder = from vault folder
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secmic-section = Privacy
+secmic-label = Microphone
+secmic-desc = Ask: the Audio recorder asks in a separate system window before every recording. Always allow: recordings start without that window (you confirm this choice once, in a system window). Off: every recording is refused and no window is shown. While the microphone is on, the window title starts with "● Recording".
+secmic-ask = Ask
+secmic-always = Always allow
+secmic-off = Off
+secmic-forced = Forced off by { $name }.

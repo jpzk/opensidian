@@ -358,3 +358,13 @@ menu-zoom-to-selection = 선택 영역으로 확대
 menu-as-obsidian-url = Obsidian URL로
 menu-from-system-root = 시스템 루트 기준
 menu-from-vault-folder = 보관함 폴더 기준
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secmic-section = 개인 정보 보호
+secmic-label = 마이크
+secmic-desc = 묻기: 녹음기가 녹음을 시작할 때마다 별도의 시스템 창에서 묻습니다. 항상 허용: 그 창 없이 녹음을 시작합니다(이 선택은 시스템 창에서 한 번만 확인합니다). 끄기: 모든 녹음을 거부하고 창도 표시하지 않습니다. 마이크가 켜져 있는 동안 창 제목은 "● Recording"으로 시작합니다.
+secmic-ask = 묻기
+secmic-always = 항상 허용
+secmic-off = 끄기
+secmic-forced = { $name }에 의해 강제로 꺼져 있습니다.

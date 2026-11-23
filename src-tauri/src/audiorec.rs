@@ -789,6 +789,44 @@ mod tests {
         assert!(start_check(w, &t, crate::security::mic_check(m), now).unwrap_err().contains("the microphone is off"));
     }
 
+    /// #295 follow-up, Microphone = always allow: no per-start question, but the start gate is the
+    /// SAME — a wrong or missing token is refused (and burns the grant audio_rec_start minted), a
+    /// page reload voids it, and a start that passes turns the native indicator on like any other
+    #[test]
+    fn mic295_always_allow_start_still_needs_the_token_and_shows_the_indicator() {
+        use crate::security::{mic_asks, mic_check, Mic};
+        let w = "t295-always";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        assert!(!mic_asks(Mic::Always), "always allow must skip only the question");
+        // the always path mints the grant itself (no dialog); a forged token still fails
+        grant(w, now);
+        assert!(start_check(w, "00000000000000000000000000000000", mic_check(Mic::Always), now).is_err(), "always allow started with a wrong token");
+        assert_eq!(start_check(w, &t, mic_check(Mic::Always), now).unwrap_err(), NO_GRANT, "the refused attempt must burn the grant");
+        grant(w, now);
+        assert!(start_check(w, "", mic_check(Mic::Always), now).is_err(), "always allow started with no token");
+        // a token from before a page reload is dead too
+        grant(w, now);
+        page_started(w);
+        assert!(start_check(w, &t, mic_check(Mic::Always), now).is_err(), "always allow started with an old page's token");
+        let t2 = token(w).unwrap();
+        grant(w, now);
+        start_check(w, &t2, mic_check(Mic::Always), now).expect("always allow + the page token + the grant = start");
+        // the started recording carries the native indicator (main.rs rec_indicator -> indicator_set)
+        let g = indicator_set(w, true).unwrap();
+        assert!(indicator_on(w) && indicator_live(w, g));
+        assert_eq!(indicator_title("Note - V - Opensidian", true).as_deref(), Some("● Recording — Note - V - Opensidian"));
+        indicator_set(w, false);
+        // lockdown over always allow: refused even with token + grant
+        let mut l = crate::security::Sec::default();
+        l.lockdown = true;
+        let eff = crate::security::effective_with(l, Some(l));
+        grant(w, now);
+        let e = start_check(w, &t2, mic_check(crate::security::mic_effective_with(Mic::Always, &eff)), now).unwrap_err();
+        assert!(e.contains("the microphone is off"), "{e}");
+    }
+
     /// a page (re)load voids the window's grant (an Allow given to the old page starts nothing)
     #[test]
     fn mic295_page_load_voids_the_grant() {

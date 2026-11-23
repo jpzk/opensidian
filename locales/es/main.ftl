@@ -358,3 +358,13 @@ menu-zoom-to-selection = Ampliar a la selección
 menu-as-obsidian-url = como URL de Obsidian
 menu-from-system-root = desde la raíz del sistema
 menu-from-vault-folder = desde la carpeta de la bóveda
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secmic-section = Privacidad
+secmic-label = Micrófono
+secmic-desc = Preguntar: la grabadora pregunta en una ventana aparte del sistema antes de cada grabación. Permitir siempre: las grabaciones empiezan sin esa ventana (confirmas esta opción una sola vez, en una ventana del sistema). Desactivado: se rechaza cualquier grabación y no se muestra ninguna ventana. Mientras el micrófono está activo, el título de la ventana empieza por «● Recording».
+secmic-ask = Preguntar
+secmic-always = Permitir siempre
+secmic-off = Desactivado
+secmic-forced = Desactivado a la fuerza por { $name }.

@@ -341,7 +341,13 @@ pub fn mic_text(vault: &str) -> String {
     )
 }
 
-/// #295: the question asked before EVERY recording start (Record / Cancel, default Cancel)
+/// #295: the question asked before EVERY recording start (Record / Cancel, default Cancel).
+/// No third "Always allow" button, on purpose (#295 follow-up): the one Always pattern in these
+/// dialogs (#74, spawn) is keyed by (vault, plugin id, program), and that plugin id is what the
+/// PAGE passes to desk_proc_spawn — a self-reported identity any page code can claim (audit /
+/// pentest H3). The mic's always-allow is the app-wide Settings › Security › Microphone =
+/// "always" instead, set in Settings through the native Security confirm (main.rs
+/// security_mic_set); with it this question is not asked at all.
 pub fn mic_question(vault: &str) -> Question {
     let text = mic_text(vault);
     Question { head: MIC_HEAD.into(), log: text.clone(), text, remember: None, always: false }

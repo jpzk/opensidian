@@ -358,3 +358,13 @@ menu-zoom-to-selection = Масштаб по выделению
 menu-as-obsidian-url = как URL Obsidian
 menu-from-system-root = от корня системы
 menu-from-vault-folder = от папки хранилища
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secmic-section = Конфиденциальность
+secmic-label = Микрофон
+secmic-desc = Спрашивать: перед каждой записью диктофон спрашивает разрешение в отдельном системном окне. Всегда разрешать: запись начинается без этого окна (этот выбор вы один раз подтверждаете в системном окне). Выкл.: любая запись отклоняется, окно не показывается. Пока микрофон включён, заголовок окна начинается с «● Recording».
+secmic-ask = Спрашивать
+secmic-always = Всегда разрешать
+secmic-off = Выкл.
+secmic-forced = Принудительно выключено: { $name }.

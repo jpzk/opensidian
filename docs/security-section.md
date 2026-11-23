@@ -487,6 +487,22 @@ What (a) means concretely:
   (`Op::SecurityMic`), `main.rs` (`audio_rec_start`, `rec_indicator`, `security_mic_set`),
   `ui/security.js` (Privacy › Microphone row, census `[secmic:<stored>/<effective>/<forced>@x,y]`),
   `ui/main.js` (recorder block).
+- **Always allow (#295 follow-up, operator 2026-11-23):** a third value `always`. Order of
+  strictness `off` > `ask` > `always`; any move DOWN it (`off` → `ask`, `off`/`ask` → `always`)
+  lowers a protection: `security_mic_set` asks the native "lower protection?" confirm (Rust
+  text, default Keep protection) and `security::mic_decide` writes only after Lower
+  protection. A revoke (`always` → `ask`/`off`, `ask` → `off`) is written at once, no dialog,
+  and the next start already follows it. Lockdown forces `off` over `always` too. With
+  `always`, `audio_rec_start` skips ONLY the per-start question (`security::mic_asks`): the
+  page token, the off/lockdown refusal, the grant + `start_check` (token and setting again)
+  and the native title mark all still apply — no silent recording. The value is app-wide and
+  keyed by nothing the page reports. **No "Always allow" button in the per-start dialog:** the
+  one existing Always pattern (#74, spawn) is keyed by (vault, plugin id, program), and the
+  plugin id is what the page passes to `desk_proc_spawn` — self-reported, so any page code can
+  claim it (audit/pentest H3). Copying it would key the mic grant to a forgeable identity;
+  the setting is the only always-allow. UI: three buttons Ask / Always allow / Off
+  (`data-secmicv`), strings `secmic-*` in all six `locales/*/main.ftl`, extra census
+  `[secmicv:ask@x,y,always@x,y,off@x,y]`.
 
 ## 2. Settings tab
 

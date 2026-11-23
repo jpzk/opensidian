@@ -254,11 +254,18 @@
     micRow(pg);
     if (typeof updateTitle === "function") updateTitle();
   }
-  /* #295 (audit F-8) Microphone: "ask" (default, the switch reads ON) | "off". Not one of the boolean
-     switches above (security.rs keeps it apart; [secp:]/[secv:]/[secf:] stay theirs): its own row
-     (data-secmic, not data-sec), its own command security_mic_set (off -> ask asks the native
-     confirm), its own census [secmic:<stored>/<effective>/<forced 1|0>@<cx>,<cy>]. The decision
-     itself is native: audio_rec_start asks before every recording, or refuses while this is off. */
+  /* #295 (audit F-8) Microphone: "ask" (default) | "always" (#295 follow-up) | "off". Not one of the
+     boolean switches above (security.rs keeps it apart; [secp:]/[secv:]/[secf:] stay theirs): its
+     own row (data-secmic, not data-sec), a three-way choice, its own command security_mic_set. The
+     page only ASKS for a value: a change that lowers protection (off -> ask, to always allow) is
+     confirmed in the NATIVE "lower protection?" window before Rust writes it; a revoke (back to ask
+     / off) applies at once. The start decision itself is native too (audio_rec_start).
+     Census: [secmic:<stored>/<effective>/<forced 1|0>@<cx>,<cy>] — @ = the button the old switch
+     press led to (Off, or Ask while off), so the T1 secmic cases keep their clicks — and
+     [secmicv:ask@x,y,always@x,y,off@x,y] (every button's centre). Strings: locales secmic-*. */
+  const I18 = window.I18N;   // captured at load, before any plugin script (a later global cannot relabel the row)
+  const tr = (id, args, en) => { try { const s = I18 && I18.t(id, args); if (s && s !== id) return s; } catch (_) {} return en; };
+  const MIC_VALUES = [["ask", "secmic-ask", "Ask"], ["always", "secmic-always", "Always allow"], ["off", "secmic-off", "Off"]];
   async function setMic(v) {
     if (busy) return; busy = true;
     try { R = await inv("security_mic_set", { value: v }); publish(); }
@@ -269,28 +276,40 @@
   function micRow(pg) {
     const M = R.microphone;
     if (!M) return;
-    pg.appendChild(el("div", "ssec", "Privacy"));
+    pg.appendChild(el("div", "ssec", tr("secmic-section", null, "Privacy")));
     const card = el("div", "scard"); pg.appendChild(card);
     const lock = !!M.forced;
     const r = el("div", "srow" + (lock ? " dis" : ""));
     r.dataset.secmic = "1";
     if (lock) r.setAttribute("aria-disabled", "true");
     const info = el("div", "sinfo");
-    info.appendChild(el("div", "slabel", M.name || "Microphone"));
-    info.appendChild(el("div", "sdesc", "On = ask: the Audio recorder asks in a separate system window before every recording, and the window title shows \"● Recording\" while the microphone is on. Off: every recording is refused, no window is shown."));
-    if (lock) info.appendChild(el("div", "sdesc ssecforced", "Forced off by " + (WHY[M.forced] || M.forced) + "."));
+    info.appendChild(el("div", "slabel", tr("secmic-label", null, M.name || "Microphone")));
+    info.appendChild(el("div", "sdesc", tr("secmic-desc", null, "Ask: the Audio recorder asks in a separate system window before every recording. Always allow: recordings start without that window (you confirm this choice once, in a system window). Off: every recording is refused and no window is shown. While the microphone is on, the window title starts with \"● Recording\".")));
+    if (lock) info.appendChild(el("div", "sdesc ssecforced", tr("secmic-forced", { name: WHY[M.forced] || M.forced }, "Forced off by " + (WHY[M.forced] || M.forced) + ".")));
     r.appendChild(info);
-    const on = (lock ? M.effective : M.stored) === "ask";
-    const t = toggle(on, () => setMic(M.stored === "ask" ? "off" : "ask"), lock);
-    t.id = "ssecmic";
-    r.appendChild(t);
+    const cur = lock ? M.effective : M.stored;
+    const seg = el("div", "sctl ssecmicseg");
+    seg.id = "ssecmic";
+    seg.setAttribute("role", "radiogroup");
+    seg.setAttribute("aria-label", tr("secmic-label", null, "Microphone"));
+    for (const [v, id, en] of MIC_VALUES) {
+      const b = el("button", "sbtn" + (v === cur ? " acc" : ""), tr(id, null, en));
+      b.dataset.secmicv = v;
+      b.setAttribute("role", "radio"); b.setAttribute("aria-checked", v === cur ? "true" : "false");
+      if (lock) { b.disabled = true; b.setAttribute("aria-disabled", "true"); }
+      else b.onclick = ev => { ev.stopPropagation(); if (v !== M.stored) setMic(v); };
+      seg.appendChild(b);
+    }
+    r.appendChild(seg);
     card.appendChild(r);
   }
   function micTok() {
-    const M = R && R.microphone, t = document.getElementById("ssecmic");
-    if (!M || !t) return "";
-    const b = t.getBoundingClientRect();
-    return " [secmic:" + M.stored + "/" + M.effective + "/" + (M.forced ? 1 : 0) + "@" + Math.round(b.x + b.width / 2) + "," + Math.round(b.y + b.height / 2) + "]";
+    const M = R && R.microphone, seg = document.getElementById("ssecmic");
+    if (!M || !seg) return "";
+    const c = v => { const b = seg.querySelector('[data-secmicv="' + v + '"]'); if (!b) return null; const q = b.getBoundingClientRect(); return Math.round(q.x + q.width / 2) + "," + Math.round(q.y + q.height / 2); };
+    const legacy = c(M.stored === "off" ? "ask" : "off");
+    return " [secmic:" + M.stored + "/" + M.effective + "/" + (M.forced ? 1 : 0) + "@" + legacy + "]" +
+      " [secmicv:" + MIC_VALUES.map(([v]) => v + "@" + c(v)).join(",") + "]";
   }
   function tok() {
     if (!R) return "";

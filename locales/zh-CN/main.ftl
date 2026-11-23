@@ -358,3 +358,13 @@ menu-zoom-to-selection = 缩放到选中内容
 menu-as-obsidian-url = 作为 Obsidian URL
 menu-from-system-root = 从系统根目录
 menu-from-vault-folder = 从仓库文件夹
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secmic-section = 隐私
+secmic-label = 麦克风
+secmic-desc = 询问：每次录音前，录音机都会在单独的系统窗口中询问。始终允许：录音直接开始，不再弹出该窗口（此选项只需在系统窗口中确认一次）。关闭：拒绝所有录音，也不显示窗口。麦克风开启期间，窗口标题以“● Recording”开头。
+secmic-ask = 询问
+secmic-always = 始终允许
+secmic-off = 关闭
+secmic-forced = 已被 { $name } 强制关闭。

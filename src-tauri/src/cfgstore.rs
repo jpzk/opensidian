@@ -68,8 +68,9 @@ pub enum Op {
     /// security::validate (and, for a change that lowers protection, the native confirm);
     /// applied here only for a known field, so even a forged Op cannot write anything else.
     SecuritySet(String, bool),
-    /// #295: Settings › Security › Microphone ("ask" | "off"). Sent ONLY by security_mic_set after
-    /// security::mic_validate (and, for off -> ask, the native confirm); applied here only for a
+    /// #295: Settings › Security › Microphone ("ask" | "always" | "off"). Sent ONLY by security_mic_set
+    /// after security::mic_validate (and, for a weakening change — off -> ask, off / ask -> always —
+    /// the native confirm); applied here only for a
     /// valid value, so even a forged Op cannot write anything else under the key.
     SecurityMic(String),
 }

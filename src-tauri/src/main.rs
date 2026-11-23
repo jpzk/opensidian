@@ -1307,11 +1307,19 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
        audiorec::start_check consumes below. A page script driving the core recorder gets the
        dialog, never a silent recording. */
     security::mic_check(security::mic_effective(&cfg_value())).inspect_err(|e| eprintln!("[audiorec] start refused: {e}"))?;
-    let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    let slot = consent::admit()?;
-    if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
-        eprintln!("[audiorec] start: cancelled in the native consent, nothing started");
-        return Err(audiorec::NO_GRANT.into());
+    /* #295 follow-up: Microphone = always allow (app-wide, set only through the native Security
+       confirm) skips THIS question and nothing else: the token above, the setting re-read by
+       start_check below and the native recording indicator (rec_indicator after the recorder
+       runs) apply to every start alike. Lockdown has already turned it into off above. */
+    if security::mic_asks(security::mic_effective(&cfg_value())) {
+        let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
+            eprintln!("[audiorec] start: cancelled in the native consent, nothing started");
+            return Err(audiorec::NO_GRANT.into());
+        }
+    } else {
+        eprintln!("[audiorec] start: Microphone = always allow, no per-start consent (token, setting and the recording indicator still apply)");
     }
     audiorec::grant(&parent, std::time::Instant::now());
     // the setting is read AGAIN after the dialog (turned off / lockdown meanwhile = refused);
@@ -5120,18 +5128,23 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     Ok(security::report(&cfg_value()))
 }
 
-/// #295 Settings › Security › Microphone = "ask" | "off": validated, off -> ask (lowers a
-/// protection) asks the native Security confirm first; only Op::SecurityMic writes it
+/// #295 Settings › Security › Microphone = "ask" | "always" | "off": validated; a change that lowers
+/// a protection (off -> ask, off / ask -> always) asks the native Security confirm first and is
+/// written only after Lower protection (security::mic_decide); a revoke (always -> ask / off,
+/// ask -> off) is written at once with no dialog; only Op::SecurityMic writes it
 #[tauri::command]
 async fn security_mic_set(win: tauri::Window, value: String) -> Result<serde_json::Value, String> {
     let m = security::mic_validate(&value)?;
-    if security::mic_weakens(security::mic_stored(&cfg_value()), m) {
+    let stored = security::mic_stored(&cfg_value());
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
         let slot = consent::admit()?;
-        if !consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_mic_question(m)).await? {
-            eprintln!("[sec] set microphone={}: cancelled in the confirm, nothing written", m.as_str());
-            return Ok(security::report(&cfg_value()));
-        }
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_mic_question(m)).await?;
     }
+    let Some(m) = security::mic_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set microphone={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
     cfg_update(&[cfgstore::Op::SecurityMic(m.as_str().into())]);
     eprintln!("[sec] set microphone={}", m.as_str());
     {
@@ -10164,6 +10177,36 @@ mod tests {
         let (w, c) = (mb.find("security::mic_weakens(").expect("weakens"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
         assert!(w < c && mb[w..c].contains("consent::Kind::Security"), "off -> ask written without the native confirm");
         assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityMic(")).count(), 1, "one writer of the microphone");
+    }
+
+    /// #295 follow-up, Microphone = always allow: it skips ONLY the per-start question. The token
+    /// check and the off/lockdown refusal come before the branch, the grant / start_check (token +
+    /// setting again) / recorder / indicator after it, outside it: an always-allow start still
+    /// needs the token and still turns the native indicator on. The setting is written only by
+    /// security_mic_set, behind mic_decide (a weakening change needs the native confirm's yes).
+    #[test]
+    fn mic295_always_allow_skips_only_the_question() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let branch = at(concat!("if security::mic_", "asks(security::mic_effective(&cfg_value())) {"));
+        let other = at("} else {\n        eprintln!(\"[audiorec] start: Microphone = always allow");
+        let join = branch + b[branch..].find("\n    }\n").expect("branch end");
+        assert!(at("audiorec::authorized(&parent, &token)?") < branch, "the token check must come before the always branch");
+        assert!(at("security::mic_check(security::mic_effective(&cfg_value())).inspect_err(") < branch, "off / lockdown must refuse before the always branch");
+        assert!(branch < at(concat!("consent::Kind::", "Mic,")) && at(concat!("consent::Kind::", "Mic,")) < other, "the question sits in the ask branch");
+        assert!(other < join, "branch shape");
+        for after in [concat!("audiorec::", "grant(&parent,"), "audiorec::start_check(&parent, &token,", "tauri::WebviewWindowBuilder::new(", "rec_indicator(&win, true)"] {
+            assert!(at(after) > join, "{after} must run for EVERY start (after the always branch), not inside it");
+        }
+        assert!(!b[branch..join].contains("rec_indicator") && !b[branch..join].contains("audiorec::start_check"), "the branch must not hold the token / indicator steps");
+        assert_eq!(b.matches("rec_indicator(&win, true)").count(), 1, "one indicator-on, for every recording");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (d, c) = (mb.find("security::mic_decide(stored, m, confirmed)").expect("decide"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(d < c && mb[..d].contains("confirmed = consent::ask(") && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind mic_decide + the native confirm");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
     }
 
     /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the

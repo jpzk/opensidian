@@ -298,14 +298,23 @@ pub fn spawn_check(eff: &Eff, what: &str, plugin: Option<&str>) -> Result<(), St
     Ok(())
 }
 /* #295 (audit F-8) — Microphone. Values "ask" (the default: every recording start of the Audio
-   recorder asks in a NATIVE consent, consent::Kind::Mic) and "off" (every start is refused before
-   any dialog). Stored as security.microphone = "ask" | "off", written ONLY by cfgstore
+   recorder asks in a NATIVE consent, consent::Kind::Mic), "always" (#295 follow-up, operator
+   2026-11-23: no per-start dialog, see below) and "off" (every start is refused before any
+   dialog). Stored as security.microphone = "ask" | "always" | "off", written ONLY by cfgstore
    Op::SecurityMic after `mic_validate`; a missing or malformed value = "ask" (the default, which
-   still asks natively). Lockdown forces "off" (the stored value is kept and comes back, like
-   every other toggle). Kept OUT of FIELDS / Sec: those are the boolean switches, and their
-   census ([secp:]/[secv:]) is pinned by the T3 phases; this is a two-value choice of its own,
-   reported under report()["microphone"]. Turning it from off back to ask lowers a protection:
-   main.rs security_mic_set asks the native Security confirm first. */
+   still asks natively). Lockdown forces "off" over ANY stored value, "always" included (the
+   stored value is kept and comes back, like every other toggle). Kept OUT of FIELDS / Sec: those
+   are the boolean switches, and their census ([secp:]/[secv:]) is pinned by the T3 phases; this
+   is a choice of its own, reported under report()["microphone"].
+   Strictness: off > ask > always. A move DOWN that order (off -> ask, off -> always, ask ->
+   always) lowers a protection: main.rs security_mic_set asks the native Security confirm first
+   (Rust text, default Keep protection) and writes nothing on Cancel. A move UP (revoke: always ->
+   ask / off, ask -> off) applies at once with no dialog.
+   "always" is app-wide and keyed by NOTHING the page reports (no plugin id, no vault, no
+   origin): it only removes the per-start question. A start still needs the core recorder's page
+   token (audiorec::authorized + start_check) and a fresh grant (minted by audio_rec_start itself),
+   and the native recording indicator (window title mark) still goes on: never a silent
+   recording. */
 pub const MIC_FIELD: &str = "microphone";
 pub const MIC_NAME: &str = "Microphone";
 pub const MIC_OFF: &str = "the microphone is off";
@@ -314,6 +323,8 @@ pub const MIC_OFF: &str = "the microphone is off";
 #[serde(rename_all = "lowercase")]
 pub enum Mic {
     Ask,
+    /// no per-start dialog; token, setting and the native indicator still apply
+    Always,
     Off,
 }
 
@@ -321,17 +332,27 @@ impl Mic {
     pub fn as_str(self) -> &'static str {
         match self {
             Mic::Ask => "ask",
+            Mic::Always => "always",
             Mic::Off => "off",
+        }
+    }
+    /// strictness: off 2 > ask 1 > always 0
+    fn rank(self) -> u8 {
+        match self {
+            Mic::Always => 0,
+            Mic::Ask => 1,
+            Mic::Off => 2,
         }
     }
 }
 
-/// a requested value, validated: exactly "ask" or "off"
+/// a requested value, validated: exactly "ask", "always" or "off"
 pub fn mic_validate(v: &str) -> Result<Mic, String> {
     match v {
         "ask" => Ok(Mic::Ask),
+        "always" => Ok(Mic::Always),
         "off" => Ok(Mic::Off),
-        _ => Err(format!("unknown value {v:?} for Settings › Security › {MIC_NAME} (ask | off)")),
+        _ => Err(format!("unknown value {v:?} for Settings › Security › {MIC_NAME} (ask | always | off)")),
     }
 }
 
@@ -340,7 +361,7 @@ pub fn mic_stored(cfg: &Value) -> Mic {
     cfg[KEY].get(MIC_FIELD).and_then(Value::as_str).and_then(|s| mic_validate(s).ok()).unwrap_or(Mic::Ask)
 }
 
-/// stored -> effective, pure: lockdown (as latched, `eff.lockdown`) forces Off
+/// stored -> effective, pure: lockdown (as latched, `eff.lockdown`) forces Off (over Always too)
 pub fn mic_effective_with(stored: Mic, eff: &Eff) -> Mic {
     if eff.lockdown {
         Mic::Off
@@ -356,27 +377,52 @@ pub fn mic_effective(cfg: &Value) -> Mic {
 /// Err while the effective value is Off: the start is refused, nothing is asked
 pub fn mic_check(m: Mic) -> Result<(), String> {
     match m {
-        Mic::Ask => Ok(()),
+        Mic::Ask | Mic::Always => Ok(()),
         Mic::Off => Err(format!("NotAllowedError: audio recorder: {MIC_OFF} (Settings › Security › {MIC_NAME})")),
     }
 }
 
-/// off -> ask lowers protection (needs the native Security confirm); everything else does not
-pub fn mic_weakens(stored: Mic, new: Mic) -> bool {
-    stored == Mic::Off && new == Mic::Ask
+/// does a start under the effective value `m` ask the per-start native consent: Ask yes, Always no
+/// (Off never gets this far: mic_check refused it)
+pub fn mic_asks(m: Mic) -> bool {
+    m != Mic::Always
 }
 
-/// the confirm text for off -> ask (Rust data only)
+/// a move down the strictness order (off -> ask, off -> always, ask -> always) lowers protection
+/// and needs the native Security confirm; a revoke (up the order) or no change does not
+pub fn mic_weakens(stored: Mic, new: Mic) -> bool {
+    new.rank() < stored.rank()
+}
+
+/// security_mic_set's decision, pure: `confirmed` = what the native Security confirm answered
+/// (false when none was asked or it was cancelled). Some(value to write) or None (nothing written).
+/// A weakening change is written ONLY with confirmed = true; a revoke is written at once.
+pub fn mic_decide(stored: Mic, new: Mic, confirmed: bool) -> Option<Mic> {
+    (!mic_weakens(stored, new) || confirmed).then_some(new)
+}
+
+/// the confirm text for a weakening change (Rust data only)
 pub fn mic_weaken_text(new: Mic) -> String {
-    format!(
-        "Setting: Settings › Security › {MIC_NAME}\nNew value: {}\n\n\
-         This lowers a protection: the Audio recorder may ask to record again. Confirm only if you \
-         changed it yourself in Settings: page or plugin code cannot answer this window.",
-        match new {
-            Mic::Ask => "ask before every recording",
-            Mic::Off => "off",
-        }
-    )
+    match new {
+        Mic::Always => format!(
+            "Setting: Settings › Security › {MIC_NAME}\nNew value: always allow\n\n\
+             This lowers a protection: the Audio recorder will start recording WITHOUT asking you \
+             first, from its ribbon button, command or hotkey, in every vault, and also when page or \
+             plugin code makes it start. The window title still starts with \"{}\" while it \
+             records. Set it back to ask or off in Settings at any time; that applies at once. \
+             Confirm only if you changed it yourself: page or plugin code cannot answer this window.",
+            crate::audiorec::REC_MARK.trim_end_matches(" — ")
+        ),
+        _ => format!(
+            "Setting: Settings › Security › {MIC_NAME}\nNew value: {}\n\n\
+             This lowers a protection: the Audio recorder may ask to record again. Confirm only if you \
+             changed it yourself in Settings: page or plugin code cannot answer this window.",
+            match new {
+                Mic::Ask => "ask before every recording",
+                _ => "off",
+            }
+        ),
+    }
 }
 
 /// report()["microphone"]: {stored, effective, forced: "lockdown" | null}
@@ -1419,6 +1465,61 @@ mod tests {
         assert_eq!(r["microphone"]["name"], json!("Microphone"));
         assert!(r["stored"].get("microphone").is_none() && r["effective"].get("microphone").is_none(), "not one of FIELDS");
         assert!(validate("microphone", true).is_err(), "the boolean path cannot write it");
+    }
+
+    /// #295 follow-up, Microphone = always allow: a value of its own ("always"); moving to it lowers
+    /// a protection, so without the native confirm's yes nothing is written (from ask AND from
+    /// off); lockdown forces off over it; it skips only the per-start question; a revoke (back to
+    /// ask / off) needs no dialog and is written at once
+    #[test]
+    fn mic295_always_allow_setting() {
+        assert_eq!(mic_validate("always"), Ok(Mic::Always));
+        assert_eq!(Mic::Always.as_str(), "always");
+        assert_eq!(serde_json::to_value(Mic::Always).unwrap(), json!("always"));
+        assert_eq!(mic_stored(&json!({"security": {"microphone": "always"}})), Mic::Always);
+        for bad in ["Always", "always ", "allow", "always-allow", "yes"] {
+            assert!(mic_validate(bad).is_err(), "{bad:?} accepted");
+            assert_eq!(mic_stored(&json!({"security": {"microphone": bad}})), Mic::Ask, "{bad:?} read as a value");
+        }
+        // weakening: ask -> always and off -> always need the confirm; refused without it
+        assert!(mic_weakens(Mic::Ask, Mic::Always) && mic_weakens(Mic::Off, Mic::Always));
+        assert_eq!(mic_decide(Mic::Ask, Mic::Always, false), None, "always allow written without the native confirm");
+        assert_eq!(mic_decide(Mic::Off, Mic::Always, false), None, "always allow written without the native confirm");
+        assert_eq!(mic_decide(Mic::Off, Mic::Ask, false), None, "off -> ask written without the native confirm");
+        assert_eq!(mic_decide(Mic::Ask, Mic::Always, true), Some(Mic::Always));
+        assert_eq!(mic_decide(Mic::Off, Mic::Always, true), Some(Mic::Always));
+        // revoke: immediate, no confirm needed
+        for (from, to) in [(Mic::Always, Mic::Ask), (Mic::Always, Mic::Off), (Mic::Ask, Mic::Off), (Mic::Always, Mic::Always)] {
+            assert!(!mic_weakens(from, to), "{from:?} -> {to:?} asked a confirm");
+            assert_eq!(mic_decide(from, to, false), Some(to), "{from:?} -> {to:?} not written at once");
+        }
+        // applied through the one writer, the revoke is effective for the very next start
+        let mut cfg = json!({"security": {"microphone": "always"}});
+        assert!(!mic_asks(mic_effective(&cfg)), "always allow still asks per start");
+        crate::cfgstore::apply(&mut cfg, &[crate::cfgstore::Op::SecurityMic(mic_decide(Mic::Always, Mic::Ask, false).unwrap().as_str().into())]);
+        assert_eq!(mic_effective(&cfg), Mic::Ask);
+        assert!(mic_asks(mic_effective(&cfg)), "after the revoke the next start must ask again");
+        crate::cfgstore::apply(&mut cfg, &[crate::cfgstore::Op::SecurityMic("always".into())]);
+        crate::cfgstore::apply(&mut cfg, &[crate::cfgstore::Op::SecurityMic(mic_decide(Mic::Always, Mic::Off, false).unwrap().as_str().into())]);
+        assert!(mic_check(mic_effective(&cfg)).is_err(), "after the revoke to off the next start must be refused");
+        // the per-start question: ask asks, always does not; always passes mic_check (the token and
+        // the grant are still checked by audiorec::start_check)
+        assert!(mic_asks(Mic::Ask) && !mic_asks(Mic::Always));
+        assert!(mic_check(Mic::Always).is_ok());
+        // lockdown overrides always allow: off, refused, the stored always kept
+        let mut l = Sec::default();
+        l.lockdown = true;
+        assert_eq!(mic_effective_with(Mic::Always, &effective_with(l, Some(l))), Mic::Off, "lockdown must override always allow");
+        assert_eq!(mic_effective_with(Mic::Always, &effective_with(l, None)), Mic::Off);
+        assert!(mic_check(mic_effective_with(Mic::Always, &effective_with(l, Some(l)))).is_err());
+        let d = Sec::default();
+        assert_eq!(mic_effective_with(Mic::Always, &effective_with(d, Some(d))), Mic::Always);
+        // the report: stored always, effective off under lockdown, forced by lockdown
+        let r = report(&json!({"security": {"microphone": "always", "lockdown": true}}));
+        assert_eq!(r["microphone"]["stored"], json!("always"));
+        // the confirm text names the setting and the indicator, and is ours
+        let t = mic_weaken_text(Mic::Always);
+        assert!(t.contains("Settings › Security › Microphone") && t.contains("always allow") && t.contains("\"● Recording\""), "{t}");
     }
 
     /// #144 toggle 12: the lockdown CSP drops 'wasm-unsafe-eval' from script-src only; off
