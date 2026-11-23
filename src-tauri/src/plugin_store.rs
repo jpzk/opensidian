@@ -822,8 +822,8 @@ mod tests {
         let en = &en[..en.find("\n    }\n").expect("enable end")];
         let st = en.find("be.io(id, \"styles\")").expect("enable reads the styles");
         assert!(!en[st..].starts_with("be.io(id, \"styles\").catch"), "the styles refusal is swallowed");
-        let tr = en.find("} catch (e) {").expect("enable catch");
-        assert!(st < tr && en[tr..].contains("teardown(id)"), "a styles error must reach the teardown");
+        let tr = st + en[st..].find("} catch (e) {").expect("the catch after the styles read");
+        assert!(en[tr..].contains("teardown(id)"), "a styles error must reach the teardown");
         let se = &js[js.find("async function saveEnabled(id, on)").expect("saveEnabled")..];
         let se = &se[..se.find("\n    }\n").expect("saveEnabled end")];
         let snap = se.find("const asked = askedOnce;").expect("askedOnce read before refresh()");
