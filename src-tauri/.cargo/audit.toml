@@ -14,6 +14,8 @@ ignore = [
   "RUSTSEC-2025-0098", # unic-ucd-version unmaintained (transitive). EXPIRES 2027-05-15
   "RUSTSEC-2025-0100", # unic-ucd-ident unmaintained (transitive). EXPIRES 2027-05-15
   "RUSTSEC-2026-0543", # chrono unmaintained (transitive via serde_with). EXPIRES 2027-05-15
+  "RUSTSEC-2026-0592", # url Url::origin not reachable (no caller in tree). EXPIRES 2027-01-15 (bump >=2.5.9, PR #290)
+  "RUSTSEC-2026-0594", # cookie PrivateJar not compiled (private feature off). EXPIRES 2027-01-15 (bump >=0.18.3)
 ]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 
