@@ -1045,7 +1045,14 @@ const Ed = {
     const S = seg === undefined ? Ed.gseg() : seg;
     if (S) {
       try {
-        const cur = S.segment(t).containing(back ? c - 1 : c);
+        // #274 review: ask for the LOW half when the index is the high half of a pair (same code
+        // point, so the same segment by UAX #29). JSC's containing(i) for a high surrogate i
+        // reports the PREVIOUS cluster's start (box census [edt:fail3:inside:2:7]): a caret just
+        // after the high half then stepped back past the cluster and Backspace split it.
+        let q = back ? c - 1 : c;
+        const u0 = t.charCodeAt(q), u1 = t.charCodeAt(q + 1);
+        if (u0 >= 0xd800 && u0 <= 0xdbff && u1 >= 0xdc00 && u1 <= 0xdfff) q++;
+        const cur = S.segment(t).containing(q);
         if (cur) {
           const k = back ? cur.index : cur.index + cur.segment.length;
           if (back ? k < c : k > c) return k;
