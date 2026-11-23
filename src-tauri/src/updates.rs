@@ -609,15 +609,16 @@ pub struct Signed {
     pub map: BTreeMap<String, String>,
 }
 
-/// the signature status of one release; Err(reason) = never offered
-fn signed(fetch: Fetch, c: &Candidate) -> Result<Signed, String> {
+/// the signature status of one release; Err = never offered. A download that
+/// failed is Fail::Fetch, not "unsigned": nothing is known about that release.
+fn signed(fetch: Fetch, c: &Candidate) -> Result<Signed, Fail> {
     let (Some(su), Some(au)) = (c.sums.as_deref(), c.asc.as_deref()) else {
-        return Err("release has no SHA256SUMS / SHA256SUMS.asc".into());
+        return Err(Fail::Unsigned("release has no SHA256SUMS / SHA256SUMS.asc".into()));
     };
-    let sums = fetch(su, MAX_SUMS, "SHA256SUMS")?;
-    let asc = fetch(au, MAX_ASC, "SHA256SUMS.asc")?;
-    let fpr = verify_detached(&sums, &asc)?;
-    Ok(Signed { fpr, map: parse_sums(&sums, &c.version)? })
+    let sums = fetch(su, MAX_SUMS, "SHA256SUMS").map_err(Fail::Fetch)?;
+    let asc = fetch(au, MAX_ASC, "SHA256SUMS.asc").map_err(Fail::Fetch)?;
+    let fpr = verify_detached(&sums, &asc).map_err(Fail::Unsigned)?;
+    Ok(Signed { fpr, map: parse_sums(&sums, &c.version).map_err(Fail::Unsigned)? })
 }
 
 /// why a release is not offered
@@ -627,6 +628,9 @@ pub enum Fail {
     Unsigned(String),
     /// signed sums, but the release's assets do not match them (F-11)
     Mismatch(String),
+    /// the sums pair could not be downloaded (network, cap): the release is not
+    /// judged at all, and the whole check ends as an error (#300 review)
+    Fetch(String),
 }
 
 impl Fail {
@@ -634,18 +638,19 @@ impl Fail {
         match self {
             Fail::Unsigned(_) => "unsigned",
             Fail::Mismatch(_) => "mismatch",
+            Fail::Fetch(_) => "error",
         }
     }
     fn reason(&self) -> &str {
         match self {
-            Fail::Unsigned(e) | Fail::Mismatch(e) => e,
+            Fail::Unsigned(e) | Fail::Mismatch(e) | Fail::Fetch(e) => e,
         }
     }
 }
 
 /// signature + version + every asset; Ok = this release may be offered
 pub fn verify_release(fetch: Fetch, r: &Release) -> Result<Signed, Fail> {
-    let s = signed(fetch, &r.c).map_err(Fail::Unsigned)?;
+    let s = signed(fetch, &r.c)?;
     assets_match(&r.assets, &s.map).map_err(Fail::Mismatch)?;
     Ok(s)
 }
@@ -675,6 +680,12 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
     let list = fetch(RELEASES_URL, MAX_RELEASES_JSON, "releases")?;
     let rels = releases(&list)?;
     if rels.is_empty() {
+        // #300 review: a remembered newer signed release that the list no longer
+        // shows at all is the frozen/emptied-list case of rollback, never "up to date"
+        if let Some(sn) = ctx.seen.as_deref().filter(|sn| plugin_store::version_gt(sn, current)) {
+            return Ok(json!({"status": "rollback", "current": current, "seen": sn, "text": t("update-rollback-none", &[("version", sn)]),
+                             "warnings": Vec::<String>::new(), "failed": Vec::<Value>::new()}));
+        }
         return Ok(json!({"status": "current", "current": current, "seen": ctx.seen, "text": t("update-none", &[("v", current)])}));
     }
     let mut fails: Vec<(&Release, Fail)> = Vec::new();
@@ -691,6 +702,9 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
                 best = Some((r, s));
                 break;
             }
+            // #300 review: a failed download says nothing about the signature;
+            // never fall through to an older release with an "unsigned" warning
+            Err(Fail::Fetch(e)) => return Err(format!("{}: {e}", r.c.tag)),
             Err(f) => {
                 eprintln!("[updates] {} rejected ({}): {}", r.c.tag, f.kind(), f.reason());
                 fails.push((r, f));
@@ -703,7 +717,7 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
         fails
             .iter()
             .map(|(r, f)| match f {
-                Fail::Unsigned(_) => t("update-warn-unsigned", &[("version", &r.c.version)]),
+                Fail::Unsigned(_) | Fail::Fetch(_) => t("update-warn-unsigned", &[("version", &r.c.version)]),
                 Fail::Mismatch(_) => t("update-warn-mismatch", &[("version", &r.c.version)]),
             })
             .collect()
@@ -711,7 +725,7 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
     let Some((r, s)) = best else {
         let (top, f) = &fails[0];
         let id = match f {
-            Fail::Unsigned(_) => "update-unsigned",
+            Fail::Unsigned(_) | Fail::Fetch(_) => "update-unsigned",
             Fail::Mismatch(_) => "update-mismatch",
         };
         return Ok(json!({"status": f.kind(), "current": current, "latest": top.c.version, "reason": f.reason(),
@@ -723,7 +737,17 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
         Some(sn) if !plugin_store::version_gt(v, sn) => sn.to_string(),
         _ => v.to_string(),
     };
+    // #300 review: the hash shown is that of a file the release link actually
+    // offers. A platform file that is signed but not attached (deleted after
+    // signing) gets no hash, only a warning naming it.
     let art = platform_artefact(v, &ctx.host, &s.map);
+    let (art, unattached) = match art {
+        Some((f, _)) if !r.assets.iter().any(|a| a.name == f) => {
+            let attached: BTreeMap<String, String> = s.map.iter().filter(|(n, _)| r.assets.iter().any(|a| &a.name == *n)).map(|(n, h)| (n.clone(), h.clone())).collect();
+            (platform_artefact(v, &ctx.host, &attached), Some(f))
+        }
+        a => (a, None),
+    };
     let mut warnings = warn();
     let (file, sha) = match &art {
         Some((f, h)) => (json!(f), json!(h)),
@@ -736,8 +760,10 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
         out["status"] = json!("rollback");
         out["text"] = json!(t("update-rollback", &[("version", &seen), ("v", v)]));
     } else if plugin_store::version_gt(v, current) {
-        if art.is_none() {
-            warnings.push(t("update-no-artefact", &[]));
+        match (&art, &unattached) {
+            (None, Some(f)) => warnings.push(t("update-artefact-missing", &[("file", f)])),
+            (None, None) => warnings.push(t("update-no-artefact", &[])),
+            _ => {}
         }
         out["status"] = json!("available");
         out["url"] = json!(release_page(&r.c.tag));
@@ -750,20 +776,61 @@ pub fn check_with(fetch: Fetch, current: &str, ctx: &Ctx) -> Result<Value, Strin
     Ok(out)
 }
 
+/// where SEEN_KEY lives: ~/.opensidian.json through cfgstore in the app
+pub trait SeenStore {
+    /// the stored value, read fresh
+    fn get(&self) -> Option<String>;
+    /// raise it (cfgstore Op::UpdateSeen: monotonic, a lower value is ignored)
+    fn raise(&self, ver: &str);
+}
+
+struct CfgSeen;
+
+impl SeenStore for CfgSeen {
+    fn get(&self) -> Option<String> {
+        crate::cfg_value()[SEEN_KEY].as_str().and_then(tag_version)
+    }
+    fn raise(&self, ver: &str) {
+        crate::cfg_update(&[crate::cfgstore::Op::UpdateSeen(ver.to_string())]);
+    }
+}
+
+/// one check plus remembering its result. #300 review: the stored value is read
+/// AGAIN after this check raised it. Another window's check may have stored a
+/// higher verified version while this one was on the network; this result then
+/// must not offer (or call "current") anything below that version.
+pub fn check_remembered(fetch: Fetch, current: &str, lang: &str, h: Host, store: &dyn SeenStore) -> Result<Value, String> {
+    let ctx = Ctx { lang, seen: store.get(), host: h };
+    let mut r = check_with(fetch, current, &ctx)?;
+    if let Some(sn) = r["seen"].as_str().filter(|sn| ctx.seen.as_deref() != Some(*sn)) {
+        store.raise(sn);
+    }
+    if let Some(now) = store.get() {
+        hold_back(&mut r, &now, current, lang);
+    }
+    Ok(r)
+}
+
+/// an "available" / "current" verdict for a release below `seen` becomes
+/// "rollback", exactly as check_with decides it when `seen` is known up front
+fn hold_back(r: &mut Value, seen: &str, current: &str, lang: &str) {
+    let st = r["status"].as_str().unwrap_or("");
+    let Some(latest) = r["latest"].as_str().map(String::from) else { return };
+    if (st == "available" || st == "current") && plugin_store::version_gt(seen, &latest) && plugin_store::version_gt(seen, current) {
+        r["status"] = json!("rollback");
+        r["text"] = json!(crate::i18n::tr(lang, "update-rollback", &[("version", seen), ("v", &latest)]));
+        r["seen"] = json!(seen);
+        if let Some(o) = r.as_object_mut() {
+            o.remove("url");
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn update_check() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let seen = crate::cfg_value()[SEEN_KEY].as_str().and_then(tag_version);
-        let ctx = Ctx { lang: crate::ui_lang(), seen, host: host() };
-        let r = check_with(&plugin_store::http_get, env!("CARGO_PKG_VERSION"), &ctx)?;
-        if let Some(sn) = r["seen"].as_str().filter(|sn| ctx.seen.as_deref() != Some(*sn)) {
-            // monotonic in cfgstore: a lower value never replaces a higher one
-            crate::cfg_update(&[crate::cfgstore::Op::UpdateSeen(sn.to_string())]);
-        }
-        Ok(r)
-    })
-    .await
-    .map_err(|e| format!("update check: {e}"))?
+    tauri::async_runtime::spawn_blocking(|| check_remembered(&plugin_store::http_get, env!("CARGO_PKG_VERSION"), crate::ui_lang(), host(), &CfgSeen))
+        .await
+        .map_err(|e| format!("update check: {e}"))?
 }
 
 /// cfgstore::Op::UpdateSeen: raise SEEN_KEY to `ver`, never lower it; a value that
@@ -1340,5 +1407,124 @@ mod tests {
         let r = check_with(&gh_tags(swap), "0.9.0", &ctx(None)).unwrap();
         assert_eq!(r["latest"], "0.9.4", "{r}");
         assert_eq!(r["failed"][0]["kind"], "unsigned");
+    }
+
+    /* ------------------------------------------- #300 review follow-up tests */
+
+    const RELEASING: &str = include_str!("../../docs/RELEASING.md");
+
+    /// RELEASING.md describes the bounded window instead of "offers the highest that passes"
+    #[test]
+    fn releasing_doc_states_the_max_tries_window() {
+        assert_eq!(MAX_TRIES, 5, "RELEASING.md names the window as 5: update it with the constant");
+        let flat = RELEASING.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("at most the 5 highest that carry a sums pair (`MAX_TRIES`"), "RELEASING.md must name the MAX_TRIES window");
+        assert!(flat.contains("If none of those 5 passes, nothing is offered"), "RELEASING.md must say what happens past the window");
+    }
+
+    /// the creation time is signer-controlled: the doc must not promise a date cutoff
+    #[test]
+    fn releasing_doc_does_not_promise_a_creation_time_cutoff() {
+        let flat = RELEASING.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!flat.contains("refuse the old key's signatures dated after the compromise"), "a backdated signature defeats any date cutoff");
+        assert!(flat.contains("whoever holds the key can backdate it"), "RELEASING.md must say the creation time is not evidence");
+    }
+
+    /// a signed platform file that is not attached gets no hash; another attached one still can
+    #[test]
+    fn signed_but_unattached_platform_file_shows_no_hash() {
+        let mut g = genuine("v0.6.1");
+        g["assets"].as_array_mut().unwrap().retain(|a| a["name"] != "opensidian-0.6.1-x86_64.deb");
+        let r = check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap();
+        assert_eq!(r["status"], "available", "the attached files still verify: {r}");
+        assert!(r["sha256"].is_null() && r["file"].is_null(), "no hash for a file the release does not offer: {r}");
+        assert_eq!(r["warnings"], json!(["The signed release file for this platform (opensidian-0.6.1-x86_64.deb) is not attached to the release."]));
+        // translated like every other warning
+        let c = Ctx { lang: "ru", seen: None, host: deb_host() };
+        let mut g = genuine("v0.6.1");
+        g["assets"].as_array_mut().unwrap().retain(|a| a["name"] != "opensidian-0.6.1-x86_64.deb");
+        let w = check_with(&gh(json!([g]), ASC, SUMS), "0.6.0", &c).unwrap()["warnings"][0].as_str().unwrap().to_string();
+        assert!(w.contains("opensidian-0.6.1-x86_64.deb") && !w.contains("not attached"), "{w}");
+        // still attached: unchanged
+        let r = check_with(&gh(json!([genuine("v0.6.1")]), ASC, SUMS), "0.6.0", &ctx(None)).unwrap();
+        assert_eq!((r["sha256"].as_str(), r["warnings"].clone()), (Some(DEB), json!([])));
+    }
+
+    /// a sums download that fails is an error, never "unsigned" with an older offer
+    #[test]
+    fn failed_sums_download_is_an_error_not_unsigned() {
+        let l = json!([real("v0.9.6", S096), real("v0.9.4", S094)]);
+        let inner = gh_tags(l.clone());
+        for broken in ["/v0.9.6/SHA256SUMS", "/v0.9.6/SHA256SUMS.asc"] {
+            let f = |u: &str, cap: u64, w: &str| -> Result<Vec<u8>, String> {
+                if u.ends_with(broken) {
+                    return Err(format!("{w}: github.com — timed out"));
+                }
+                inner(u, cap, w)
+            };
+            let e = check_with(&f, "0.9.0", &ctx(None)).expect_err("a failed download ends the check");
+            assert!(e.contains("v0.9.6") && e.contains("timed out"), "{e}");
+        }
+        // a release that genuinely does not verify still falls through, warned as unsigned
+        let mut t = l.clone();
+        t[0]["assets"].as_array_mut().unwrap().retain(|a| a["name"] != "SHA256SUMS.asc");
+        let r = check_with(&gh_tags(t), "0.9.0", &ctx(None)).unwrap();
+        assert_eq!((r["status"].as_str(), r["latest"].as_str()), (Some("available"), Some("0.9.4")), "{r}");
+        assert_eq!(r["failed"][0]["kind"], "unsigned");
+    }
+
+    /// an emptied list with a remembered newer release is rollback, not "up to date"
+    #[test]
+    fn empty_list_below_a_seen_release_is_rollback() {
+        let r = check_with(&gh(json!([]), ASC, SUMS), "0.6.0", &ctx(Some("0.7.0"))).unwrap();
+        assert_eq!(r["status"], "rollback", "{r}");
+        assert_eq!(r["seen"], "0.7.0");
+        assert!(r.get("url").is_none());
+        assert_eq!(r["text"], "A signed release 0.7.0 was seen before, but GitHub lists no release now — nothing is offered.");
+        // nothing seen, or seen not above the running version: plain "current"
+        for s in [None, Some("0.6.0"), Some("0.5")] {
+            assert_eq!(check_with(&gh(json!([]), ASC, SUMS), "0.6.0", &ctx(s)).unwrap()["status"], "current", "{s:?}");
+        }
+    }
+
+    /// a SeenStore another window writes to while this check is on the network
+    struct RacingSeen {
+        v: std::cell::RefCell<Option<String>>,
+        /// what the other window stores during this check
+        other: Option<&'static str>,
+    }
+
+    impl SeenStore for RacingSeen {
+        fn get(&self) -> Option<String> {
+            self.v.borrow().clone()
+        }
+        fn raise(&self, ver: &str) {
+            let mut v = self.v.borrow_mut();
+            for c in [Some(ver), self.other].into_iter().flatten() {
+                if v.as_deref().map_or(true, |cur| plugin_store::version_gt(c, cur)) {
+                    *v = Some(c.to_string());
+                }
+            }
+        }
+    }
+
+    /// a higher version stored by a concurrent check is honoured by this one
+    #[test]
+    fn concurrently_seen_higher_release_is_not_offered_lower() {
+        let l = json!([genuine("v0.6.1")]);
+        let s = RacingSeen { v: std::cell::RefCell::new(None), other: Some("0.7.0") };
+        let r = check_remembered(&gh(l.clone(), ASC, SUMS), "0.6.0", "en", deb_host(), &s).unwrap();
+        assert_eq!(r["status"], "rollback", "{r}");
+        assert!(r.get("url").is_none(), "nothing below the stored 0.7.0 is offered");
+        assert_eq!(r["seen"], "0.7.0");
+        assert_eq!(s.get().as_deref(), Some("0.7.0"));
+        // no concurrent writer: offered and remembered as before
+        let s = RacingSeen { v: std::cell::RefCell::new(None), other: None };
+        let r = check_remembered(&gh(l.clone(), ASC, SUMS), "0.6.0", "en", deb_host(), &s).unwrap();
+        assert_eq!((r["status"].as_str(), s.get().as_deref()), (Some("available"), Some("0.6.1")), "{r}");
+        // a concurrent writer storing a LOWER value changes nothing
+        let s = RacingSeen { v: std::cell::RefCell::new(None), other: Some("0.5") };
+        let r = check_remembered(&gh(l, ASC, SUMS), "0.6.0", "en", deb_host(), &s).unwrap();
+        assert_eq!((r["status"].as_str(), s.get().as_deref()), (Some("available"), Some("0.6.1")), "{r}");
     }
 }

@@ -164,11 +164,17 @@ Settings > General > Check for updates offers a release only when ALL of these h
   user sees "release assets do not match the signed checksums" and the release is
   not offered.
 
-The app checks the highest release first and offers the highest one that passes,
-warning about the higher ones that did not. It remembers the highest version that
+The app checks releases highest first, but at most the 5 highest that carry a
+sums pair (`MAX_TRIES` in `updates.rs`, a bound on downloads per check). It offers
+the highest one of those that passes, warning about the higher ones that did not.
+If none of those 5 passes, nothing is offered, even when a lower release would
+pass: fix a broken release by publishing a new one. It remembers the highest version that
 passed (`updateSeen` in `~/.opensidian.json`) and offers nothing older than that.
 It never downloads or installs a release: it shows the signed sha256 of the user's
 platform file, and the user checks the download against it.
+A sums pair that cannot be downloaded ends the check as an error ("Could not check
+for updates"), never as "unsigned"; a platform file that is signed but not attached
+to the release gets no hash, only a warning naming it.
 
 ## Release key lifecycle (rotation, revocation)
 
@@ -212,9 +218,12 @@ Revoke (current key lost or compromised):
 3. Publish the old key's revocation certificate (`gpg --import` on keyservers, the
    website, the release notes).
 4. Signatures made with a compromised key before the compromise remain
-   indistinguishable from forgeries made after it. The app requires a creation time
-   on every signature so a later release can refuse the old key's signatures dated
-   after the compromise if a key ever has to be kept for an overlap.
+   indistinguishable from forgeries made after it. The signature creation time is
+   chosen by the signer: whoever holds the key can backdate it, so it is not
+   evidence of when a signature was made and no date cutoff can make a compromised
+   key safe to keep. A compromised key is removed from the pinned slots (step 2),
+   never kept for an overlap. (The app still requires the creation-time subpacket
+   as part of the strict signature format; it is not a security boundary.)
 
 Without a filled successor slot there is no in-app recovery from a lost or
 compromised key: users must install a release with a new pinned key by hand,
