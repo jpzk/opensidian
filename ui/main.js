@@ -15897,6 +15897,15 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
     if (!cm || bareDone) return;
     // iter 3: lpfrz = OURS, lpExt skips the selection-only rebuild in source mode (JS rebuild + 2 line-class writes);
     // lpnomk = OURS, lpExt emits no inline mark decorations in source mode (DOM node-count effect; diagnostic only)
+    // iter 4: tag/class census of the content once per launch; mko = no .mk marker marks in source (other marks kept);
+    // selrm = our ::selection rule deleted (WebKit default); selopq = our ::selection replaced by an OPAQUE colour
+    if (!window.__p278cen) { window.__p278cen = 1; const h = {}; for (const e of cm.contentDOM.getElementsByTagName("*")) { const k = e.tagName.toLowerCase() + "." + [...e.classList].sort().join("."); h[k] = (h[k] || 0) + 1; }
+      console.log("[p278] census", JSON.stringify(Object.entries(h).sort((a, b) => b[1] - a[1]).slice(0, 25))); }
+    if (has("mko")) { if (!Ed._p278mko) { Ed._p278mko = true; mode = "mko"; const v = fg() && fg().view; if (v && v._lpFx) cm.dispatch({ effects: v._lpFx.of(null) }); console.log("[p278] state mko"); } return; }
+    if (has("selrm") || has("selopq")) { if (!window.__p278sel) { window.__p278sel = 1; mode = has("selrm") ? "selrm" : "selopq"; let k = 0;
+        for (const s of document.styleSheets) { let rs; try { rs = s.cssRules; } catch (_) { continue; } for (let i = rs.length - 1; i >= 0; i--) if (rs[i].selectorText === "::selection") { s.deleteRule(i); k++; } }
+        if (mode === "selopq") { const st = document.createElement("style"); st.textContent = "::selection { background-color: rgb(180, 160, 230) }"; document.head.appendChild(st); }
+        console.log("[p278] state", mode, "removed=" + k); } return; }
     if (has("lpfrz")) { Ed._p278frz = true; mode = "lpfrz"; return; }
     if (has("lpnomk")) { if (!Ed._p278nomk) { Ed._p278nomk = true; mode = "lpnomk"; const v = fg() && fg().view; if (v && v._lpFx) cm.dispatch({ effects: v._lpFx.of(null) }); console.log("[p278] state lpnomk"); } return; }
     // bisect (iter 2): OUR v._ext rebuilt via setState minus ONE piece; full = all of it (setState control)
