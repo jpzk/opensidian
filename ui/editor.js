@@ -2381,10 +2381,14 @@ Object.assign(Ed, {
      macOS (platform convention, cannot run on the Linux box: unit-tested mapping only):
        Cmd+Up / Cmd+Down       document start / end (+Shift: extend); Cmd+Home/End as before
        Ctrl+Up / Ctrl+Down     not ours (the system's Mission Control / App windows)
+     PageDown / PageUp       one page down / up, the view scrolls with the caret (stock src: L1 -> L11
+                             -> L32, top L2 -> L13 -> L31), every platform (+Shift: extend); the
+                             native page move walks the rendered DOM as well (ours: L1 -> L2 -> L9)
      Alt combinations and Ctrl+Shift+Up/Down are not ours (native/plugins, unchanged). */
   navKey(e, mac) {
     if (!e || e.altKey || e.isComposing) return null;
     const k = e.key, ext = !!e.shiftKey, cmd = !!e.metaKey, ctl = !!e.ctrlKey;
+    if (k === "PageDown" || k === "PageUp") return ctl || cmd ? null : { to: k === "PageDown" ? "pageDown" : "pageUp", extend: ext };
     if (k === "Home" || k === "End") {
       // as before #291: either modifier is the document start / end, on every platform
       return ctl || cmd ? { to: k === "End" ? "docEnd" : "docStart", extend: ext } : null;
@@ -2417,6 +2421,12 @@ Object.assign(Ed, {
   },
   navRun(g, nav) {
     const cm = Ed.cm(g); if (!cm) return;
+    if (nav.to === "pageDown" || nav.to === "pageUp") {   // CM6's page commands measure the scroller and scroll it
+      Ed._navGoal = null;
+      const dn = nav.to === "pageDown";
+      (nav.extend ? (dn ? CMc.selectPageDown : CMc.selectPageUp) : (dn ? CMc.cursorPageDown : CMc.cursorPageUp))(cm);
+      return;
+    }
     const f = Ed.focusPos(g), L = Ed.lines(g), head = cm.state.selection.main.head;
     const line = nav.to === "lineUp" || nav.to === "lineDown";
     const G = Ed._navGoal, goal = line && G && G.cm === cm && G.head === head ? G.col : f.c;

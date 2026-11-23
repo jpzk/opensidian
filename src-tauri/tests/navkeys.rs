@@ -4,7 +4,7 @@
 //!
 //! Linux rows = stock Obsidian 1.13.7 measured black-box on the box (harness phase navkeysstock,
 //! 3200-line note, live preview + source): Ctrl+Home/End = document start/end, Ctrl+Up/Down = one
-//! SOURCE line, same column clamped. macOS rows = the platform convention (Cmd+Up/Down = document
+//! SOURCE line, same column clamped, PageDown/PageUp = one page (CM6 page move, view follows). macOS rows = the platform convention (Cmd+Up/Down = document
 //! start/end); macOS cannot run on the box, so this mapping table IS its test. Negative rows: keys
 //! that must stay NOT ours (null) on each platform.
 #![cfg(target_os = "linux")]
@@ -48,9 +48,11 @@ fn navkey_linux_stock_table() {
         ("ctrl+Home", "docStart"), ("ctrl+End", "docEnd"),
         ("ctrl+shift+Home", "docStart+ext"), ("ctrl+shift+End", "docEnd+ext"),
         ("ctrl+ArrowDown", "lineDown"), ("ctrl+ArrowUp", "lineUp"),
+        ("PageDown", "pageDown"), ("PageUp", "pageUp"), ("shift+PageDown", "pageDown+ext"), ("shift+PageUp", "pageUp+ext"),
         // negatives: not ours on Linux
         ("ArrowDown", "null"), ("ArrowUp", "null"), ("Home", "null"), ("End", "null"),
-        ("PageDown", "null"), ("PageUp", "null"), ("shift+ArrowDown", "null"),
+        ("ctrl+PageDown", "null"), ("ctrl+PageUp", "null"), ("ctrl+shift+PageDown", "null"), ("alt+PageDown", "null"),   // tab switching: not ours
+        ("shift+ArrowDown", "null"),
         ("meta+ArrowDown", "null"), ("meta+ArrowUp", "null"),          // Super: the window manager's
         ("ctrl+alt+ArrowDown", "null"), ("alt+ArrowUp", "null"), ("ctrl+alt+End", "null"),
         ("ctrl+shift+ArrowDown", "null"), ("ctrl+meta+ArrowDown", "null"), ("ctrl+ArrowLeft", "null"),
@@ -69,7 +71,9 @@ fn navkey_macos_convention_table() {
         // negatives: not ours on macOS
         ("ctrl+ArrowDown", "null"), ("ctrl+ArrowUp", "null"),           // Mission Control / App windows
         ("alt+ArrowDown", "null"), ("meta+alt+ArrowUp", "null"),        // paragraph moves: native
-        ("ctrl+meta+ArrowDown", "null"), ("ArrowDown", "null"), ("PageDown", "null"), ("meta+ArrowLeft", "null"),
+        ("PageDown", "pageDown"), ("shift+PageUp", "pageUp+ext"),     // same page move on every platform
+        ("meta+PageDown", "null"), ("ctrl+PageUp", "null"),
+        ("ctrl+meta+ArrowDown", "null"), ("ArrowDown", "null"), ("meta+ArrowLeft", "null"),
     ];
     let bad: Vec<String> = rows.iter().filter_map(|(k, w)| { let g = nav(&c, k, true); (g != *w).then(|| format!("{k}: got {g}, want {w}")) }).collect();
     assert!(bad.is_empty(), "macOS navKey rows differ:\n{}", bad.join("\n"));
