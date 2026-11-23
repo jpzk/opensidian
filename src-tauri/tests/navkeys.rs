@@ -100,3 +100,37 @@ fn navtarget_long_note_is_the_document_not_the_viewport() {
     assert_eq!(t("lineUp", 0, 3), "0:3");
     assert_eq!(t("lineDown", 3200, 0), "3200:0");
 }
+
+#[test]
+fn navtarget_properties_floor_and_goal_column() {
+    let c = ctx();
+    // the harness fixture's head: frontmatter L1-L4 (Properties block in live preview), a heading,
+    // long lines, an empty line, a short heading
+    c.evaluate("var P=['---','title: t','tags: [a]','---','# L0005 head','L0006 '+'x'.repeat(300),'L0007 '+'y'.repeat(300),'','### L0009 sub','L0010 tail'];");
+    let t = |nav: &str, l: u32, col: u32, lo: &str, goal: &str| -> String {
+        let js = format!("(function(){{var t=Ed.navTarget({{to:{nav:?}}},{{l:{l},c:{col}}},P,{lo},{goal});return t.l+':'+t.c}})()");
+        let v = c.evaluate(&js).unwrap().to_str().to_string();
+        if let Some(e) = c.exception() { panic!("{nav}: {}", e.to_str()); }
+        v
+    };
+    // live preview, Properties block over lines 0-3: Ctrl+Home lands on the body's first line (stock L5)
+    assert_eq!(t("docStart", 9, 4, "4", "undefined"), "4:0");
+    assert_eq!(t("docStart", 9, 4, "4", "77"), "4:0");          // a goal column never applies to docStart
+    assert_eq!(t("lineUp", 5, 3, "4", "undefined"), "4:3");
+    assert_eq!(t("lineUp", 4, 3, "4", "undefined"), "4:3");     // negative: never up INTO the block
+    assert_eq!(t("docEnd", 0, 0, "4", "undefined"), "9:10");
+    // source mode (no block): the frontmatter is text, document start is line 0
+    assert_eq!(t("docStart", 9, 4, "0", "undefined"), "0:0");
+    assert_eq!(t("lineUp", 4, 2, "0", "undefined"), "3:2");
+    // negative: a floor past the end is clamped, a missing floor is 0
+    assert_eq!(t("docStart", 3, 0, "99", "undefined"), "9:0");
+    assert_eq!(t("docStart", 3, 0, "undefined", "undefined"), "0:0");
+    // a caret already above the floor (the block just appeared) is not dragged down by lineUp
+    assert_eq!(t("lineUp", 2, 1, "4", "undefined"), "2:1");
+    // goal column (stock cdowng: L6 col 79 -> empty L8 -> L9 col 20 = the heading's length)
+    assert_eq!(t("lineDown", 6, 0, "0", "79"), "7:0");           // empty line: clamped to 0
+    assert_eq!(t("lineDown", 7, 0, "0", "79"), "8:13");          // goal kept, clamped to the line
+    assert_eq!(t("lineDown", 8, 13, "0", "5"), "9:5");
+    // negative: no goal = the caret's own column
+    assert_eq!(t("lineDown", 5, 12, "0", "undefined"), "6:12");
+}

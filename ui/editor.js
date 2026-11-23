@@ -2395,19 +2395,34 @@ Object.assign(Ed, {
     return ctl && !cmd && !ext ? { to: down ? "lineDown" : "lineUp", extend: false } : null;
   },
   isMac() { return typeof navigator !== "undefined" && /Mac/.test(navigator.platform || ""); },
-  // #291: the target of a navKey result in (line,col), from the caret's head f and the lines L
-  navTarget(nav, f, L) {
-    const last = L.length - 1;
-    if (nav.to === "docStart") return { l: 0, c: 0 };
+  /* #291: the target of a navKey result in (line,col), from the caret's head f and the lines L.
+     lo = the first line the caret may stand on (live preview: the line after the Properties block,
+     stock lands Ctrl+Home there; 0 otherwise). goal = the column a run of Ctrl+Up/Down keeps
+     (stock: the column survives a shorter or empty line in between), default f.c. */
+  navTarget(nav, f, L, lo, goal) {
+    const last = L.length - 1, top = Math.max(0, Math.min(last, lo | 0));
+    if (nav.to === "docStart") return { l: top, c: 0 };
     if (nav.to === "docEnd") return { l: last, c: L[last].length };
-    const l = Math.max(0, Math.min(last, f.l + (nav.to === "lineDown" ? 1 : -1)));
+    const l = Math.max(Math.min(top, f.l), Math.min(last, f.l + (nav.to === "lineDown" ? 1 : -1)));
     if (l === f.l) return { l: f.l, c: f.c };            // first / last line: the caret stays
-    return { l, c: Math.min(f.c, L[l].length) };
+    return { l, c: Math.min(goal == null ? f.c : goal, L[l].length) };
+  },
+  // #291: live preview's first caret line = the line after the atomic Properties block (0 = none)
+  navBodyStart(g) {
+    const cm = Ed.cm(g), F = g && g.view && g.view._propsF;
+    if (!cm || !F) return 0;
+    const d = cm.state.field(F, false); if (!d || !d.size) return 0;
+    let end = -1; d.between(0, 0, (a, b) => { end = b; });
+    return end < 0 || end >= cm.state.doc.length ? 0 : cm.state.doc.lineAt(end).number;   // 1-based line of the end = 0-based next line
   },
   navRun(g, nav) {
     const cm = Ed.cm(g); if (!cm) return;
-    const f = Ed.focusPos(g), t = Ed.navTarget(nav, f, Ed.lines(g));
+    const f = Ed.focusPos(g), L = Ed.lines(g), head = cm.state.selection.main.head;
+    const line = nav.to === "lineUp" || nav.to === "lineDown";
+    const G = Ed._navGoal, goal = line && G && G.cm === cm && G.head === head ? G.col : f.c;
+    const t = Ed.navTarget(nav, f, L, Ed.navBodyStart(g), goal);
     if (nav.extend) Ed.extendTo(g, t.l, t.c); else Ed.place(g, t.l, t.c);
+    Ed._navGoal = line ? { cm, head: cm.state.selection.main.head, col: goal } : null;
     // the view follows the caret (stock): nearest edge, so a move inside the view does not scroll
     cm.dispatch({ effects: CMv.EditorView.scrollIntoView(cm.state.selection.main.head, { y: "nearest" }) });
   },
