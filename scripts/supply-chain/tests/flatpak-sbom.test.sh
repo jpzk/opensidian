@@ -37,6 +37,9 @@ check "root dependsOn every component" "$t/ok.json" \
 expect_fail "G9: archive without sha256 fails closed" "without url/sha256" "$F" "$fx/nosha.yml"
 expect_fail "G9: malformed sha256 fails closed" "without url/sha256" "$F" "$fx/badsha.yml"
 expect_fail "module with no known license fails closed" "without a known license" "$F" "$fx/nolicense.yml"
+check "G4 (#299): brotli carries a CPE so grype can match it (pkg:github has no OSV ecosystem)" "$t/ok.json" \
+  '[.components[] | select(.name == "brotli")][0].cpe == "cpe:2.3:a:google:brotli:1.2.1:*:*:*:*:*:*:*"'
+expect_fail "G4 (#299): github module without a CPE mapping fails closed" "without a CPE" "$F" "$fx/nocpe.yml"
 expect_fail "missing manifest fails" "no " "$F" "$fx/absent.yml"
 "$F" >"$t/repo.json"
 check "repo manifest: brotli + runtime, all licensed" "$t/repo.json" \

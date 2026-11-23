@@ -99,6 +99,8 @@ chk "epoch percent-encoded" 'any(.components[]; .purl=="pkg:deb/ubuntu/libgcrypt
 chk "EXCL libs (libc, libX11) not bundled" '[.components[].properties[]?|select(.name=="opensidian:bundled-libs").value]|join(",")|(test("libc\\.so")|not) and (test("libX11")|not)'
 chk "brotli = upstream pin, not the deb" \
   'any(.components[]; .purl=="pkg:github/google/brotli@v1.2.1" and (.properties[0].value=="libbrotlicommon.so.1,libbrotlidec.so.1")) and (any(.components[]; .purl|startswith("pkg:deb/ubuntu/brotli"))|not)'
+chk "G4 (#299): brotli carries a CPE so grype can match it" \
+  'any(.components[]; .name=="brotli" and .cpe=="cpe:2.3:a:google:brotli:1.2.1:*:*:*:*:*:*:*")'
 chk "unique bom-refs + dependency graph complete" \
   '([.components[]."bom-ref"]|length)==([.components[]."bom-ref"]|unique|length) and (.dependencies[0].dependsOn|sort)==([.components[]."bom-ref"]|sort)'
 

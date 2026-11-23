@@ -255,6 +255,7 @@ jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --r
       components: ($debs + (if ($bl | length) > 0 then [{
           type: "library", "bom-ref": "brotli@\($brotli)", name: "brotli", version: $brotli,
           purl: "pkg:github/google/brotli@v\($brotli)",
+          cpe: "cpe:2.3:a:google:brotli:\($brotli):*:*:*:*:*:*:*",
           licenses: [{expression: "MIT"}],
           properties: [ {name: "opensidian:bundled-libs", value: ($bl | join(","))},
                         {name: "opensidian:note", value: "built from the sha256-pinned upstream tarball by build-appimage.sh; replaces the distro libbrotli"} ] }]
