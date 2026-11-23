@@ -15895,6 +15895,10 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
   const tick = () => {
     let cm = null; try { cm = Ed.cm(fg()); } catch (_) {}
     if (!cm || bareDone) return;
+    // iter 3: lpfrz = OURS, lpExt skips the selection-only rebuild in source mode (JS rebuild + 2 line-class writes);
+    // lpnomk = OURS, lpExt emits no inline mark decorations in source mode (DOM node-count effect; diagnostic only)
+    if (has("lpfrz")) { Ed._p278frz = true; mode = "lpfrz"; return; }
+    if (has("lpnomk")) { if (!Ed._p278nomk) { Ed._p278nomk = true; mode = "lpnomk"; const v = fg() && fg().view; if (v && v._lpFx) cm.dispatch({ effects: v._lpFx.of(null) }); console.log("[p278] state lpnomk"); } return; }
     // bisect (iter 2): OUR v._ext rebuilt via setState minus ONE piece; full = all of it (setState control)
     const XS = ["nolp", "nohl", "noup", "nocr", "nopx", "nokey", "full"];
     for (const f of XS) if (has(f)) {

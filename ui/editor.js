@@ -3019,7 +3019,7 @@ Ed.lpExt = function (v, G) {
         out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
-          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(src && Ed._p278nomk) && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
         }
         // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
         // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)
@@ -3036,6 +3036,7 @@ Ed.lpExt = function (v, G) {
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
+      if (Ed._p278frz && Ed.lpSrc(v) && u.selectionSet && !u.docChanged && !u.viewportChanged && !u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust)))) return;   // PROBE #278 lpfrz
       if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust)))) {
         const tt = Ed._tt ? performance.now() : 0;
         this.decorations = build(u.view);
