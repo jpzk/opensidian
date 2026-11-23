@@ -2080,8 +2080,10 @@ Object.assign(Ed, {
     const P = window.__p278, t0 = performance.now();
     if (P && P.flag("selclear") && !document.getElementById("p278sc")) { const s = document.createElement("style"); s.id = "p278sc"; s.textContent = ".cm-content ::selection, .cm-content::selection { background: transparent !important }"; document.head.appendChild(s); }
     const top = !!(P && P.flag("headtop"));
+    const A3 = P && P.wrap ? P.wrap(cm) : null; if (A3) { P.plugWrap(cm, A3); A3.on = true; }
     cm.dispatch({ selection: top ? { anchor: cm.state.doc.length, head: 0 } : { anchor: 0, head: cm.state.doc.length } });
     const t1 = performance.now();
+    if (A3) { A3.on = false; A3.t.disp = t1 - t0; P.sa3(A3); }
     Ed.census();
     if (P && P.sa) P.sa(t1 - t0, performance.now() - t1, top);
   },

@@ -15936,6 +15936,20 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
     build(ms, lines, rv, deco) { if (k && !k.done) { k.b += ms; k.bl = lines; k.brv = rv; k.bd = deco; } else span("p278_build", { ts: ep(now() - ms), ms: r2(ms), lines, rv, deco }); },
     ul(t0) { if (k && !k.done) k.ul += now() - t0; },
     sa(disp, cen, top) { span("p278_sa", { ts: ep(now()), disp: r2(disp), cen: r2(cen), top: top ? 1 : 0, flags: ["selclear", "headtop"].filter(f => P.flag(f)).join("+") }); },
+    // probe3: time each phase of EditorView.update during one selectAll dispatch (internal names of the vendored CM6 6.43.10)
+    wrap(cm) {
+      if (cm.__p3) return cm.__p3; const A = cm.__p3 = { on: false, t: {}, pl: [] };
+      const tw = (o, m, n) => { const f = o[m]; if (typeof f !== "function") return; o[m] = function (...a) { if (!A.on) return f.apply(this, a); const s = now(); try { return f.apply(this, a); } finally { A.t[n] = (A.t[n] || 0) + now() - s; } }; };
+      tw(cm.viewState, "update", "vs"); tw(cm, "updatePlugins", "plug"); tw(cm.docView, "update", "dv"); tw(cm.docView, "updateSelection", "dsel"); tw(cm, "updateAttrs", "attrs");
+      { const f = cm.measure; if (typeof f === "function") cm.measure = function (...a) { if (now() - (A.last || -1e9) > 300) return f.apply(this, a); const s = now(); try { return f.apply(this, a); } finally { span("p278_meas", { ts: ep(s), ms: r2(now() - s), since: r2(s - A.last) }); } }; }
+      tw(cm, "requestMeasure", "rqm"); tw(cm, "update", "upd"); tw(cm.state.constructor.prototype, "update", "stup");
+      return A;
+    },
+    plugWrap(cm, A) {
+      (cm.plugins || []).forEach((p, i) => { const v = p && p.value; if (!v || typeof v.update !== "function" || v.__p3) return; v.__p3 = 1; const f = v.update, nm = i + ":" + ((v.constructor && v.constructor.name) || "?");
+        v.update = function (...a) { if (!A.on) return f.apply(this, a); const s = now(); try { return f.apply(this, a); } finally { const d = now() - s; if (d >= 0.5) A.pl.push([nm, d]); } }; });
+    },
+    sa3(A) { const o = { ts: ep(now()) }; for (const k of Object.keys(A.t)) o["t_" + k] = r2(A.t[k]); o.plug_top = A.pl.sort((x, y) => y[1] - x[1]).slice(0, 6).map(x => x[0] + "=" + r2(x[1])).join(" "); span("p278_sa3", o); A.t = {}; A.pl = []; A.last = now(); },
     utBegin() { const s = { t0: now(), t: now(), a: { ts: ep(now()) }, b: nb() }; drain(fb); return s; },
     utStep(s, n) { const b = nb(); drain(b); s.a[n + "_ms"] = r2(now() - s.t); s.a[n + "_mut"] = b.other + b.cm; if (b.other) s.a[n + "_tg"] = tgs(b); for (const [d, c] of b.tg) fb.tg.set(d, (fb.tg.get(d) || 0) + c); fb.other += b.other; fb.cm += b.cm; s.t = now(); },
     utEnd(s) { s.a.dur = r2(now() - s.t0); span("p278_ut", s.a); poke(); },
