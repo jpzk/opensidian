@@ -41,10 +41,13 @@ Alerted packages → bundled files (x86_64; aarch64 is the same set):
 
 ## 2. Reachability per alerted package (evidence, not guesses)
 
-Evidence files: `evidence/reach.out` (bin/box-reach.sh) and `evidence/reach2.out` (bin/box-reach2.sh), run on the box
+Evidence files: `reachability/reach.out` (from `reachability/box-reach.sh`) and `reachability/reach2.out` (from
+`reachability/box-reach2.sh`), run on the box
 against the box-unpacked bundle (libs re-verified `sha256sum -c libs.sha256` → LIBS-SHA-OK) and against pinned upstream
 source tarballs (sha256 recorded in the output; webkitgtk-2.52.6.tar.xz `179a2ea3…116fc` matches webkitgtk.org `.sums`).
-"imports X" = the symbol name is in the library's dynamic string table (`grep -a -c`), i.e. the call is linked.
+"imports X" / a count > 0 = the string occurs somewhere in the ELF (`grep -a -c` over the whole file: .dynstr,
+.rodata or any other section; the box has no binutils). It shows the name is present, not that the call is linked;
+a non-zero count is read as "possibly reachable" and is never used to argue not_affected.
 Absence of a string in a stripped binary is used only as corroboration, never alone.
 
 | package | CVE / class | present? | reachable from opensidian? | evidence | verdict |
@@ -104,7 +107,8 @@ same build-log line, same pinned osv-scanner v2.7.1 gate on `parts/webkit.cdx.js
 Not reduced, by design: webkit2gtk 21 (2 critical) and libsoup3 18 — the engine itself; see §4 (2.54.x) and §5 (VEX).
 
 **Reproduce** (data only on this VM: gh + jq, nothing downloaded is executed):
-`bin/after-ci.sh 45167393287` -> `evidence/after-ci-45167393287.out` (and `evidence/ci-45167393287-{x86,a64}.gate.txt`).
+`after/after-ci.sh 45167393287 > after/after-ci-45167393287.out` (the per-arch job logs and SBOM artifacts it fetches
+stay in a temp dir and are not committed).
 v0.9.6 side: `baseline-v096.tsv` (from `gh api repos/jpzk/opensidian/code-scanning/alerts?tool_name=osv-scanner&state=open`)
 and run 44731292971's log line `bundled 83 libs` / `93 without`.
 Full rescan with one fresh DB on the box (pinned osv-scanner via osv-install.sh + the product's sbom-scan.sh, both sides):
@@ -212,8 +216,11 @@ osv-json / sbom-scan / webkit-bundle-sbom tests ALL PASS.
 **Ship in 0.9.7 (this PR):**
 1. The slimming (§3): 8 host-provided sonames (krb5/GSSAPI, sqlite3, dbus, libmount/libblkid) leave the bundle;
    83 → 75 libs, bundle osv gate 93 → 55 per arch. Guarded by `appimage-excl-check.sh` + its test.
-2. The 8 VEX `code_not_present` entries (§5), each with a premise that the guard re-checks (`VEX_ABSENT_RE`): if the
-   file comes back, the build fails, so the not_affected claim can't go stale without anyone noticing. Gate 55 → 47 per arch.
+2. The 8 VEX `code_not_present` entries (§5). Only the four "file not shipped" premises (xmlcatalog,
+   systemd-journald, systemd-gpt-auto-generator, libgstrtp-1.0) are machine-checked by the guard (`VEX_ABSENT_RE`): if
+   one of those files comes back, the build fails. The four source-level premises (Skia CMake list, DNG, jxl_extras,
+   libjpeg-turbo source) are NOT machine-checked; they rely on a manual re-check on any bump of those packages, which
+   the entry expiry forces. Gate 55 → 47 per arch.
 
 **Conditions before merge (fail closed):**
 - The harness T1 smoke (brand insdate top5func title fileops vaultbleed) has to be green on the box for the slimmed

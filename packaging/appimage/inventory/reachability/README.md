@@ -1,9 +1,11 @@
 ## 2. Reachability per alerted package (evidence, not guesses)
 
-Evidence files: `evidence/reach.out` (bin/box-reach.sh) and `evidence/reach2.out` (bin/box-reach2.sh), run on the box
+Evidence files: `reach.out` (from `box-reach.sh`) and `reach2.out` (from `box-reach2.sh`), both in this directory, run on the box
 against the box-unpacked bundle (libs re-verified `sha256sum -c libs.sha256` → LIBS-SHA-OK) and against pinned upstream
 source tarballs (sha256 recorded in the output; webkitgtk-2.52.6.tar.xz `179a2ea3…116fc` matches webkitgtk.org `.sums`).
-"imports X" = the symbol name is in the library's dynamic string table (`grep -a -c`), i.e. the call is linked.
+"imports X" / a count > 0 = the string occurs somewhere in the ELF (`grep -a -c` over the whole file: .dynstr,
+.rodata or any other section; the box has no binutils). It shows the name is present, not that the call is linked;
+a non-zero count is read as "possibly reachable" and is never used to argue not_affected.
 Absence of a string in a stripped binary is used only as corroboration, never alone.
 
 | package | CVE / class | present? | reachable from opensidian? | evidence | verdict |
