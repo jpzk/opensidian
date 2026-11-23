@@ -1306,7 +1306,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
        (Record / Cancel, default Cancel) and only Record mints the one-shot grant that
        audiorec::start_check consumes below. A page script driving the core recorder gets the
        dialog, never a silent recording. */
-    security::mic_check(security::mic_effective(&cfg_value()))?;
+    security::mic_check(security::mic_effective(&cfg_value())).inspect_err(|e| eprintln!("[audiorec] start refused: {e}"))?;
     let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let slot = consent::admit()?;
     if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
@@ -10141,7 +10141,7 @@ mod tests {
         let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
         let order = [
             "audiorec::authorized(&parent, &token)?",
-            "security::mic_check(security::mic_effective(&cfg_value()))?",
+            "security::mic_check(security::mic_effective(&cfg_value())).inspect_err(",
             "consent::admit()?",
             concat!("consent::Kind::", "Mic, consent::mic_question(&vault)"),
             "return Err(audiorec::NO_GRANT.into())",
@@ -10157,7 +10157,7 @@ mod tests {
         assert_eq!(src.matches(concat!("audiorec::", "grant(")).count(), 1, "a grant is minted only after the native consent");
         assert_eq!(src.matches(concat!("consent::Kind::", "Mic")).count(), 1, "one mic question");
         let rc = src.find("fn rec_close(").expect("rec_close");
-        assert!(src[rc..rc + 600].contains("rec_indicator(&w, false)"), "the indicator outlives the recording");
+        assert!(src[rc..rc + src[rc..].find("\n}\n").expect("end")].contains("rec_indicator(&w, false)"), "the indicator outlives the recording");
         assert!(src[src.find("generate_handler![").unwrap()..].contains("security_mic_set,"), "not registered");
         let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
         let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];

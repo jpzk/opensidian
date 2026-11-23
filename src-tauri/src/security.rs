@@ -1390,7 +1390,7 @@ mod tests {
         assert_eq!(mic_stored(&json!({"security": {"microphone": "off"}})), Mic::Off);
         assert_eq!(mic_stored(&json!({"security": {"microphone": "ask"}})), Mic::Ask);
         for bad in [json!("OFF"), json!(false), json!(0), json!(null), json!("allow"), json!({})] {
-            assert_eq!(mic_stored(&json!({"security": {"microphone": bad}})), Mic::Ask, "{bad}");
+            assert_eq!(mic_stored(&json!({"security": {"microphone": bad.clone()}})), Mic::Ask, "{bad}");
         }
         for bad in ["", "Ask", "allow", "on", "off ", "__proto__"] {
             assert!(mic_validate(bad).is_err(), "{bad:?} accepted");
