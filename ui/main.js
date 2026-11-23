@@ -15895,6 +15895,17 @@ inv("psg_probe").then(v => { psgProbe = !!v; if (psgProbe) setInterval(psgPublis
   const tick = () => {
     let cm = null; try { cm = Ed.cm(fg()); } catch (_) {}
     if (!cm || bareDone) return;
+    // bisect (iter 2): OUR v._ext rebuilt via setState minus ONE piece; full = all of it (setState control)
+    const XS = ["nolp", "nohl", "noup", "nocr", "nopx", "nokey", "full"];
+    for (const f of XS) if (has(f)) {
+      const g = fg(), v = g && g.view; if (!v || !Array.isArray(v._ext) || cm.state.field(mk, false) !== undefined) return;
+      const n = v._ext.length, hl = (v._pxI != null ? v._pxI : n) - 1;
+      const drop = { nolp: [hl - 1], nohl: [hl], noup: [hl - 3], nocr: [hl - 2], nopx: v._pxI != null ? [v._pxI] : [], nokey: [3], full: [] }[f];
+      mode = f;
+      cm.setState(CMs.EditorState.create({ doc: cm.state.doc, selection: cm.state.selection, extensions: [mk, ...v._ext.filter((_, i) => !drop.includes(i)), f === "nokey" ? selAll : []] }));
+      console.log("[p278] state", f, "n=" + n, "pxI=" + v._pxI, "drop=" + drop.join(","));
+      return;
+    }
     if (has("min") || has("mdsel")) { if (cm.state.field(mk, false) === undefined) { mode = has("mdsel") ? "mdsel" : "min"; cm.setState(CMs.EditorState.create({ doc: cm.state.doc, extensions: minExt(mode === "mdsel") })); console.log("[p278] state", mode); } }
     else if (has("bare")) { bareDone = true; mode = "bare"; bare(cm); }
     else if (has("dsel")) { if (!cm.__p278ds) { cm.__p278ds = 1; mode = "dsel"; cm.dispatch({ effects: CMs.StateEffect.appendConfig.of([CMv.drawSelection()]) }); } }
