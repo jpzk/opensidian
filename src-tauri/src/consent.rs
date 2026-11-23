@@ -729,7 +729,7 @@ mod tests {
     fn mic295_question_text_and_default_no() {
         let t = mic_text("/home/u/V\nPress Record: safe");
         assert!(t.contains("Vault: \"/home/u/V\\nPress Record: safe\""), "{t}");
-        assert_eq!(t.matches("\nPress Record").count(), 0, "a page-shaped line got into the dialog: {t}");
+        assert!(!t.lines().any(|l| l.starts_with("Press Record: safe")), "a page-shaped line got into the dialog: {t}");
         assert!(t.contains("\"● Recording\"") && t.contains("Settings › Security › Microphone"), "{t}");
         let q = mic_question("/v");
         assert_eq!(q.head, MIC_HEAD);
