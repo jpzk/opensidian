@@ -143,8 +143,9 @@ version = "4.6.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.cookie]]
-version = "0.18.2"
+version = "0.18.3"
 criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0594 (GHSA-8wcq-xq25-7fhm, private cookie AES-GCM nonces can repeat after fork, patched >= 0.18.3); delta 0.18.2 -> 0.18.3 reviewed by jpzk 2026-11-23 (tag 0.18.3 = 1ab14faf, fix commit 98de6032: PrivateJar nonce from rand::rngs::OsRng instead of thread_rng, src/secure/private.rs +2 -2, plus version/CHANGELOG; same dependency set, no new unsafe/build.rs/io); not reachable here (private feature off, aes-gcm not in the graph); exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-23: replace with an imported audit"
 
 [[exemptions.core-foundation]]
 version = "0.10.1"
