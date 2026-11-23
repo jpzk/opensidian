@@ -6927,15 +6927,10 @@ function navBtnSync() {
   for (const h of groups()) {
     if (!h.navback) continue;
     const s = navState(h);
-    navDis(h.navback, !s.b);
-    navDis(h.navfwd, !s.f);
+    h.navback.disabled = !s.b;
+    h.navfwd.disabled = !s.f;
   }
 }
-/* #278: navBtnSync runs on every census tick (utLite, ~30 ms after each selection change). Writing
-   .disabled re-sets the attribute even when the value is unchanged (one attribute mutation per button,
-   seen in-app on the box), which restyles + repaints both buttons: after a source-mode Ctrl+A that was a
-   second paint ~40 ms after the selection one. Write only on a change. */
-function navDis(b, d) { if (b.disabled !== d) b.disabled = d; }
 /* R4X.5 (navbtn): right-click on a nav button drops that stack as a menu
    BELOW the button — Obsidian 1.13.7 measured (docs/recon-navbtn §4): the back
    menu lists the back stack most-recent-first, the forward menu the forward
