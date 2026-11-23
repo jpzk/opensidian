@@ -832,6 +832,53 @@ mod tests {
         assert!(host[..200].contains("holdRestore, mountHeld"), "views host exports the hold");
     }
 
+    /// #277 review (CodeAnt, api-core.js:768 / views.js:882): the hold covers EVERY way a restored
+    /// view gets built, not only addView's remount. A click on a background restored tab while the
+    /// plugins still load (switchTab -> loadActive -> PV.mount) must not build a view of a type
+    /// registered in that load (it would run inside the plugin's half-done onload): the pane stays
+    /// blank and mountHeld builds the then-showing tab once every onload is done.
+    #[test]
+    fn views_hold_defers_a_tab_shown_during_startup_load() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let mount = &js[pos(js, "mount(g, t) {")..pos(js, "hide(g, t) {")];
+        let defer = pos(mount, "if (!r && holdMount && heldTypes.has(t.utype)) return true;");
+        let build = pos(mount, "r = makeView(t, t.utype");
+        assert!(defer < build, "PV.mount must defer before it builds a view while held");
+        let add = &js[pos(js, "function addView(pid, type, factory) {")..pos(js, "function dropView(type) {")];
+        assert!(add.contains("if (holdMount) heldTypes.add(type);"), "a type registered while held is deferred");
+        let m = js_fn(js, "mountHeld");
+        let lift = pos(m, "holdMount = false;");
+        assert!(lift < pos(m, "heldTypes.clear();") && pos(m, "heldTypes.clear();") < pos(m, "for (const g of M().groups())"),
+            "the deferral ends with the hold, before the held views are built");
+        // a type registered after boot is never deferred: heldTypes only grows under the hold
+        assert_eq!(js.matches("heldTypes.add(").count(), 1);
+    }
+
+    /// #277 review (CodeAnt, views.js:903 + nitpick api-core.js:772): mountHeld awaits each restored
+    /// view's onOpen/setState BEFORE layoutReady. A view whose onOpen awaits workspace.onLayoutReady
+    /// (queued until layout-ready) would hang boot forever. The wait is bounded (one deadline for all
+    /// groups) and ends at once when anything queues an onLayoutReady callback during it; boot then
+    /// readies the layout and the queued callback runs, so that onOpen completes.
+    #[test]
+    fn mount_held_wait_cannot_deadlock_layout_ready() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let m = js_fn(js, "mountHeld");
+        assert!(m.contains("const until = Date.now() + HOLD_OPEN_MS;"), "one deadline for the whole wait");
+        assert!(js.contains("HOLD_OPEN_MS = 10000"), "bounded at 10 s");
+        let race = pos(m, "await Promise.race([");
+        assert!(m[race..].contains("setTimeout("), "the onOpen wait races a timer");
+        assert!(m[race..].contains("lrWake"), "the onOpen wait also ends when an onLayoutReady callback is queued");
+        assert!(!m.contains("try { await r.opened; } catch (_) {} n++;"), "no unbounded await of onOpen before layout-ready");
+        // the wake: onLayoutReady's not-yet-ready branch kicks the wait before it queues on layout-ready
+        let olr = &js[pos(js, "onLayoutReady(cb) {")..];
+        let olr = &olr[..olr.find('\n').unwrap()];
+        assert!(pos(olr, "views.lrKick()") < pos(olr, "this.on(\"layout-ready\", cb)"), "onLayoutReady while not ready wakes mountHeld's wait");
+        let host = &js[pos(js, "const host = {")..];
+        assert!(host[..200].contains("holdRestore, mountHeld, lrKick"), "views host exports the wake");
+        // fail closed: whatever the wait does, boot still readies the layout afterwards (finally, checked in the boot test)
+        assert!(m[pos(m, "for (const g of M().groups())")..].contains("continue;"));
+    }
+
     /// #277: a note leaf switched (no active) to a view of its own file replaces the note tab, as stock
     /// (one tab): the leftover note tab was restored as a markdown leaf next start, converted again by
     /// Excalidraw, and the board on screen was a stale detached view stuck on "waiting". Data safety:
