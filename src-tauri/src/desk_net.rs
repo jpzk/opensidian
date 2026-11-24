@@ -628,7 +628,7 @@ mod tests {
         assert!(e.starts_with("EAGAIN"), "{e}");
         assert!(trust_epoch_now().unmoved(&lifecycle()).is_ok(), "a fresh read refused");
         // (c) the callers, by their source (comments are not code)
-        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
         let lines: Vec<&str> = src.lines().filter(|l| { let t = l.trim_start(); !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')) }).collect();
         let mut callers = vec![];
         let mut i = 0;

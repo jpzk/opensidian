@@ -42,7 +42,16 @@
   const T = window.__TAURI__;
   const invoke = T && T.core && T.core.invoke ? T.core.invoke.bind(T.core) : null;
   const listen = T && T.event && T.event.listen ? T.event.listen.bind(T.event) : null;   // item 5: vault-changed for the plugin vault model
-  const SCHEME = "opensidian-plugin://localhost/";
+  /* android-excali: a Tauri custom scheme is `<scheme>://localhost/` only on Linux/macOS.
+     The Android (and Windows) WebView has no custom schemes: Tauri answers them as
+     `http://<scheme>.localhost/`, and `opensidian-plugin://localhost/` fails to load at
+     all, so no community plugin ever ran on the phone. Tauri's own convertFileSrc knows
+     the platform's form; "" gives the base. */
+  const SCHEME = (() => {
+    const c = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.convertFileSrc;
+    try { if (typeof c === "function") return c("", "opensidian-plugin"); } catch (_) { /* fall through */ }
+    return "opensidian-plugin://localhost/";
+  })();
   const NODE = window.__osNodeModules;   // captured at boot (index.html loads node-leaves.js first)
 
   const status = new Map();   // id -> {state: "loading"|"loaded"|"failed"|"unloaded", error?}
@@ -134,7 +143,7 @@
      (main.js top-level bindings, __TAURI_INTERNALS__). See security.md. */
   let sealed = false;
   /* top5-func: data: URLs for plugin code, installed once right before the first plugin script
-     (seal), so a restricted page never has it. The page CSP is NOT touched (font-src 'self',
+     (seal), so a restricted page never has it. The page CSP is NOT touched here (font-src 'self' data: is the config's,
      connect-src ipc:/self stay). A data: URL carries its bytes inline: decoding it in-page reads
      nothing from anywhere and grants nothing a plugin cannot already do (atob + new
      FontFace(name, bytes) is allowed under any CSP). Excalidraw ships its fonts as data: URLs —

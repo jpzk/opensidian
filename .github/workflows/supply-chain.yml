@@ -4,6 +4,7 @@
 #   cargo audit        RustSec advisories against Cargo.lock (--deny warnings)
 #   cargo deny         advisories + sources + bans + licenses (deny.toml)
 #   cargo vet          every third-party crate audited, imported or exempted (src-tauri/supply-chain/)
+#   vet-expiry         (in job vet) #304 review: an exemption note's EXPIRES / revisit-by date is enforced (vet-expiry.sh)
 #   pin-check          #189: every dependency pinned to exact version + content hash (pin-check.sh, pin-allow.tsv)
 #   vendor-js-cve      ui/vendor/vendor.lock.json proven against the npm registry + bytes, then
 #                      its SBOM scanned with osv-scanner against the VEX
@@ -136,6 +137,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: exemption expiries (cargo vet reads notes as text; vet-expiry.sh enforces EXPIRES / revisit by)
+        run: |
+          bash scripts/supply-chain/tests/vet-expiry.test.sh
+          bash scripts/supply-chain/vet-expiry.sh
       - name: toolchain ${{ env.RUST_TOOLCHAIN }}
         run: |
           bash scripts/supply-chain/rust-toolchain.sh   # manifest sha256 + rustc commit (rust-toolchain.toml)

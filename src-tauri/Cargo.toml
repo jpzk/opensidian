@@ -4,13 +4,16 @@ version = "0.9.6"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
-# lib.rs: the pure parse/normalize modules (vaultfs, outline, index, graphq,
-# canvasfs, datefmt) as a tauri-free library so the cargo-fuzz harness can
-# link them (it lives in jpzk/opensidian-harness, fuzz dir). The bin
-# (main.rs) keeps its name "opensidian" and uses this lib.
+# lib.rs: the whole app as a library (goal android). Android loads it as
+# libopensidian_lib.so (cdylib) via tauri::mobile_entry_point on run(); the
+# desktop bin (main.rs, still named "opensidian") is a thin call into run(), and
+# the cargo-fuzz harness (it lives in jpzk/opensidian-harness, fuzz dir) links
+# the pure parse/normalize modules (vaultfs, outline, index, graphq, canvasfs,
+# datefmt) from the rlib. staticlib (iOS only) is deliberately not built.
 [lib]
 name = "opensidian_lib"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 # goal devui — DEV-ONLY UI hot reload (src/devui.rs). NOT in default and never to be:
 # a default build compiles none of it (main.rs gates every call site), test
@@ -48,11 +51,11 @@ libc = "=0.2.189"
 
 # cp-browser — the plugin store (plugin_store.rs). NO NEW CRATE: both are
 # ALREADY in Cargo.lock as tauri/webkit dependencies, `=` pins the locked version.
-#   url  2.5.8  (2026-01-05, MIT OR Apache-2.0)  allowlist / redirect parsing
+#   url  2.5.9  (2026-11-20, MIT OR Apache-2.0)  allowlist / redirect parsing; security fix RUSTSEC-2026-0592 (was 2.5.8), six-week rule waived by the operator CVE rule
 #   sha2 0.10.9 (2025-04-30, MIT OR Apache-2.0)  sha256 of every installed file
 #        (was dev-only for builtins.rs; now also shipped). soup3: linux block below
 sha2 = "=0.10.9"
-url = "=2.5.8"
+url = "=2.5.9"
 
 # goal settings-general — the signed update check (updates.rs) verifies the release
 # SHA256SUMS.asc (OpenPGP, EdDSA) against the embedded pinned key. ONE NEW CRATE:

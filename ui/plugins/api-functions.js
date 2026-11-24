@@ -154,7 +154,14 @@
     function setIcon(el, name) {
       if (!el) return;
       el.innerHTML = iconSvg(name);
-      const s = el.firstElementChild; if (s) { s.classList.add("svg-icon"); s.dataset.icon = String(name || ""); }
+      const s = el.firstElementChild; if (!s) return;
+      s.classList.add("svg-icon"); s.dataset.icon = String(name || "");
+      /* stock parity: Obsidian tags every icon with its id class — lucide-<name> for the built-in
+         lucide set (setIcon(el,"save") -> svg.svg-icon.lucide-save), the addIcon id itself for custom
+         icons. Plugins and their CSS select on it (Excalidraw's header save button: svg.lucide-save). */
+      const bare = String(name || "").replace(/^lucide-/, "");
+      const cls = custom.has(bare) ? bare : (bare && ICONS[bare] ? "lucide-" + bare : "");
+      if (cls && !/\s/.test(cls)) { try { s.classList.add(cls); } catch (_) { /* invalid token: keep svg-icon only */ } }
     }
     function getIcon(name) { const d = document.createElement("div"); setIcon(d, name); return d.firstElementChild; }
     const addIcon = (name, svg) => { custom.set(String(name), String(svg)); };
