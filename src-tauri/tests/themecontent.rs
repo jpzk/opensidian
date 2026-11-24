@@ -210,3 +210,19 @@ fn i347_blockquote_bar_stock_defaults() {
     // negative: reading-view padding unchanged
     assert_eq!(val(&css, ".lp blockquote, .preview blockquote", "padding"), "0 0 0 var(--size-4-6)");
 }
+
+/// #330: stock paints --blockquote-background-color (default transparent) behind blockquotes;
+/// AnuPpuccin sets rgba(crust, .5) -> stock painted L 230,233,239 / D 24,24,37, ours showed the
+/// editor background because no rule of ours consumed the variable.
+#[test]
+fn i330_blockquote_background_consumed() {
+    let css = style_css();
+    assert_eq!(all(&css, "--blockquote-background-color"), vec![(DARK.to_string(), "transparent".to_string())]);
+    let bg = "var(--blockquote-background-color)";
+    assert_eq!(val(&css, ".lp blockquote, .preview blockquote", "background-color"), bg);
+    assert_eq!(val(&css, ".lp .bq", "background-color"), bg);
+    // negative: the hard transparent background is gone from the blockquote rule
+    assert!(vals(&css, ".lp blockquote, .preview blockquote", "background").is_empty(), "#330: blockquote still hard-codes background");
+    // negative: a nested LP quote does not stack the translucent paint a second time
+    assert_eq!(val(&css, ".lp .bq .bq", "background-color"), "transparent");
+}

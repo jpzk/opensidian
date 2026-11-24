@@ -212,6 +212,7 @@ body {
   --checklist-done-color: var(--text-chrome-faint);
   --code-background: var(--background-primary-alt);   /* #320: stock default (inline code on the alt background) */
   --blockquote-border-color: var(--interactive-accent);   /* #347: stock default (interactive accent, not text accent) */
+  --blockquote-background-color: transparent;   /* #330: stock default; a theme setting it (AnuPpuccin crust .5) paints behind blockquotes */
   /* ==================== LAYER 3 — OURS ALONE =============================
      An editor has surfaces the theme recon never showed painting through any
      name we probed (a ribbon ink, an elevated popover, a faint rule, the
@@ -1964,7 +1965,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .token.regex, .token.important { color: var(--code-important, inherit) }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--transparent);
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background-color: var(--blockquote-background-color);   /* #330 */
   position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
@@ -1999,10 +2000,10 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp.src .li > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
    the h1 "H" ink x (+2 from the column), text 12px past the 2px bar (#347: +14 like stock) */
-.lp .bq { display: block; margin-inline-start: 2px;
+.lp .bq { display: block; margin-inline-start: 2px; background-color: var(--blockquote-background-color);   /* #330 */
   border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
   padding-inline-start: 12px }
-.lp .bq .bq { margin-inline-start: 0 }                          /* nested "> >": only the outer one is offset */
+.lp .bq .bq { margin-inline-start: 0; background-color: transparent }                         /* nested "> >": only the outer one is offset and painted (#330: no double alpha) */
 
 /* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint
    invalidation so floorProbe() measures a frame, not an elided class flip.
