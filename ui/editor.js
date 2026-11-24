@@ -3151,7 +3151,7 @@ Ed.lpExt = function (v, G) {
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
   // #319: the editor root is .cm-s-obsidian as in stock (an ancestor of every .cm-line), which theme line rules
-  // (Minimal .cm-s-obsidian .cm-line.HyperMD-header) require; our own CSS never styles it (default look unchanged)
+  // (Minimal .cm-s-obsidian .cm-line.HyperMD-header) require; our CSS keys on it only for stock's heading-line spacing (ui/style.css #319)
   return [EditorView.editorAttributes.of({ class: Ed.EDITOR_ROOT }), plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
           Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
           Ed.cbHl ? Ed.cbHl(v, G) : [],   // #186: fence bodies coloured by Prism (ui/codehl.js)

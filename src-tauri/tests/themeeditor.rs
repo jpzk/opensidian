@@ -70,13 +70,29 @@ fn i319_heading_line_carries_hypermd_header_classes() {
 }
 
 #[test]
-fn i319_negative_our_css_never_styles_hypermd_or_root() {
-    // default look unchanged: the classes exist for THEME selectors; our own sheets must not key on them
-    for f in CSS {
+fn i319_negative_our_css_styles_hypermd_only_with_stock_line_spacing() {
+    // Our sheets key on .HyperMD-header / .cm-s-obsidian ONLY through stock 1.13.7's three heading-LINE spacing rules
+    // (stock computed: H1 line padding-top 16px = --p-spacing, an H2 after heading + blank line 0px; phase
+    // theme-th-editor keys hpt/h2pt). No colour / font / any other HyperMD rule in our CSS: themes own those.
+    let want = [
+        ".cm-s-obsidian .cm-line.HyperMD-header { padding-top: var(--p-spacing) }",
+        ".cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):not(:has(> br:only-child)) { padding-top: var(--p-spacing-empty) }",
+        ".cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):has(> br:only-child) + .cm-line.HyperMD-header { padding-top: 0 }",
+    ];
+    let c = css_rules("ui/style.css");
+    for w in want { assert_eq!(c.matches(w).count(), 1, "style.css must carry stock's heading line rule once: `{w}`"); }
+    let mut rest = c.clone();
+    for w in want { rest = rest.replace(w, ""); }
+    assert!(!rest.contains("HyperMD-header"), "style.css: no other .HyperMD-header rule");
+    assert!(!rest.contains("cm-s-obsidian"), "style.css: no other .cm-s-obsidian rule");
+    for f in ["ui/menu.css", "ui/tables.css"] {
         let c = css_rules(f);
         assert!(!c.contains("HyperMD-header"), "{f}: our CSS must not style .HyperMD-header");
         assert!(!c.contains("cm-s-obsidian"), "{f}: our CSS must not style .cm-s-obsidian");
     }
+    // negative: the zero rule needs BOTH the blank line between AND a heading after it (a heading right under a
+    // heading, or text after the blank line, keeps --p-spacing / is not a heading rule)
+    assert!(!c.contains(".cm-line.HyperMD-header + .cm-line.HyperMD-header { padding-top: 0 }"), "adjacent headings keep their spacing");
     // the heading class is added in ONE place (no second writer drifting from the parse)
     assert_eq!(read("ui/editor.js").matches("classList.add(\"HyperMD-header\"").count(), 1, "one writer of HyperMD-header in editor.js");
 }
