@@ -2522,6 +2522,9 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .metadata-input-checkbox { margin: 6px; }
 .multi-select-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
 .multi-select-pill { display: inline-flex; align-items: center; gap: 2px; padding: 1px 8px; border-radius: 12px; background: var(--border); font-size: 13px; }
+/* #334: a tags-property pill is a tag: stock paints it --tag-color on --tag-background (Gruvbox L ink
+   rgb(76,122,93) on rgb(235,219,178)); other list pills (aliases) keep the neutral pill above. */
+.metadata-property[data-property-type="tags"] .multi-select-pill { color: var(--tag-color); background-color: var(--tag-background) }
 .multi-select-pill-remove-button { cursor: pointer; opacity: .6; padding: 0 2px; }
 .multi-select-pill-remove-button:hover { opacity: 1; }
 .multi-select-input { flex: 1 1 60px; width: auto; }

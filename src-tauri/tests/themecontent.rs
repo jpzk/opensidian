@@ -306,3 +306,26 @@ fn i336_accent_hsl_and_font_bold_defined() {
     assert_eq!(val(&css, DARK, "--font-semibold"), "600");
     assert_eq!(val(&css, DARK, "--tag-background"), "hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1)");
 }
+
+fn props_js() -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/props.js");
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// #334: stock paints the pills of a tags property with the tag variables (Gruvbox L color
+/// rgb(76,122,93) bg rgb(235,219,178), D color rgb(137,180,130)); ours gave every pill
+/// `background: var(--border)` and inherited ink.
+#[test]
+fn i334_tag_pills_use_tag_variables() {
+    let css = style_css();
+    let sel = ".metadata-property[data-property-type=\"tags\"] .multi-select-pill";
+    assert_eq!(val(&css, sel, "color"), "var(--tag-color)");
+    assert_eq!(val(&css, sel, "background-color"), "var(--tag-background)");
+    // negative: the generic (aliases / list) pill is unchanged
+    assert_eq!(val(&css, ".multi-select-pill", "background"), "var(--border)");
+    assert!(vals(&css, ".multi-select-pill", "color").is_empty());
+    // the DOM carries what the selector needs: the row's data-property-type and the pill class
+    let js = props_js();
+    assert!(js.contains("w.dataset.propertyType = row.type"), "#334: property row lost data-property-type");
+    assert!(js.contains("el(\"div\", \"multi-select-pill\")"), "#334: pill class changed");
+}
