@@ -210,7 +210,7 @@ body {
   --checkbox-color: var(--bg-button-primary);
   --checkbox-marker-color: var(--bg-base);
   --checklist-done-color: var(--text-chrome-faint);
-  --code-background: var(--bg-surface);
+  --code-background: var(--background-primary-alt);   /* #320: stock default (inline code on the alt background) */
   --blockquote-border-color: var(--text-accent);
   /* ==================== LAYER 3 — OURS ALONE =============================
      An editor has surfaces the theme recon never showed painting through any
