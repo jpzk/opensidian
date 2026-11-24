@@ -3008,6 +3008,7 @@ let wsWrites = 0;        // successful write_workspace calls THIS PROCESS (censu
 let wsRestored = 0;      // leaves rebuilt from the file on this launch
 let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead of failing
 let wsT = null, wsLast = "", wsIds = {}, wsInFlight = null;
+let wsFile = "";         // wsCanon of the file the launch restored; "" once anything is written (see wsUnchanged)
 let wsGrp = {};          // W3: link-group key ("L<link>" | "G<group id>") -> the 16-hex `group` value on file
 /* W4 (F6, frozen): what this app does not understand it hands back unchanged.
      wsExtra   top-level keys other than WS_TOP, in file order (Obsidian drops
@@ -3211,6 +3212,20 @@ function wsDoc() {
    serialized layout is byte-identical to the last one, so a typing burst costs
    one stringify and no IPC. */
 const WS_MS = 400;
+/* THE RESTORED LAYOUT IS NOT A CHANGE. wsLast starts empty, so the first flush
+   after the launch restore (its own renderLayout arms wsTouch) wrote back the
+   layout just read. On a drive that sleeps, that write is what woke it, and the
+   durable flush held the first note open behind it (17 s measured on a USB
+   exFAT vault). wsFile keeps the file's content, key order aside; a flush whose
+   layout still says exactly that writes nothing. It is forgotten at the first
+   real write, so going back to that layout later still writes it. */
+function wsCanon(x) {
+  return JSON.stringify(x, (k, v) => v && typeof v === "object" && !Array.isArray(v)
+    ? Object.keys(v).sort().reduce((o, key) => { o[key] = v[key]; return o; }, {}) : v);
+}
+function wsUnchanged(doc) {
+  return !!wsFile && wsCanon(doc) === wsFile;
+}
 function wsTouch() {
   if (!state || !vaultPath || wsT) return;
   wsT = setTimeout(() => wsFlush(), WS_MS);
@@ -3234,6 +3249,7 @@ async function wsFlush(force) {
   let doc, s;
   try { doc = wsDoc(); s = JSON.stringify(doc); } catch (e) { return; }   // never let a census update throw
   if (s === wsLast) return;
+  if (wsUnchanged(doc)) { wsLast = s; return; }   // still the file the launch restored: no write
   // The vault is captured HERE, with the bytes it describes, and travels with
   // them: everything below this line is asynchronous, and `vaultPath` is not a
   // constant across an await (see wsLeave). The backend refuses a write whose
@@ -3244,7 +3260,7 @@ async function wsFlush(force) {
     try {
       await inv("write_workspace", { vault: v, layout: doc });
       if (v !== vaultPath) return;     // switched under us: the backend dropped it, so must our bookkeeping
-      wsLast = s; wsWrites++;
+      wsLast = s; wsWrites++; wsFile = "";
       updateTitle();                 // republish [ws:] — the write is observable, not asserted by faith
     } catch (e) { /* R28.13/R28.17: persistence must never be able to break the session */ }
   })();
@@ -3267,7 +3283,7 @@ async function wsFlush(force) {
 async function wsLeave() {
   if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(true); }
   try { await wsInFlight; } catch (e) { /* its own catch already ate it */ }
-  wsInFlight = null; wsLast = ""; wsIds = {}; wsGrp = {};
+  wsInFlight = null; wsLast = ""; wsFile = ""; wsIds = {}; wsGrp = {};
   wsExtra = null; wsSideRaw = {}; wsSide0 = {};          // W4: A's unknowns belong to A's file alone
 }
 
@@ -3436,6 +3452,8 @@ async function wsRead() {
 }
 async function wsApply(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
   if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
+  // only the launch restore reads what is ON DISK; a loaded workspace or a plugin layout must be written
+  try { wsFile = boot ? wsCanon(doc) : ""; } catch (e) { wsFile = ""; }
   // W4: captured BEFORE anything can bail — even a file whose main area is
   // unusable must not lose its unknown keys or its sidebars on the next write
   wsExtra = {};
