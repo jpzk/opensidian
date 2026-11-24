@@ -502,6 +502,37 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
     Ok(yes)
 }
 
+/* #296: how a question takes the screen. The trust, security and offline-open questions answer
+   something the user JUST did (the restricted-mode switch, a Settings › Security change, a link
+   click): modal, focused, in front — the next key the user presses is meant for them. A plugin's
+   spawn question is not: a plugin starts programs on its own schedule (obsidian-git runs
+   `git show --textconv :<file>` when a note is opened or changed, `git status` on a timer), so its
+   dialog maps while the user is typing somewhere else. Modal + present() took the keyboard at
+   that instant: the rest of what was typed for the quick switcher / palette / note went into the
+   dialog and the typed Return answered Deny (the default) — the plugin's program was refused
+   (EPERM "denied by the user", the plugin's console error at node-desktop.js deskErr) and the
+   user's own action was lost (harness gitdiffloop on develop 3b46919: 3 of 20 diff-view runs).
+   So a spawn question maps WITHOUT the keyboard and WITHOUT a modal grab: the window the user
+   types in keeps every key, nothing typed for it can answer the question, and the dialog stays
+   in front (keep-above) until the user answers it with a click or by focusing it (then Enter is
+   still Deny). Nothing is answered for the user: every question still needs its button. */
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Presentation {
+    /// a GTK modal grab: the parent window gets no input while the question is up
+    pub modal: bool,
+    /// map with the keyboard focus and present() it (raise + focus)
+    pub take_focus: bool,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn presentation(kind: Kind) -> Presentation {
+    match kind {
+        Kind::Spawn => Presentation { modal: false, take_focus: false },
+        Kind::Trust | Kind::Security | Kind::OfflineOpen => Presentation { modal: true, take_focus: true },
+    }
+}
+
 /// the scrolled body's fixed size (F2/F6): the dialog never outgrows the screen
 #[cfg(target_os = "linux")]
 const BODY_W: i32 = 640;
@@ -523,9 +554,11 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     // the head is ours; the body (page values) goes into a read-only TextView
     // as plain text, never markup: a page value cannot style or hide part of
     // the prompt, and nothing is cut — the view scrolls (F2)
+    let how = presentation(kind);
+    let flags = if how.modal { gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT } else { gtk::DialogFlags::DESTROY_WITH_PARENT };
     let d = gtk::MessageDialog::new(
         parent.as_ref(),
-        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        flags,
         gtk::MessageType::Warning,
         gtk::ButtonsType::None,
         head,
@@ -565,6 +598,9 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
     }
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
+    // #296: a spawn question maps without the keyboard (presentation): what the user is typing
+    // elsewhere stays there and cannot answer it
+    d.set_focus_on_map(how.take_focus);
     let tx = std::cell::RefCell::new(Some(tx));
     d.connect_response(move |d, r| {
         if let Some(tx) = tx.borrow_mut().take() {
@@ -576,11 +612,16 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         unsafe { d.destroy() };
     });
     d.show_all();
-    // Enter answers Deny/Cancel even though the text view can take focus
+    // Enter answers Deny/Cancel even though the text view can take focus (the focus INSIDE the
+    // dialog: it becomes the keyboard's only once the dialog has the window focus)
     if let Some(b) = d.widget_for_response(gtk::ResponseType::Reject) {
         b.grab_focus();
     }
-    d.present();
+    // present() raises AND focuses (on X without a window manager: XSetInputFocus) — only for the
+    // questions that answer the user's own action; a spawn question is shown, kept above, unfocused
+    if how.take_focus {
+        d.present();
+    }
 }
 
 /// macOS: the same question as an NSAlert sheet on the window (macos::consent_alert): head as the
@@ -625,6 +666,59 @@ fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* #296: a plugin's spawn question maps without the keyboard and without a modal grab (what
+       the user types for the quick switcher / palette / a note stays there and cannot answer
+       it); the questions that answer the user's own action keep modal + focus. */
+    #[test]
+    fn a_spawn_question_neither_grabs_nor_takes_the_keyboard() {
+        let p = presentation(Kind::Spawn);
+        assert!(!p.modal, "a spawn question must not grab the parent's input: {p:?}");
+        assert!(!p.take_focus, "a spawn question must not take the keyboard when it maps: {p:?}");
+    }
+
+    #[test]
+    fn the_questions_that_answer_a_user_action_stay_modal_and_focused() {
+        for k in [Kind::Trust, Kind::Security, Kind::OfflineOpen] {
+            assert_eq!(presentation(k), Presentation { modal: true, take_focus: true }, "{k:?}");
+        }
+        assert_ne!(presentation(Kind::Spawn), presentation(Kind::Trust));
+    }
+
+    /// the Linux dialog takes its modality and focus from presentation() and nowhere else:
+    /// no hard-coded MODAL flag, set_focus_on_map from the policy, present() only under it
+    #[test]
+    fn the_linux_dialog_follows_the_presentation_policy() {
+        let src = include_str!("consent.rs");
+        let head = "#[cfg(target_os = \"linux\")]\nfn show_dialog(";
+        let at = src.find(head).expect("linux show_dialog");
+        let body = &src[at..];
+        let body = &body[..body.find("\n}\n").expect("show_dialog unterminated")];
+        assert!(body.contains("let how = presentation(kind);"), "show_dialog does not ask presentation()");
+        assert_eq!(body.matches("gtk::DialogFlags::MODAL").count(), 1, "MODAL outside the policy branch");
+        assert!(body.contains("if how.modal { gtk::DialogFlags::MODAL"), "MODAL not gated on how.modal");
+        assert!(body.contains("d.set_focus_on_map(how.take_focus);"), "focus-on-map not from the policy");
+        let p = body.find("d.present();").expect("present() gone for the focused questions");
+        let gate = body[..p].rfind("if how.take_focus {").expect("present() not under how.take_focus");
+        assert!(!body[gate..p].contains('}'), "present() is not inside the how.take_focus block");
+        assert_eq!(body.matches("d.present();").count(), 1, "a second, unconditional present()");
+    }
+
+    /// negative: the policy must still refuse keyboard answers by default — Enter on a focused
+    /// spawn dialog stays Deny (the default response), and only the buttons map to a yes
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unfocused_spawn_dialog_still_defaults_to_deny() {
+        let src = include_str!("consent.rs");
+        let at = src.find("#[cfg(target_os = \"linux\")]\nfn show_dialog(").expect("linux show_dialog");
+        let body = &src[at..];
+        let body = &body[..body.find("\n}\n").expect("show_dialog unterminated")];
+        assert!(body.contains("d.set_default_response(gtk::ResponseType::Reject);"), "default response is no longer Deny");
+        assert_eq!(answer_of(gtk::ResponseType::Reject), Answer::No);
+        assert_eq!(answer_of(gtk::ResponseType::DeleteEvent), Answer::No);
+        assert_eq!(answer_of(gtk::ResponseType::None), Answer::No);
+        assert_eq!(answer_of(gtk::ResponseType::Accept), Answer::Once);
+    }
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
         Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
