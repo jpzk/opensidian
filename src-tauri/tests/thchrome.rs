@@ -242,6 +242,17 @@ fn i327_menus_and_graph_controls_chain_to_secondary_and_border_hover() {
     let g = rule(&c, ".graph-controls");
     assert!(g.contains("background: var(--background-secondary)"), "#327: graph controls bg is not --background-secondary: {g}");
     assert!(g.contains("border: 1px solid var(--background-modifier-border-hover, var(--border))"), "#327: graph controls border is not --background-modifier-border-hover: {g}");
+    // themes that set no border-hover (Gruvbox) get stock's default: base-35, stock D 63 / L 218
+    assert_eq!(decl_in(&c, "\nbody {", "--background-modifier-border-hover"), "var(--color-base-35, #3f3f3f)", "#327: dark border-hover default is not stock base-35");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--background-modifier-border-hover"), "var(--color-base-35, #dadada)", "#327: light border-hover default is not stock base-35");
+}
+#[test]
+fn i327_negative_border_hover_is_not_the_plain_border() {
+    let c = css();
+    // the plain divider (--background-modifier-border = base-30) stays where it is; only the hover frame is base-35
+    assert!(!c.contains("\n  --background-modifier-border-hover: var(--border)"), "#327: border-hover aliased to the plain border again");
+    assert!(!c.contains("\n  --color-base-35:"), "#327: our default theme defines no base-35 ramp row (the fallback carries the stock default; Solarized/AnuPpuccin set their own)");
+    assert_eq!(decl_in(&c, "\nbody {", "--background-modifier-border"), "var(--color-base-30, #45475a)", "#327: plain divider changed");
 }
 #[test]
 fn i327_negative_no_elevated_surface_and_geometry_unchanged() {

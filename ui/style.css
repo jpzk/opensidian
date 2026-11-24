@@ -75,6 +75,7 @@ body {
   --background-primary: var(--color-base-00, #1c1c1c);        /* T6b: base-00 = --background-primary; value: themelight audit */
   --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = the code/alt surface */
   --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit */
+  --background-modifier-border-hover: var(--color-base-35, #3f3f3f);   /* #327: stock menu/graph-control frame = base-35 (stock 1.13.7 default D 63, Solarized D base02 7,54,66) */
   --background-secondary-alt: #313244;                        /* no ramp row measured */
   --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit */
   --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = --divider-color/--background-modifier-border */
@@ -467,6 +468,7 @@ body:where(.theme-light) {
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
   --background-secondary: #f6f6f6;
+  --background-modifier-border-hover: var(--color-base-35, #dadada);   /* #327: stock default L 218 (Gruvbox sets none: 218; Solarized L base2 238,232,213) */
   --background-secondary-alt: var(--color-base-05, #e5e5e5);
   --ribbon-background: #f6f6f6;
   --background-modifier-border: var(--color-base-30, #e4e4e4);
