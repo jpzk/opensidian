@@ -287,3 +287,22 @@ fn i335_lp_highlight_is_span_cm_highlight() {
         assert!(js.contains(t), "#335: inline token table changed: {t}");
     }
 }
+
+/// #336: stock defines the base variables --interactive-accent-hsl (= --color-accent-hsl, the
+/// accent h,s,l triple, both modes) and --font-bold (700). Themes build on them (Solarized
+/// --tag-background hsla(var(--interactive-accent-hsl), .1/.2) -> stock rgba(203,75,22,.1 L/.2 D);
+/// --table-header-weight var(--font-bold) -> stock 700); undefined, they went invalid at
+/// computed-value time (tag background transparent, th weight our 600 fallback).
+#[test]
+fn i336_accent_hsl_and_font_bold_defined() {
+    let css = style_css();
+    assert_eq!(all(&css, "--color-accent-hsl"), vec![(DARK.to_string(), "var(--accent-h), var(--accent-s), var(--accent-l)".to_string())]);
+    assert_eq!(all(&css, "--interactive-accent-hsl"), vec![(DARK.to_string(), "var(--color-accent-hsl)".to_string())]);
+    assert_eq!(all(&css, "--font-bold"), vec![(DARK.to_string(), "700".to_string())]);
+    // negative: the light block does not re-point the triple at a shifted accent step
+    assert!(vals(&css, LIGHT, "--interactive-accent-hsl").is_empty() && vals(&css, LIGHT, "--color-accent-hsl").is_empty());
+    // negative: the default look is unchanged (accent colour, tag tint and header weight keep their own rows)
+    assert_eq!(val(&css, DARK, "--color-accent"), "hsl(var(--accent-h), var(--accent-s), var(--accent-l))");
+    assert_eq!(val(&css, DARK, "--font-semibold"), "600");
+    assert_eq!(val(&css, DARK, "--tag-background"), "hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1)");
+}

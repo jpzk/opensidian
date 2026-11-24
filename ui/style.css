@@ -111,6 +111,8 @@ body {
   --accent-h: 258;
   --accent-s: 88%;
   --accent-l: 66%;
+  --color-accent-hsl: var(--accent-h), var(--accent-s), var(--accent-l);   /* #336: stock base triple, both modes */
+  --interactive-accent-hsl: var(--color-accent-hsl);   /* #336: Solarized --tag-background hsla(this, .1/.2) */
   --color-accent: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
   --color-accent-1: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --color-accent-2: hsl(calc(var(--accent-h) - 5), calc(var(--accent-s) * 1.05), calc(var(--accent-l) * 1.29));
@@ -323,6 +325,7 @@ body {
   --font-monospace-theme: var(--font-monospace-override), var(--font-monospace-default);
   --font-normal: 400;
   --font-semibold: 600;
+  --font-bold: 700;   /* #336: stock base weight; themes build on it (Solarized --table-header-weight) */
   --font-smallest: .7em;
   --font-text-theme: var(--font-text-override), var(--font-default);
   --font-ui-large: 16px;
