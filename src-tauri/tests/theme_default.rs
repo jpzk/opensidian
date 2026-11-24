@@ -131,3 +131,54 @@ fn h343_negative_rules_read_the_tokens_so_themes_still_win() {
     let lc = rule(&c, ".lp .code");
     assert_eq!(decl(&lc, "border-radius").as_deref(), Some("var(--code-radius)"));
 }
+
+// ---------------- #340 dark default palette: stock neutral greys, no Catppuccin ----------------
+
+/// Catppuccin Mocha literals the dark default used to ship (issue #340 evidence).
+const CTP: [&str; 9] = ["#313244", "#45475a", "#585b70", "#6c7086", "#7f849c", "#bac2de", "#cdd6f5", "#cdd6f4", "#31324499"];
+
+#[test]
+fn h340_dark_surface_border_and_ink_are_stock_greys() {
+    let c = style();
+    let d = rule(&c, "body");
+    assert_eq!(decl(&d, "--background-secondary-alt").as_deref(), Some("#1c1c1c"), "stock dark tab header 28,28,28 (#340)");
+    assert_eq!(decl(&d, "--background-modifier-border").as_deref(), Some("var(--color-base-30, #333333)"), "stock dark border 51,51,51");
+    assert_eq!(decl(&d, "--color-base-30").as_deref(), Some("#333333"), "the ramp row feeding the border must be the stock grey too");
+    assert_eq!(decl(&d, "--text-chrome-alt").as_deref(), Some("#dadada"));
+    assert_eq!(decl(&d, "--text-chrome-faint").as_deref(), Some("#666666"));
+    assert_eq!(decl(&d, "--text-chrome-dim").as_deref(), Some("#666666"));
+}
+
+#[test]
+fn h340_done_task_ink_is_text_muted_in_both_modes() {
+    let c = style();
+    let d = rule(&c, "body");
+    assert_eq!(decl(&d, "--checklist-done-color").as_deref(), Some("var(--text-muted)"),
+        "stock done-task ink = --text-muted (dark 179,179,179 / light 92,92,92) (#340)");
+    let l = rule(&c, "body:where(.theme-light)");
+    assert_eq!(decl(&l, "--checklist-done-color"), None, "light must inherit the same wiring, not a second literal");
+}
+
+#[test]
+fn h340_negative_no_catppuccin_literal_in_the_dark_default_block() {
+    let c = style();
+    let d = rule(&c, "body").to_ascii_lowercase();
+    for hex in CTP {
+        // a hex followed by more hex digits would be a different colour; require a boundary
+        let mut at = 0;
+        while let Some(k) = d[at..].find(hex) {
+            let e = at + k + hex.len();
+            let next = d.as_bytes().get(e).copied().unwrap_or(b';');
+            assert!(next.is_ascii_hexdigit(), "Catppuccin literal {hex} is back in the dark default block (#340)");
+            at = e;
+        }
+    }
+}
+
+#[test]
+fn h340_negative_light_block_untouched() {
+    let c = style();
+    let l = rule(&c, "body:where(.theme-light)");
+    assert_eq!(decl(&l, "--background-secondary-alt").as_deref(), Some("var(--color-base-05, #e5e5e5)"), "light is not part of #340");
+    assert_eq!(decl(&l, "--background-modifier-border").as_deref(), Some("var(--color-base-30, #e4e4e4)"));
+}

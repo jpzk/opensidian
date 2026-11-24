@@ -75,9 +75,9 @@ body {
   --background-primary: var(--color-base-00, #1c1c1c);        /* T6b: base-00 = --background-primary; value: themelight audit */
   --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = the code/alt surface */
   --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit */
-  --background-secondary-alt: #313244;                        /* no ramp row measured */
+  --background-secondary-alt: #1c1c1c;                        /* #340: stock dark tab header painted 28,28,28 (was Catppuccin #313244) */
   --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit */
-  --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = --divider-color/--background-modifier-border */
+  --background-modifier-border: var(--color-base-30, #333333);/* T6b: base-30 = --divider-color/--background-modifier-border */
   --indentation-guide-color: color-mix(in srgb, var(--mono-100, #fff) 12%, transparent);   /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
@@ -209,7 +209,7 @@ body {
   --checkbox-border-color: var(--text-chrome-muted);
   --checkbox-color: var(--bg-button-primary);
   --checkbox-marker-color: var(--bg-base);
-  --checklist-done-color: var(--text-chrome-faint);
+  --checklist-done-color: var(--text-muted);   /* #340: stock done-task ink = --text-muted (dark 179,179,179 / light 92,92,92) */
   --code-background: var(--bg-surface);
   --blockquote-border-color: var(--text-accent);
   /* ==================== LAYER 3 — OURS ALONE =============================
@@ -222,14 +222,14 @@ body {
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --bg-button-default: #fff;   /* the focused (default) answer in the rename/delete prompts. Ours, not --text-on-accent: a theme with a light accent sets that one DARK (AnuPpuccin: its base), which painted the default button in the label colour */
-  --border-strong: #585b70;
+  --border-strong: #555555;
   --border-focus-ring: #bdbdbd;
-  --rule-faint: #31324499;
-  --text-chrome-alt: #cdd6f5;
-  --text-chrome-faint: #7f849c;
-  --text-chrome-dim: #6c7086;
+  --rule-faint: #33333399;
+  --text-chrome-alt: #dadada;
+  --text-chrome-faint: #666666;
+  --text-chrome-dim: #666666;
   --text-on-accent: #fff;
-  --text-quiet: #bac2de;
+  --text-quiet: #b3b3b3;
   --link-unresolved: #7c86c8;
   --link-unresolved-underline: color-mix(in srgb, currentColor 30%, transparent);   /* listlinks REQ-15: underline = link colour at 0.3 alpha */
   --accent-mauve: var(--color-accent, #cba6f7);
@@ -301,7 +301,7 @@ body {
   --color-base-00: #1c1c1c;
   --color-base-10: #232323;
   --color-base-100: #dadada;
-  --color-base-30: #45475a;
+  --color-base-30: #333333;   /* #340: stock dark border (code border 51,51,51; light #e4e4e4 = same row) */
   --color-base-50: #666666;
   --color-base-70: #b3b3b3;
   --color-cyan: #53dfdd;
