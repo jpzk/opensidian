@@ -124,6 +124,12 @@ block2 = "=0.6.2"
 # Cargo.lock (tauri transitive); rustls-tls avoids soup3/native OpenSSL. Pin `=`.
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls", "charset"] }
+# pick_win.rs: the system folder dialog (IFileOpenDialog) for choosing a vault. It is a COM
+# interface, which windows-sys does not model; `windows` is the same project's binding that does,
+# and the crate tauri itself uses for its window (the HWND tauri hands us is this crate's type).
+# NO NEW CRATE: windows 0.61.3 is ALREADY in Cargo.lock (tauri, tao, wry, webview2-com); `=`
+# pins the locked version and the features add no package.
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
