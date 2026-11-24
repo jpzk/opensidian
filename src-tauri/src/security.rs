@@ -444,7 +444,9 @@ pub fn mic_report(cfg: &Value) -> Value {
    security.<field> = "ask" | "always" | "off", written ONLY by cfgstore Op::SecurityDev after
    `dev_validate`; a missing or malformed value = the row's default = TODAY's behaviour on develop
    (camera / location / notifications denied by WebKit's default, pointer lock granted by WebKit's
-   class default for an unhandled request). Lockdown forces every row Off (stored value kept).
+   class default for an unhandled request). Camera Off by default is an operator decision
+   (2026-11-24): deliberately diverges from stock, which grants the camera silently.
+   Lockdown forces every row Off (stored value kept).
    A weakening change goes through the native Security confirm in main.rs security_dev_set; a
    revoke applies at once. "always" is app-wide and keyed by nothing the page reports. */
 pub const DEV_ROWS: &[(&str, &str, Mic)] = &[
@@ -1704,5 +1706,40 @@ mod tests {
         assert_eq!(r["notAvailable"].as_array().unwrap().len(), DEV_NOT_AVAILABLE.len());
         assert!(DEV_NOT_AVAILABLE.contains(&"Screen capture"));
         assert!(report(&json!({}))["device"]["rows"].is_array(), "security_get must carry the rows");
+    }
+
+    /// operator decision 2026-11-24 ("lets deactivate camera on default"; diverges from stock, which
+    /// grants silently): a fresh install / unset / malformed camera setting = Off, the Settings pane
+    /// gets "off" for the Camera toggle, and the native rule denies the request without a window;
+    /// an explicit user choice is kept and decided by the same devperm::decide
+    #[test]
+    fn devacc_camera_default_off() {
+        use crate::devperm::{decide, Decision, Kind};
+        let cam = Kind::UserMedia { audio: false, video: true, display: false };
+        let now = std::time::Instant::now();
+        let row = DEV_ROWS.iter().find(|r| r.0 == "camera").expect("camera row");
+        assert_eq!(row.2, Mic::Off, "camera default must be off");
+        assert_ne!(row.2, Mic::Always, "camera default must not be granted");
+        for unset in [json!({}), json!({"security": {}}), json!({"security": {"camera": null}}), json!({"security": {"camera": "on"}}), json!({"security": {"camera": true}})] {
+            assert_eq!(dev_stored(&unset, "camera"), Mic::Off, "{unset}");
+            assert_eq!(dev_rows(&unset).camera, Mic::Off, "{unset}");
+            let d = decide("main", cam, dev_rows(&unset), false, now);
+            assert_eq!(d, Decision::Deny, "unset camera = deny without a window: {unset}");
+            assert_ne!(d, Decision::Allow, "unset camera must not be granted: {unset}");
+            // the pane draws M.stored (ui/security.js devRows): the toggle shows off
+            let rep = dev_report(&unset);
+            let c = rep["rows"].as_array().unwrap().iter().find(|r| r["field"] == "camera").unwrap().clone();
+            assert_eq!(c["stored"], "off", "{unset}");
+            assert_eq!(c["effective"], "off", "{unset}");
+            assert_ne!(c["stored"], "always", "{unset}");
+        }
+        // explicit choices stay respected
+        let ask = json!({"security": {"camera": "ask"}});
+        assert_eq!(decide("main", cam, dev_rows(&ask), false, now), Decision::Ask);
+        let always = json!({"security": {"camera": "always"}});
+        assert_eq!(decide("main", cam, dev_rows(&always), false, now), Decision::Allow);
+        assert_eq!(dev_report(&always)["rows"][0]["stored"], "always");
+        let off = json!({"security": {"camera": "off"}});
+        assert_eq!(decide("main", cam, dev_rows(&off), false, now), Decision::Deny);
     }
 }

@@ -63,7 +63,11 @@ pub struct Rows {
 }
 
 /// the defaults = today's behaviour on develop: camera / location / notifications denied
-/// (WebKit's default), pointer lock granted (WebKit's class default for an unhandled request)
+/// (WebKit's default), pointer lock granted (WebKit's class default for an unhandled request).
+/// Camera Off is an OPERATOR DECISION (2026-11-24, "lets deactivate camera on default"): a fresh
+/// install and an unset / malformed setting deny every camera request without a window. This
+/// deliberately diverges from stock, which grants the camera silently. Pinned by
+/// devperm_camera_default_off_operator_decision and security::tests::devacc_camera_default_off.
 pub const DEFAULT_ROWS: Rows = Rows {
     camera: Access::Off,
     location: Access::Off,
@@ -327,6 +331,33 @@ mod tests {
                 assert!(!after_consent(true, decide(APP, k, r, true, now)), "{k:?} {r:?}");
             }
         }
+    }
+
+    /// operator decision 2026-11-24: the camera default is Off = every camera request of the app
+    /// window is denied WITHOUT a window (Deny, never Ask) and never granted; an explicit user
+    /// choice is respected (ask = the native question, always = allow; lockdown still wins)
+    #[test]
+    fn devperm_camera_default_off_operator_decision() {
+        let now = Instant::now();
+        let cam = Kind::UserMedia { audio: false, video: true, display: false };
+        assert_eq!(DEFAULT_ROWS.camera, A::Off, "camera default must be off");
+        assert_ne!(DEFAULT_ROWS.camera, A::Always, "camera default must not be granted (stock grants silently)");
+        assert_ne!(DEFAULT_ROWS.camera, A::Ask, "camera default must not prompt");
+        let d = decide(APP, cam, DEFAULT_ROWS, false, now);
+        assert_eq!(d, Decision::Deny, "default camera request = deny");
+        assert_ne!(d, Decision::Allow, "default camera request must not be granted");
+        assert_ne!(d, Decision::Ask, "default camera request must not prompt");
+        assert!(!after_consent(true, d), "a default camera request is never granted");
+        assert_eq!(mac_decision(d), 2, "macOS: default = deny, not the system prompt");
+        // explicit choices are respected by the same decision fn
+        let mut r = DEFAULT_ROWS;
+        r.camera = A::Ask;
+        assert_eq!(decide(APP, cam, r, false, now), Decision::Ask, "explicit ask = the native question");
+        r.camera = A::Always;
+        assert_eq!(decide(APP, cam, r, false, now), Decision::Allow, "explicit always = allow");
+        assert_eq!(decide(APP, cam, r, true, now), Decision::Deny, "lockdown still forces off");
+        r.camera = A::Off;
+        assert_eq!(decide(APP, cam, r, false, now), Decision::Deny);
     }
 
     /// macOS: Ask = WebKit's system prompt (0), Allow = 1, Deny = 2; the app window's microphone
