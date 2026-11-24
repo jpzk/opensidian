@@ -172,3 +172,12 @@ fn i348_negative_mark_paint_is_scoped() {
     assert!(m.contains("Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => {\n                code = true;"), "code blocks skipped");
     assert!(m.contains("let Event::Text(t) = ev else { unreachable!(\"cuts only index Text events\") };"), "only Text is split");
 }
+
+#[test]
+fn i348_light_highlight_var_is_stock_rgba() {
+    // stock 1.13.7 computed --text-highlight-bg is rgba(255, 208, 0, 0.4) in light AND dark (phase key mbg, default case);
+    // #ffec99 is only its composite over white, a different computed value (and wrong over any non-white surface)
+    let c = css_rules("ui/style.css");
+    assert!(!c.contains("--text-highlight-bg: #ffec99"), "light --text-highlight-bg must not be the pre-composited #ffec99");
+    assert_eq!(c.matches("--text-highlight-bg: rgba(255, 208, 0, .4);").count(), 2, "both modes: stock rgba");
+}
