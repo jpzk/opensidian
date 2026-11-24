@@ -211,7 +211,7 @@ body {
   --checkbox-marker-color: var(--bg-base);
   --checklist-done-color: var(--text-chrome-faint);
   --code-background: var(--background-primary-alt);   /* #320: stock default (inline code on the alt background) */
-  --blockquote-border-color: var(--text-accent);
+  --blockquote-border-color: var(--interactive-accent);   /* #347: stock default (interactive accent, not text accent) */
   /* ==================== LAYER 3 — OURS ALONE =============================
      An editor has surfaces the theme recon never showed painting through any
      name we probed (a ribbon ink, an elevated popover, a faint rule, the
@@ -1682,7 +1682,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
   --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
-  --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
+  --blockquote-border-thickness: 2px;   /* #347: stock default (was 3px) */
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
      this file: --list-marker-color, --checkbox-border-color, --checkbox-color,
@@ -1969,7 +1969,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
 .preview blockquote > :last-child { margin-bottom: 0 }
-.lp blockquote { padding-inline-start: 11px }
+.lp blockquote { padding-inline-start: 12px }   /* #347: 2px bar + 12px = text at +14 like stock (gate LP_BQ_TEXT_X=14) */
 /* R15.10-13 in LIVE PREVIEW, on the R17 flat row DOM (ui/editor.js emits ONE
    div.lprow per source line — there is no ul/ol/li/blockquote to select, so
    the semantic rules above are reading-mode only). The reading-view offsets are
@@ -1998,10 +1998,10 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp.src .li > .mk.lim::before, .lp .li > .mk.lim.rv::before { content: none }
 .lp.src .li > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
-   the h1 "H" ink x (+2 from the column), text 11px past it */
+   the h1 "H" ink x (+2 from the column), text 12px past the 2px bar (#347: +14 like stock) */
 .lp .bq { display: block; margin-inline-start: 2px;
   border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding-inline-start: 11px }
+  padding-inline-start: 12px }
 .lp .bq .bq { margin-inline-start: 0 }                          /* nested "> >": only the outer one is offset */
 
 /* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint

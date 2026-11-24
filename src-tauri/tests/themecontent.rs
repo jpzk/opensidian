@@ -187,3 +187,26 @@ fn i321_unresolved_links_derive_from_link_color() {
     // resolved links did not move
     assert!(val(&css, ".lp a.wiki", "color").starts_with("var(--link-color"));
 }
+
+/// #347: stock draws the blockquote bar 2px in --interactive-accent (default theme stock
+/// BQ_BORDER_W=2, harness typo gate); ours defaulted to 3px --text-accent, so every theme whose
+/// text accent differs from its interactive accent (Gruvbox: orange vs teal, accent-h 166) got
+/// a thick wrong-hue bar. A theme that sets the variables (Minimal: 1px) still wins.
+#[test]
+fn i347_blockquote_bar_stock_defaults() {
+    let css = style_css();
+    assert_eq!(all(&css, "--blockquote-border-color"), vec![(DARK.to_string(), "var(--interactive-accent)".to_string())]);
+    assert_eq!(all(&css, "--blockquote-border-thickness"), vec![(":root".to_string(), "2px".to_string())]);
+    // negative: the text-accent / 3px defaults are gone
+    assert!(!all(&css, "--blockquote-border-color").iter().any(|(_, v)| v.contains("--text-accent")), "#347: bar still --text-accent");
+    assert!(!all(&css, "--blockquote-border-thickness").iter().any(|(_, v)| v.contains("0.75")), "#347: bar still 3px");
+    // both consumers draw the bar from the variables
+    let bar = "var(--blockquote-border-thickness) solid var(--blockquote-border-color)";
+    assert_eq!(val(&css, ".lp blockquote, .preview blockquote", "border-inline-start"), bar);
+    assert_eq!(val(&css, ".lp .bq", "border-inline-start"), bar);
+    // LP text offset stays at stock +14 from the bar (2px bar + 12px padding; gate LP_BQ_TEXT_X=14)
+    assert_eq!(val(&css, ".lp .bq", "padding-inline-start"), "12px");
+    assert_eq!(val(&css, ".lp blockquote", "padding-inline-start"), "12px");
+    // negative: reading-view padding unchanged
+    assert_eq!(val(&css, ".lp blockquote, .preview blockquote", "padding"), "0 0 0 var(--size-4-6)");
+}
