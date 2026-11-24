@@ -332,3 +332,34 @@ fn i350_negative_heading_stays_faint_and_card_frame_unchanged() {
     assert!(k.contains("border: 1px solid var(--bg-surface)") && k.contains("border-radius: 6px") && !k.contains("var(--bg-base)"), "#350: card frame out of scope / still page bg: {k}");
     assert_eq!(decl_in(&c, "\nbody {", "--text-chrome-muted"), "var(--text-muted)", "#350: muted chrome ink must be the theme --text-muted");
 }
+
+// ---------------------------------------------------------------- #341
+#[test]
+fn i341_ribbon_backlink_titles_done_tasks_and_raw_frontmatter_read_stock_ink() {
+    let c = css();
+    assert!(rule(&c, "#ribbon").contains("color: var(--text-muted)"), "#341: the ribbon container is not --text-muted");
+    assert!(rule(&c, ".blnote").contains("color: var(--nav-item-color-active)"), "#341: backlink file titles do not read --nav-item-color-active");
+    assert_eq!(decl_in(&c, "\nbody {", "--checklist-done-color"), "var(--text-muted)", "#341: stock done-task ink is --text-muted");
+    let s = rule(&c, ".lp.src .tkx, .lp.src .tkx .tkt");
+    assert!(s.contains("text-decoration: none") && s.contains("color: inherit"), "#341: source mode still dims/strikes a done task: {s}");
+    let f = rule(&c, ".lp .lprow.fmrow");
+    assert!(f.contains("color: var(--text-muted)") && f.contains("font-size: 0.875em"), "#341: raw frontmatter rows: {f}");
+    let p = ui("props.js");
+    assert!(p.contains("Decoration.line({ class: \"fmrow\" })"), "#341: props.js does not class raw frontmatter lines");
+    assert!(p.contains("return [field, Props.rawRows(v, bust)];"), "#341: the raw-row plugin is not installed with the properties field");
+}
+#[test]
+fn i341_negative_body_ink_icons_live_preview_strike_and_widget_unchanged() {
+    let c = css();
+    // the editor and other chrome still read --text-chrome = body ink: the fix is per rule, not the variable
+    assert_eq!(decl_in(&c, "\nbody {", "--text-chrome"), "var(--text-normal)", "#341: --text-chrome must stay body ink (the editor reads it)");
+    assert!(rule(&c, ".outrow").contains("color: var(--text-chrome)"), "#341: outgoing-link rows have no stock evidence, keep them");
+    assert!(rule(&c, ".tocrow").contains("color: var(--text-chrome-muted)"), "#341: outline rows were already muted");
+    assert!(rule(&c, "#ribbon button").contains("var(--icon-color, var(--text-chrome-muted))"), "#341: ribbon icons keep --icon-color");
+    assert!(rule(&c, ".lp .tkx .tkt").contains("text-decoration: var(--checklist-done-decoration)"), "#341: LP done tasks must stay struck");
+    assert!(!c.contains("--checklist-done-color: var(--text-chrome-faint)"), "#341: faint done-task ink is back");
+    let p = ui("props.js");
+    // raw mode only: the LP widget path still bails out in source mode, the row plugin bails out outside it
+    assert!(p.contains("if (!r) return { d: Decoration.none, end: -1, r };"), "#341: fmrow must not apply in Live Preview (the widget covers it)");
+    assert!(p.contains("v.lp.classList.contains(\"src\")) || (tb && tb.mode === \"reading\") || Props.mode === \"source\") return Decoration.none;"), "#341: the Properties widget must still yield to raw mode");
+}

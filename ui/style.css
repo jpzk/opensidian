@@ -212,7 +212,7 @@ body {
   --checkbox-border-color: var(--text-chrome-muted);
   --checkbox-color: var(--bg-button-primary);
   --checkbox-marker-color: var(--bg-base);
-  --checklist-done-color: var(--text-chrome-faint);
+  --checklist-done-color: var(--text-muted);   /* #341: stock done-task ink = --text-muted (L 92 / D 179), not faint */
   --code-background: var(--bg-surface);
   --blockquote-border-color: var(--text-accent);
   /* ==================== LAYER 3 — OURS ALONE =============================
@@ -599,7 +599,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        background: var(--bg-base); color: var(--text-chrome) }
 /* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse. overflow: hidden like stock 1.13.7
    .workspace-ribbon: icons that do not fit a short window are clipped at the strip (R22, OVF_CLIP) */
-#ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); flex-shrink: 0; display: flex;
+#ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); color: var(--text-muted);   /* #341: stock ribbon container ink = --text-muted */
+          flex-shrink: 0; display: flex;
           flex-direction: column; align-items: center; gap: var(--size-4-2, 8px); overflow: hidden;
           padding: var(--ribbon-padding, 10px 0) }
 #ribbon:has(~ #side[hidden]) { background-color: var(--ribbon-background-collapsed, var(--bg-ribbon)) }
@@ -790,7 +791,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .rhead .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
 .rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
-.blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
+.blnote { padding: 4px 8px; color: var(--nav-item-color-active); cursor: pointer; display: flex;   /* #341: stock backlink file title = the theme --nav-item-color-active (default = --text-normal) */
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
 .blnote:hover { background: var(--bg-surface) }
 .blnote .tc { flex: 0 0 12px; display: flex; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
@@ -1923,6 +1924,10 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    ran through a nested item's literal indent, left of the box; stock leaves the indent unpainted */
 .lp .tkx { text-decoration: none }
 .lp .tkx .tkt { text-decoration: var(--checklist-done-decoration) }
+/* #341: SOURCE mode is raw markdown — stock neither strikes nor dims a done task there (src computed: --text-normal, no line-through) */
+.lp.src .tkx, .lp.src .tkx .tkt { text-decoration: none; color: inherit }
+/* #341: raw frontmatter lines (source mode / Properties shown as source; props.js line class fmrow) = stock muted ink at 14px (16px editor) */
+.lp .lprow.fmrow { color: var(--text-muted); font-size: 0.875em }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
