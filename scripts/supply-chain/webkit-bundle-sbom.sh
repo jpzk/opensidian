@@ -128,6 +128,22 @@ for p in $(awk -F'\t' '$1 != "brotli" {print $1}' "$t/map" | sort -u); do
     || die "dpkg-query failed for $p"
 done
 
+
+# ---- #299 G1: components compiled INTO libwebkit2gtk (Skia, ANGLE, pdf.js, ...) ----
+# No package database lists them, so no scanner can see them. They come from the pinned table
+# webkit-embedded.tsv, keyed by the upstream webkitgtk version of the bundled webkit2gtk source
+# package, and are emitted as nested components of it. Fails closed: no table, a webkit version
+# with no rows (a bump without re-deriving the table), or a malformed row -> rc=1.
+EMB=${WK_EMBEDDED:-$root/scripts/supply-chain/webkit-embedded.tsv}
+[ -f "$EMB" ] || die "embedded-component table $EMB missing"
+wksv=$(awk -F'\t' '$3=="webkit2gtk" {print $4; exit}' "$t/pkgs")
+[ -n "$wksv" ] || die "webkit2gtk source package not in the bundle"
+wkup=${wksv#*:}; wkup=${wkup%%-*}
+awk -F'\t' -v v="$wkup" '!/^#/ && $1==v' "$EMB" >"$t/emb"
+[ -s "$t/emb" ] || die "no embedded-component rows for webkit $wkup in $EMB (re-derive it from the webkitgtk-$wkup tarball, #299)"
+awk -F'\t' 'NF!=6 || $2=="" || $3=="" || $4 !~ /^pkg:[a-z]+\/./ || $5=="" || $6=="" {print; bad=1} END{exit bad}' "$t/emb" >"$t/embbad" \
+  || die "bad row in $EMB: $(head -1 "$t/embbad")"
+
 # ---- per binary package: license (DEP-5 copyright) + SHA-256 of the .deb ----
 # LICENSE: /usr/share/doc/<pkg>/copyright (the ubuntu image's dpkg excludes keep exactly this
 # file). Machine-readable (DEP-5, "Format: ...copyright-format...") -> every "License:" short
@@ -188,7 +204,7 @@ while IFS=$'\t' read -r bp ver _ _; do
   esac
 done <"$t/pkgs"
 
-jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --rawfile sha "$t/sha" \
+jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --rawfile sha "$t/sha" --rawfile emb "$t/emb" \
    --arg ns "$NS" --arg distro "$DISTRO" --arg arch "$ARCH" --arg brotli "$BROTLI_VER" --arg doc "$DOC" --arg applic "$applic" \
    --arg hsrc "$(if [ -n "$PKGSET" ]; then echo "pkgset $(basename "$PKGSET") (snapshot index SHA256, checked against the downloaded .deb by appimage-build.sh)"; else echo "apt-cache show (the configured apt index SHA256)"; fi)" \
    --arg ts "$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)" '
@@ -199,6 +215,7 @@ jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --r
   | (rows($pkgs) | map({bin: (.[0] | nopkgarch), ver: .[1], src: .[2], srcver: .[3]})) as $p
   | (rows($lic) | map({bin: .[0], kind: .[1], v: .[2]})) as $l
   | (rows($sha) | map({key: .[0], value: .[1]}) | from_entries) as $h
+  | (rows($emb) | map({name: .[1], version: .[2], purl: .[3], lic: .[4], ev: .[5]})) as $e
   | ($p | group_by([.src, .srcver]) | map(
       . as $g | ($g | map(.bin) | unique) as $bins
       | ($l | map(select(.bin as $x | $bins | index($x))) | map({kind, v}) | unique) as $gl
@@ -209,6 +226,13 @@ jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --r
           purl: "pkg:deb/\($ns)/\($g[0].src)@\($g[0].srcver | enc)?arch=source&distro=\($distro)",
           licenses: ($gl | map(if .kind == "id" then {license: {id: .v}} else {license: {name: .v}} end)) }
         + (if ($hashed | length) > 0 then {hashes: ($hashed | map({alg: "SHA-256", content: $h[.]}))} else {} end)
+        + (if $g[0].src == "webkit2gtk" then {components: ($e | map(
+            { type: "library", "bom-ref": "deb:\($g[0].src)@\($g[0].srcver)/embedded:\(.name)@\(.version)",
+              name: .name, version: .version, purl: .purl, licenses: [{expression: .lic}],
+              properties: [ {name: "opensidian:embedded-in", value: "\($g[0].src)@\($g[0].srcver)"},
+                            {name: "opensidian:evidence", value: .ev},
+                            {name: "opensidian:source", value: "scripts/supply-chain/webkit-embedded.tsv (compiled into libwebkit2gtk-4.1; not in dpkg, invisible to scanners without this entry, #299)"} ] }))}
+          else {} end)
         + { properties: ([
             {name: "opensidian:binary-packages", value: ($g | map("\(.bin)=\(.ver)") | unique | join(","))},
             {name: "opensidian:bundled-libs", value: ($m | map(select(.pkg as $x | $bins | index($x))) | map(.lib) | unique | join(","))},
@@ -231,12 +255,14 @@ jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile lic "$t/lic" --r
       components: ($debs + (if ($bl | length) > 0 then [{
           type: "library", "bom-ref": "brotli@\($brotli)", name: "brotli", version: $brotli,
           purl: "pkg:github/google/brotli@v\($brotli)",
+          cpe: "cpe:2.3:a:google:brotli:\($brotli):*:*:*:*:*:*:*",
           licenses: [{expression: "MIT"}],
           properties: [ {name: "opensidian:bundled-libs", value: ($bl | join(","))},
                         {name: "opensidian:note", value: "built from the sha256-pinned upstream tarball by build-appimage.sh; replaces the distro libbrotli"} ] }]
         else [] end)),
       dependencies: [ { ref: "opensidian-portable-appimage-bundle",
         dependsOn: ($debs | map(."bom-ref")) + ($bl | if length > 0 then ["brotli@\($brotli)"] else [] end) } ]
+        + ($debs | map(select(has("components")) | {ref: ."bom-ref", dependsOn: (.components | map(."bom-ref"))}))
     }' >"$t/out"
 jq -e '.specVersion == "1.6" and (.components | length) > 0' "$t/out" >/dev/null || die "bad SBOM"
 cat "$t/out"

@@ -274,7 +274,9 @@ const Ed = {
           eadd(Ed.mk("![["), true);
           eadd(Ed.mk(raw, "img"), true);                          // the whole inner text, folded
           eadd(Ed.mk("]]"), true);
-          eadd(Ed.imgEl(target, bar >= 0 ? label : target), false);  // alias is the alt (image_html)
+          // CodeAnt #262: image_html decides remote by url_scheme FIRST, so ![[https://h/x.svg]] is the
+          // remote banner in reading view; pass the same flag, or live preview looked it up locally
+          eadd(Ed.imgEl(target, bar >= 0 ? label : target, /^https?:/i.test(target)), false);  // alias is the alt (image_html)
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
@@ -465,7 +467,7 @@ const Ed = {
      R29.7: reading view (Rust/pulldown-cmark) and live preview are separate
      engines, so every decision below mirrors ONE named function in
      src-tauri/src/main.rs and nothing else:
-       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 5 extensions)
+       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 6 extensions)
        Ed.pctDec    <- pct_decode           (strict: %XX or nothing)
        Ed.pctEnc    <- pct_encode           (unreserved + '/' survive)
        Ed.imgRel    <- index::resolve       (exact, else basename suffix)
@@ -475,7 +477,7 @@ const Ed = {
      non-symlinked vault members, so a traversal target resolves to nothing
      and gets no URL at all (the byte server re-checks containment anyway).
      An unresolved target is R29.4's banner in both engines. */
-  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp"],
+  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp", "svg"],
   IMG_SCHEME: "opensidian-img",
   isImg(t) {                                   // is this target an IMAGE embed, not a note embed?
     const i = t.lastIndexOf(".");
@@ -578,6 +580,12 @@ const Ed = {
       s.dataset.sec = "remoteMedia";
       s.dataset.why = on ? "(Settings › Security › Load external resources: only https:// addresses load)"
                          : "(Settings › Security › Load external resources is off)";
+      s.contentEditable = "false";
+      return s;
+    }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) {   // image_html: any other url_scheme -> "remote image" could not be found
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = "remote image";
       s.contentEditable = "false";
       return s;
     }

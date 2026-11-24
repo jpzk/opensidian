@@ -1,0 +1,34 @@
+== x86_64 (job 137667785114)
+[appdir] bundled 75 libs
+appdir dist/AppDir-portable: 76 .so files checked
+appimage-excl-check: OK (14 guarded sonames excluded)
+osv-scanner sha256:  fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+summary: 0 with a fixed version, 55 without
+summary: true
+opensidian-0.9.6-x86_64.cdx.json: OK
+bundled source pkgs: v0.9.6 51 -> head 47; removed:
+  dbus@1.16.2-2ubuntu4
+  krb5@1.22.1-2ubuntu4.1
+  sqlite3@3.46.1-9ubuntu0.3
+  util-linux@2.41.3-3ubuntu2.2
+before (v0.9.6, all 106 alerts):       2 critical 42 high 2 low 51 medium 9 warning 
+before (Ubuntu/bundle part only):      2 critical 40 high 2 low 49 medium 
+after  (bundle part, sev by rule id):  2 critical 25 high 1 low 27 medium 
+after ids total 55, not in v0.9.6 baseline: 0
+== aarch64 (job 137667784925)
+[appdir] bundled 75 libs
+appdir dist/AppDir-portable: 76 .so files checked
+appimage-excl-check: OK (14 guarded sonames excluded)
+osv-scanner sha256:  983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81
+summary: 0 with a fixed version, 55 without
+summary: true
+opensidian-0.9.6-aarch64.cdx.json: OK
+bundled source pkgs: v0.9.6 51 -> head 47; removed:
+  dbus@1.16.2-2ubuntu4
+  krb5@1.22.1-2ubuntu4.1
+  sqlite3@3.46.1-9ubuntu0.3
+  util-linux@2.41.3-3ubuntu2.2
+before (v0.9.6, all 106 alerts):       2 critical 42 high 2 low 51 medium 9 warning 
+before (Ubuntu/bundle part only):      2 critical 40 high 2 low 49 medium 
+after  (bundle part, sev by rule id):  2 critical 25 high 1 low 27 medium 
+after ids total 55, not in v0.9.6 baseline: 0

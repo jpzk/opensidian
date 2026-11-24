@@ -19,6 +19,7 @@
 #
 # Usage: scripts/supply-chain/vendor-sbom.sh [> vendor.cdx.json]
 #   VENDOR_DIR=<dir> (default ui/vendor), LOCK=<file>, NPM_REGISTRY=<url> are passed to vendor-verify.sh
+#   VENDOR_EMBEDDED=<tsv> (default scripts/supply-chain/vendor-embedded.tsv): packages compiled into vendored bundles (#299)
 #   SOURCE_DATE_EPOCH=<s> fixes metadata.timestamp (reproducible output)
 # Exit 0 = SBOM on stdout; 1 = verify failed / bad input (nothing on stdout); 2 = usage.
 set -euo pipefail
@@ -142,6 +143,62 @@ if [ -n "$mref" ]; then
   [ "$(grep -cE "^={20,}\$" "$bl")" = "$n" ] || { echo "vendor-sbom: $bl: block count != parsed packages" >&2; exit 1; }
   [ "$(sort "$tmp/mdeps" | uniq -d | wc -l)" = 0 ] || { echo "vendor-sbom: $bl lists a package twice" >&2; exit 1; }
   jq -Rn -c --arg ref "$mref" '{ref: $ref, dependsOn: [inputs]}' <"$tmp/mdeps" >>"$tmp/deps"
+fi
+
+# #299 G2: npm packages compiled INTO a vendored single-file bundle that ships no package-lock
+# (mathjax/tex-chtml-full.js embeds speech-rule-engine, mj-context-menu, mhchemparser). Source: the
+# pinned table vendor-embedded.tsv (VENDOR_EMBEDDED overrides; columns host, host_version, file, name,
+# version, SPDX license id, registry sha512 integrity, marker, evidence). Each row -> one pkg:npm
+# component (embedded_in, marker, evidence properties; SHA-512 = registry integrity of the package
+# tarball), and the host library component dependsOn them. FAILS CLOSED on: no table, a malformed
+# row, a row whose host is not a locked library or whose bundle file is not one of the host's locked
+# files, a locked host with rows only for ANOTHER version (stale table after a bump), a marker that
+# grep -F does not find in the bundle (the bytes themselves were proven by vendor-verify.sh), or the
+# same name@version twice. Versions/licenses are never guessed: provenance is in the table header.
+et=${VENDOR_EMBEDDED:-$here/vendor-embedded.tsv}
+[ -f "$et" ] || { echo "vendor-sbom: embedded table $et missing" >&2; exit 1; }
+: >"$tmp/edeps"; : >"$tmp/eedges"
+while IFS=$'\t' read -r eh ehv ef en ev el ei em ee extra || [ -n "$eh" ]; do
+  case $eh in '#'*|'') continue ;; esac
+  row="$eh $ehv $en@$ev"
+  [ -z "${extra:-}" ] && [ -n "$ee" ] && [ -n "$em" ] \
+    && [[ $ehv =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ $ev =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    && [[ $en =~ ^[a-z0-9][a-z0-9._-]*$ ]] && [[ $el =~ ^[A-Za-z0-9.+-]+$ ]] \
+    && [[ $ei =~ ^sha512-[A-Za-z0-9+/]+=*$ ]] && [[ $ef =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || { echo "vendor-sbom: $et: bad row: $row" >&2; exit 1; }
+  lv=$(jq -r --arg n "$eh" '[.libraries[] | select(.name == $n) | .version] | if length == 1 then .[0] else "" end' "$lock")
+  [ -n "$lv" ] || { echo "vendor-sbom: $et: $row: $eh is not a locked library" >&2; exit 1; }
+  [ "$lv" = "$ehv" ] || continue   # rows of another host version: checked below (stale table)
+  jq -e --arg n "$eh" --arg f "$ef" 'any(.libraries[] | select(.name == $n) | .files[]; .path == $f)' "$lock" >/dev/null \
+    || { echo "vendor-sbom: $et: $row: $ef is not a locked file of $eh" >&2; exit 1; }
+  grep -qF -- "$em" "$vd/$ef" || { echo "vendor-sbom: $et: $row: marker not found in ui/vendor/$ef" >&2; exit 1; }
+  href=$(jq -r --arg n "$eh" '.libraries[] | select(.name == $n) | .purl' "$lock")
+  purl="pkg:npm/$en@$ev"
+  grep -qxF "$purl" "$tmp/edeps" && { echo "vendor-sbom: $et: $purl listed twice" >&2; exit 1; }
+  printf '%s\n' "$purl" >>"$tmp/edeps"; printf '%s\t%s\n' "$href" "$purl" >>"$tmp/eedges"
+  jq -nc --arg n "$en" --arg v "$ev" --arg lic "$el" --arg hex "$(sri_hex "$ei")" --arg purl "$purl" \
+        --arg f "$ef" --arg in "$href" --arg m "$em" --arg e "$ee" --arg src "scripts/supply-chain/$(basename "$et")" '
+    {type: "library", "bom-ref": $purl, name: $n, version: $v, purl: $purl,
+     licenses: [{license: {id: $lic}}],
+     hashes: [{alg: "SHA-512", content: $hex}],
+     externalReferences: [{type: "distribution", url: "https://registry.npmjs.org/\($n)/-/\($n)-\($v).tgz"}],
+     properties: [{name: "opensidian:embedded_in", value: "ui/vendor/\($f) (\($in))"},
+                  {name: "opensidian:source", value: $src},
+                  {name: "opensidian:embedded-marker", value: $m},
+                  {name: "opensidian:evidence", value: $e},
+                  {name: "opensidian:hash-note", value: "SHA-512 = registry.npmjs.org integrity of the package tarball; the code is compiled into ui/vendor/\($f), whose sha256 is on the \($in) component"}]}' >>"$tmp/comps"
+done <"$et"
+# every locked host the table knows about must have rows for its locked version
+while IFS= read -r eh; do
+  lv=$(jq -r --arg n "$eh" '.libraries[] | select(.name == $n) | .version' "$lock")
+  [ -z "$lv" ] && continue
+  awk -F'\t' -v h="$eh" -v v="$lv" '!/^#/ && $1 == h && $2 == v {f=1} END {exit !f}' "$et" \
+    || { echo "vendor-sbom: $et: no embedded rows for locked $eh $lv (table has $(awk -F'\t' -v h="$eh" '!/^#/ && $1 == h {print $2}' "$et" | sort -u | tr '\n' ' ')) - re-derive the table" >&2; exit 1; }
+done < <(awk -F'\t' '!/^#/ && NF {print $1}' "$et" | sort -u)
+if [ -s "$tmp/edeps" ]; then
+  cut -f1 "$tmp/eedges" | sort -u | while IFS= read -r h; do
+    awk -F'\t' -v h="$h" '$1 == h {print $2}' "$tmp/eedges" | jq -Rn -c --arg ref "$h" '{ref: $ref, dependsOn: [inputs]}'
+  done >>"$tmp/deps"
 fi
 
 ts=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)

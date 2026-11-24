@@ -5,7 +5,8 @@
 # no new binaries), so this checks the structure the release relies on:
 #   bomFormat == "CycloneDX", specVersion == "1.6", serialNumber urn:uuid, version integer >= 1,
 #   metadata.component with type + name + string bom-ref, components[] each with a known type,
-#   a name and a string bom-ref; bom-refs UNIQUE across metadata.component + components;
+#   a name and a string bom-ref (nested components[].components[] too, recursively); bom-refs UNIQUE
+#   across metadata.component + components at every depth;
 #   dependencies[]: unique ref, every ref and dependsOn entry names an existing bom-ref;
 #   hashes[] alg/content well formed (SHA-256 = 64 hex); licenses[] entries are exactly one of
 #   {expression} / {license:{id|name}}; scope (if set) required|optional|excluded.
@@ -36,15 +37,22 @@ errs=$(jq -r --argjson rel "$rel" '
        | if . == "BAD" then "\($where): licenses not an array"
          elif (keys == ["expression"] and (.expression | type) == "string")
            or (keys == ["license"] and ((.license.id // .license.name) | type) == "string") then empty
-         else "\($where): malformed license entry \(tojson)" end);
+         else "\($where): malformed license entry \(tojson)" end),
+    # nested components (CycloneDX components[].components[], #299): same checks, recursively
+    (if .components == null then empty
+     elif (.components | type) != "array" then "\($where): nested components not an array"
+     else (.components | to_entries[] | .key as $i | .value
+           | comp_errs("\($where).components[\($i)] \(."bom-ref" // .name // "?")")) end);
+  # every component object at any nesting depth (well-formed arrays only; malformed ones are reported above)
+  def allcomps: (.components // [] | if type == "array" then .[] else empty end) | select(type == "object") | ., allcomps;
   [ (if .bomFormat == "CycloneDX" then empty else "bomFormat is \(.bomFormat | tojson)" end),
     (if .specVersion == "1.6" then empty else "specVersion is \(.specVersion | tojson)" end),
     (if (.serialNumber // "" | test("^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) then empty else "serialNumber not urn:uuid" end),
     (if (.version | type) == "number" and .version >= 1 then empty else "version not an integer >= 1" end),
     (if (.metadata.component | type) == "object" then (.metadata.component | comp_errs("metadata.component")) else "no metadata.component" end),
     (if (.components | type) == "array" and (.components | length) > 0 then (.components | to_entries[] | .key as $i | .value | comp_errs("components[\($i)] \(."bom-ref" // .name // "?")")) else "components missing or empty" end),
-    ([.metadata.component."bom-ref", (.components // [])[]."bom-ref"] | map(select(type == "string")) | group_by(.) | map(select(length > 1)[0]) | .[] | "duplicate bom-ref \(.)"),
-    ([.metadata.component."bom-ref", (.components // [])[]."bom-ref"] | map(select(type == "string"))) as $refs
+    ([.metadata.component."bom-ref", (allcomps | ."bom-ref")] | map(select(type == "string")) | group_by(.) | map(select(length > 1)[0]) | .[] | "duplicate bom-ref \(.)"),
+    ([.metadata.component."bom-ref", (allcomps | ."bom-ref")] | map(select(type == "string"))) as $refs
     | ((.dependencies // []) | if type == "array" then . else [] end) as $d
     | (($d | map(.ref) | group_by(.) | map(select(length > 1)[0]) | .[] | "duplicate dependencies ref \(.)"),
        ($d[] | .ref as $r

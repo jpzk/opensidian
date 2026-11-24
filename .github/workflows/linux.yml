@@ -33,8 +33,9 @@
 #
 # Hardening (same rules as supply-chain.yml / macos.yml):
 #   - pull_request only, NEVER pull_request_target: a fork PR runs with a read-only GITHUB_TOKEN and
-#     no secrets (GitHub's default for fork PRs), and on top of that every job here is contents: read.
-#   - top-level permissions contents: read; no job widens it; no secrets referenced.
+#     no secrets (GitHub's default for fork PRs), and on top of that every job here is read-only.
+#   - top-level permissions contents: read; the only widening is actions: read (read-only) on the
+#     supply-chain call, which sbom-crosscheck needs (see that job); no secrets referenced.
 #   - checkout never persists the token (persist-credentials: false).
 #   - every action pinned to a full commit SHA (the pins release.yml / supply-chain.yml already use).
 #   - NO caches (no actions/cache, no rust-cache, no setup-* cache): nothing a PR run writes can be
@@ -121,8 +122,12 @@ jobs:
 
   supply-chain:
     name: supply chain
+    # a called workflow only gets what the caller grants: supply-chain.yml's sbom-crosscheck job (#299)
+    # asks for actions: read (sbom-scan-android artifact) -> without it the run is a startup_failure
+    # (same grant as release.yml). Read-only; nothing here can write.
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/supply-chain.yml
     with:
       ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || '' }}
