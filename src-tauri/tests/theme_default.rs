@@ -204,3 +204,35 @@ fn h340_negative_light_block_untouched() {
     assert_eq!(decl(&l, "--background-secondary-alt").as_deref(), Some("var(--color-base-05, #e5e5e5)"), "light is not part of #340");
     assert_eq!(decl(&l, "--background-modifier-border").as_deref(), Some("var(--color-base-30, #e4e4e4)"));
 }
+
+// #343 (Solarized lp.tag.btrr stock 0px, ours 28px on fix 8a05186): stock's live-preview tag is two spans,
+// .cm-hashtag-begin ('#') + .cm-hashtag-end (name), and themes square/style THOSE. Ours drew the pill on one
+// a.tag the theme selectors never match.
+fn editor_js() -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/editor.js");
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+#[test]
+fn h343_live_preview_tag_is_split_into_stock_hashtag_spans() {
+    let j = editor_js();
+    assert!(j.contains(r#"Ed.el("span", "cm-hashtag cm-hashtag-begin")"#), "lp tag '#' must be .cm-hashtag-begin (#343)");
+    assert!(j.contains(r#"Ed.el("span", "cm-hashtag cm-hashtag-end")"#), "lp tag name must be .cm-hashtag-end (#343)");
+    let c = style();
+    let e = rule(&c, ":where(.lp a.tag) > .cm-hashtag-end");
+    assert_eq!(decl(&e, "border-radius").as_deref(), Some("0 var(--tag-radius, 2em) var(--tag-radius, 2em) 0"), "end span carries the end corners");
+    let b = rule(&c, ":where(.lp a.tag) > .cm-hashtag-begin");
+    assert_eq!(decl(&b, "border-radius").as_deref(), Some("var(--tag-radius, 2em) 0 0 var(--tag-radius, 2em)"), "begin span carries the start corners");
+    let w = rule(&c, ".lp a.tag, .lp a.tag:hover");
+    assert_eq!(decl(&w, "background").as_deref(), Some("none"), "the wrapper must not paint a second pill");
+    assert_eq!(decl(&w, "border-radius").as_deref(), Some("0"));
+}
+
+#[test]
+fn h343_negative_hashtag_pill_rules_stay_below_theme_specificity() {
+    let c = style();
+    // a theme's `.cm-hashtag.cm-hashtag-end {border-radius: unset}` (0,2,0) must beat ours, as it does in stock
+    for bad in [".lp a.tag > .cm-hashtag", ".lp .tag > .cm-hashtag", ".lp .cm-hashtag", "a.tag > .cm-hashtag"] {
+        assert!(!c.contains(&format!("\n{bad}")), "`{bad}` out-specifies theme .cm-hashtag rules (#343)");
+    }
+}

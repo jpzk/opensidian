@@ -238,7 +238,11 @@ const Ed = {
         flush();
         const a = Ed.el("a", "tag");
         a.href = "#"; a.dataset.tag = s.slice(tg[0] + 1, tg[1]);
-        a.appendChild(Ed.t(s.slice(tg[0], tg[1])));
+        // stock live preview splits a tag into .cm-hashtag-begin ('#') + .cm-hashtag-end (name):
+        // themes style those classes (Solarized squares them), so the pill box lives on them
+        const hb = Ed.el("span", "cm-hashtag cm-hashtag-begin"), he = Ed.el("span", "cm-hashtag cm-hashtag-end");
+        hb.appendChild(Ed.t(s.slice(tg[0], tg[0] + 1))); a.appendChild(hb);
+        if (tg[1] > tg[0] + 1) { he.appendChild(Ed.t(s.slice(tg[0] + 1, tg[1]))); a.appendChild(he); }
         a.addEventListener("mousedown", e => {
           e.preventDefault(); e.stopPropagation();
           if (typeof tagSearch === "function") tagSearch(a.dataset.tag);

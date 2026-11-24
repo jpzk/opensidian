@@ -1496,6 +1496,14 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp a.wiki:hover { text-decoration-line: var(--link-decoration-hover, var(--link-decoration, none)) }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
 .lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+/* stock live preview draws the tag pill on .cm-hashtag-begin ('#', start corners) + .cm-hashtag-end (name, end
+   corners), the spans Ed.inline now emits; the .lp a.tag wrapper only keeps text styling. :where() keeps these at
+   class specificity so a theme's .cm-hashtag.cm-hashtag-end rule (Solarized: border-radius unset) wins as in stock. */
+.lp a.tag, .lp a.tag:hover { background: none; border-width: 0; border-radius: 0; padding: 0 }
+:where(.lp a.tag) > .cm-hashtag { background: var(--tag-bg); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); padding-top: var(--tag-padding-y, 0); padding-bottom: var(--tag-padding-y, 0) }
+:where(.lp a.tag) > .cm-hashtag-begin { border-radius: var(--tag-radius, 2em) 0 0 var(--tag-radius, 2em); border-right-width: 0; padding-left: var(--tag-padding-x, 7px) }
+:where(.lp a.tag) > .cm-hashtag-end { border-radius: 0 var(--tag-radius, 2em) var(--tag-radius, 2em) 0; border-left-width: 0; padding-right: var(--tag-padding-x, 7px) }
+:where(.lp a.tag:hover) > .cm-hashtag { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)) }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
