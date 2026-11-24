@@ -85,6 +85,10 @@ const Ed = {
     const ind = s.match(/^[ \t]*/)[0], t = s.slice(ind.length);
     const h = /^(#{1,6}) /.exec(t);
     if (h && !ind) {
+      // #319: a top-level heading LINE carries stock 1.13.7's line classes (DOM: "cm-line HyperMD-header
+      // HyperMD-header-N"), so theme rules keyed on them (Minimal .cm-s-obsidian .cm-line.HyperMD-header) reach it.
+      // d > 0 (a heading inside a quote): `row` is the quote box, not the line -> no line class.
+      if (d === 0) row.classList.add("HyperMD-header", "HyperMD-header-" + h[1].length);
       const box = Ed.el("span", "h h" + h[1].length);
       const m0 = Ed.mk(h[1]), m1 = Ed.mk(" ");
       box.appendChild(m0);
@@ -1758,6 +1762,7 @@ const Ed = {
   // theme DOM selfTest case: a throwaway, invisible live-preview CM6 view; reads back the line classes stock 1.13.7's
   // DOM carries and theme selectors key on. "" = all hold, else a short token-safe reason.
   //   #333 the caret line, and ONLY it, is .cm-line.cm-active (stock: "cm-line cm-active"); it follows the caret
+  //   #319 the editor root is .cm-s-obsidian; a top-level "# " line, and only it, is .HyperMD-header + .HyperMD-header-N
   themeDom() {
     if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
     const w = Ed.el("div", "lp");
@@ -1771,6 +1776,13 @@ const Ed = {
     const act = () => lines().map((e, i) => e.classList.contains("cm-active") ? i : -1).filter(i => i >= 0).join(".") || "none";
     try {
       if (lines().length !== 4) return "rows" + lines().length;
+      // #319: the editor root is .cm-s-obsidian; ONLY the heading line is .HyperMD-header + .HyperMD-header-1
+      if (!cm.dom.classList.contains(Ed.EDITOR_ROOT)) return "root";
+      const hd = lines().map((e, i) => e.classList.contains("HyperMD-header") ? i + ":" + [...e.classList].filter(c => /^HyperMD-header-\d$/.test(c)).join("") : "").filter(Boolean).join(".");
+      if (hd !== "2:HyperMD-header-1") return "hdr:" + (hd || "none");
+      for (const [s, n] of [["###### six", "6"]]) if (!Ed.row(g, s, 0).classList.contains("HyperMD-header-" + n)) return "hdr" + n;
+      for (const s of ["> # quoted", "  # indented", "#nospace", "####### seven", "plain"])   // negatives: not a heading LINE
+        if (/HyperMD-header/.test(Ed.row(g, s, 0).className)) return "hdrneg";
       cm.dispatch({ selection: { anchor: 8 } });                    // "be|ta" -> line 1
       if (act() !== "1") return "act1:" + act();
       if (!lines()[1].classList.contains("cur")) return "cur1";
@@ -2948,6 +2960,8 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
 Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
 // the caret line's line-decoration classes: `cur` (ours: geometry/census) + `cm-active` (#333, stock's class)
 Ed.ACTIVE_LINE = "cur cm-active";
+// #319: the class stock carries on the editor root, the ancestor theme line selectors key on
+Ed.EDITOR_ROOT = "cm-s-obsidian";
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -3121,7 +3135,9 @@ Ed.lpExt = function (v, G) {
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
+  // #319: the editor root is .cm-s-obsidian as in stock (an ancestor of every .cm-line), which theme line rules
+  // (Minimal .cm-s-obsidian .cm-line.HyperMD-header) require; our own CSS never styles it (default look unchanged)
+  return [EditorView.editorAttributes.of({ class: Ed.EDITOR_ROOT }), plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
           Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
           Ed.cbHl ? Ed.cbHl(v, G) : [],   // #186: fence bodies coloured by Prism (ui/codehl.js)
           Ed.mathField ? Ed.mathField(v, G, bust) : []];   // #185: $..$ / $$..$$ typeset (ui/mathview.js)

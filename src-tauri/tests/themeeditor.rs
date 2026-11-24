@@ -51,3 +51,32 @@ fn i333_negative_our_css_never_paints_cm_active() {
         assert!(!read(f).contains("disable-active-line-highlight"), "{f}: the body class belongs to the theme / its settings");
     }
 }
+
+// ---------- #319: heading lines carry stock's HyperMD-header line classes ----------
+#[test]
+fn i319_heading_line_carries_hypermd_header_classes() {
+    let ed = read("ui/editor.js");
+    // the block renderer tags the LINE (d === 0) of a top-level ATX heading, with its level
+    assert!(ed.contains("if (d === 0) row.classList.add(\"HyperMD-header\", \"HyperMD-header-\" + h[1].length);"),
+        "Ed.block must put HyperMD-header + HyperMD-header-N on a top-level heading line");
+    // the editor root carries stock's .cm-s-obsidian (the ancestor of Minimal's .cm-line.HyperMD-header rule)
+    assert!(ed.contains("Ed.EDITOR_ROOT = \"cm-s-obsidian\";"), "editor root class must be cm-s-obsidian");
+    assert!(ed.contains("return [EditorView.editorAttributes.of({ class: Ed.EDITOR_ROOT }), plugin,"),
+        "lpExt must put Ed.EDITOR_ROOT on the editor root");
+    // the in-app DOM case covers it (positive + negatives) -> [edt:]
+    assert!(ed.contains("if (hd !== \"2:HyperMD-header-1\") return \"hdr:\""), "themeDom asserts only the heading line is HyperMD-header-1");
+    assert!(ed.contains("[\"> # quoted\", \"  # indented\", \"#nospace\", \"####### seven\", \"plain\"]"),
+        "themeDom negatives: quoted / indented / no-space / 7 hashes / plain are not heading lines");
+}
+
+#[test]
+fn i319_negative_our_css_never_styles_hypermd_or_root() {
+    // default look unchanged: the classes exist for THEME selectors; our own sheets must not key on them
+    for f in CSS {
+        let c = css_rules(f);
+        assert!(!c.contains("HyperMD-header"), "{f}: our CSS must not style .HyperMD-header");
+        assert!(!c.contains("cm-s-obsidian"), "{f}: our CSS must not style .cm-s-obsidian");
+    }
+    // the heading class is added in ONE place (no second writer drifting from the parse)
+    assert_eq!(read("ui/editor.js").matches("classList.add(\"HyperMD-header\"").count(), 1, "one writer of HyperMD-header in editor.js");
+}
