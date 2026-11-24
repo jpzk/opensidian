@@ -37,6 +37,7 @@ use opensidian_lib::outline;
 mod pdf;
 mod plugins;
 mod plugin_store;
+mod plugin_pins; // #251: plugin code pinned by sha256 (main.js, manifest.json, styles.css) in ~/.opensidian.json, enforced at load
 mod pasteimg;
 mod qscreate;
 mod perf;
@@ -2264,12 +2265,17 @@ fn cfg_value() -> serde_json::Value {
    rename. A call site names the key it changes, never a whole Value it read
    earlier (that read is stale by the time another window has written). */
 fn cfg_update(ops: &[cfgstore::Op]) {
-    let r = match spawner::client() {
+    if let Err(e) = cfg_try_update(ops) {
+        eprintln!("config write failed: {e}");
+    }
+}
+
+/// the same write, the error returned: for a caller that must not go on when it failed
+/// (#288 review: uninstall refuses when the pin could not be forgotten)
+pub(crate) fn cfg_try_update(ops: &[cfgstore::Op]) -> Result<(), String> {
+    match spawner::client() {
         Some(c) => c.cfg(ops), // confined: the unconfined spawner applies the Ops
         None => cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ()),
-    };
-    if let Err(e) = r {
-        eprintln!("config write failed: {e}");
     }
 }
 
@@ -4890,7 +4896,81 @@ fn plugins_state_of(root: &Path) -> serde_json::Value {
         "lockdown": security::trust_blocked(),
         "enabled": plugins::enabled_ids(root),
         "installed": plugins::installed(root),
+        // #251: per installed plugin "ok" | "new" | "changed" | "damaged" | "unreadable" (plugin_pins::Status)
+        "pins": pins_state_of(root),
     })
+}
+
+/// #251: {status: {id: word}, changed: {id: [file]}, error: null | text} — re-measured from disk
+fn pins_state_of(root: &Path) -> serde_json::Value {
+    let cfg = cfg_value();
+    let vid = plugins::trust_key(root).id;
+    let mut status = serde_json::Map::new();
+    let mut changed = serde_json::Map::new();
+    for p in plugins::installed(root) {
+        let Some(id) = p["id"].as_str() else { continue };
+        let s = plugin_pins::status(&cfg, vid.as_deref(), root, id);
+        if let plugin_pins::Status::Changed(d) = &s {
+            changed.insert(id.into(), serde_json::json!(d));
+        }
+        status.insert(id.into(), serde_json::json!(s.word()));
+    }
+    let error = match (plugin_pins::table(&cfg, vid.as_deref()), &vid) {
+        (Err(e), _) => serde_json::json!(e),
+        (Ok(_), None) => serde_json::json!(plugin_pins::NO_IDENTITY),
+        _ => serde_json::Value::Null,
+    };
+    serde_json::json!({ "status": status, "changed": changed, "error": error })
+}
+
+/* #251 (F-40): the ONLY page-reachable way to pin a plugin found on disk. The page names ids;
+   Rust keeps those that are installed in this vault and not matching a pin now (new / changed /
+   damaged store), measures their files, and asks ONE native question listing all of them (on the
+   first start after the upgrade that is every enabled plugin of a trusted vault, in one dialog).
+   Allow = exactly the measured pins are written (cfgstore Op::PluginPinSet); a file that changes
+   after the measurement does not match and stays refused. Cancel / any failure = nothing written.
+   Restricted mode and lockdown: refused before anything is asked (no plugin runs there anyway). */
+#[tauri::command]
+async fn plugins_pin_ack(win: tauri::Window, v: State<'_, Vault>, ids: Vec<String>) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("restricted mode is on: no plugin code runs in this vault, nothing to allow".into());
+    }
+    let slot = consent::admit()?;
+    let tk = plugins::trust_key(&root);
+    let vid = tk.id.clone().ok_or(plugins::NO_IDENTITY)?;
+    let cfg = cfg_value();
+    let damaged = plugin_pins::table(&cfg, Some(&vid)).is_err();
+    let installed: Vec<String> = plugins::installed(&root).iter().filter_map(|p| p["id"].as_str().map(String::from)).collect();
+    let mut items: Vec<plugin_pins::AckItem> = Vec::new();
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    for id in ids {
+        if items.len() >= plugin_pins::MAX_ACK || !installed.contains(&id) || items.iter().any(|i| i.id == id) {
+            continue;
+        }
+        let Ok(f) = plugin_pins::read_files(&root, &id) else { continue };
+        let was = plugin_pins::status_of(&cfg, Some(&vid), &id, &f);
+        if was == plugin_pins::Status::Ok {
+            continue;
+        }
+        let old_version = plugin_pins::pin(&cfg, Some(&vid), &id).ok().flatten().map(|p| p.version);
+        items.push(plugin_pins::AckItem { pin: plugin_pins::pin_of(&f, "ack", at), id, was, old_version });
+    }
+    if items.is_empty() {
+        return Ok(plugins_state_of(&root));
+    }
+    let text = plugin_pins::ack_text(&tk.path, &items, damaged);
+    if !consent::ask(slot, win, consent::Kind::PluginAck, consent::plugin_ack_question(text)).await? {
+        eprintln!("[plugin-pins] {} plugin(s) not allowed (cancelled), nothing written", items.len());
+        return Ok(plugins_state_of(&root));
+    }
+    let ops: Vec<cfgstore::Op> =
+        items.iter().map(|i| cfgstore::Op::PluginPinSet { vault: vid.clone(), plugin: i.id.clone(), pin: i.pin.clone() }).collect();
+    cfg_update(&ops);
+    for i in &items {
+        eprintln!("[plugin-pins] allowed {} {} (main.js {})", i.id, i.pin.version, &i.pin.main[..16]);
+    }
+    Ok(plugins_state_of(&root))
 }
 
 /// {trusted, enabled:[id], installed:[{id, manifest, hasMain, hasStyles}]}
@@ -5003,7 +5083,9 @@ fn plugin_io(
         "load" => plugins::read_data(&root, &id),
         "save" => plugins::write_data(&root, &id, data.as_ref().unwrap_or(&serde_json::Value::Null))
             .map(|_| serde_json::Value::Null),
-        "styles" => plugins::read_styles(&root, &id).map(|s| s.map_or(serde_json::Value::Null, serde_json::Value::String)),
+        // #251: a plugin's css is applied only while the plugin matches its pin
+        "styles" => plugins::read_styles_pinned(&root, &id, &cfg_value(), plugins::trust_key(&root).id.as_deref())
+            .map(|s| s.map_or(serde_json::Value::Null, serde_json::Value::String)),
         _ => Err(format!("plugin_io: unknown op {op:?}")),
     })
 }
@@ -8672,9 +8754,12 @@ fn main() {
         .register_uri_scheme_protocol(plugins::SCHEME, |ctx, req| {
             use tauri::Manager;
             let root = cur_vault(&ctx.app_handle().state::<Vault>());
-            let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
+            // #251: ONE config read for the trust flag and the pins; the folder identity keys the pins
+            let cfg = cfg_value();
+            let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg, r));
+            let vid = root.as_deref().and_then(|r| plugins::trust_key(r).id);
             let b = tauri::http::Response::builder();
-            let served = plugins::serve(root.as_deref(), req.uri().path(), trusted);
+            let served = plugins::serve_pinned(root.as_deref(), req.uri().path(), trusted, &cfg, vid.as_deref());
             // #144 toggles 8 + 9: community code is about to enter this page's realm — tainted
             // until the next HTML page (page_csp clears it); set BEFORE the body leaves
             if matches!(served, plugins::Served::Js(_)) && !security::REALM_PLUGIN.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -8704,7 +8789,7 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, security_dev_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugins_pin_ack, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, security_dev_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,

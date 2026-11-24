@@ -60,6 +60,8 @@ pub const MIC_TITLE: &str = "opensidian: record audio?";
 pub const DEVICE_TITLE: &str = "opensidian: allow device access?";
 /// #280: the confirm before "Insert attachment" imports a path the page typed
 pub const ATTACH_TITLE: &str = "opensidian: attach file?";
+/// #251: the acknowledgement of plugin code that is new in a trusted vault or changed on disk
+pub const PLUGIN_ACK_TITLE: &str = "opensidian: allow plugin code?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -78,6 +80,8 @@ pub enum Kind {
     Device(&'static str),
     /// #280: attach_typed (R31.7 "Insert attachment": a path named by the page, not a drop)
     Attach,
+    /// #251: plugins_pin_ack (plugin code new or changed on disk)
+    PluginAck,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -412,6 +416,7 @@ pub fn device_question(field: &str) -> Option<Question> {
     Some(Question { head: head.into(), log: text.clone(), text, remember: None, always: false })
 }
 const ATTACH_HEAD: &str = "Attach this file from outside the vault?";
+const PLUGIN_ACK_HEAD: &str = "Allow this plugin code to run? Read all of it (scroll) before you answer.";
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
@@ -467,6 +472,12 @@ pub fn attach_text(path: &str, note: &str) -> String {
 pub fn attach_question(path: &str, note: &str) -> Question {
     let text = attach_text(path, note);
     Question { head: ATTACH_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
+/// #251: `text` = plugin_pins::ack_text (built by plugins_pin_ack from what Rust measured; ids and
+/// versions Debug-quoted). Cancel / Allow only, Cancel is the default.
+pub fn plugin_ack_question(text: String) -> Question {
+    Question { head: PLUGIN_ACK_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
@@ -582,6 +593,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
         Kind::Mic => "mic",
         Kind::Device(_) => "device",
         Kind::Attach => "attach",
+        Kind::PluginAck => "plugin-ack",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -621,7 +633,7 @@ pub struct Presentation {
 pub fn presentation(kind: Kind) -> Presentation {
     match kind {
         Kind::Spawn => Presentation { modal: false, take_focus: false },
-        Kind::Trust | Kind::Security | Kind::OfflineOpen | Kind::Mic | Kind::Device(_) | Kind::Attach => {
+        Kind::Trust | Kind::Security | Kind::OfflineOpen | Kind::Mic | Kind::Device(_) | Kind::Attach | Kind::PluginAck => {
             Presentation { modal: true, take_focus: true }
         }
     }
@@ -688,6 +700,7 @@ fn present(parent: Option<gtk::Window>, kind: Kind, q: &Question, on: impl FnOnc
         Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
         Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
         Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
+        Kind::PluginAck => (PLUGIN_ACK_TITLE, "_Cancel", "_Allow"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
@@ -795,6 +808,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
         Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
         Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
+        Kind::PluginAck => (PLUGIN_ACK_TITLE, "_Cancel", "_Allow"),
     };
     // GTK mnemonics ("_Trust") have no meaning in AppKit
     let plain = |s: &str| s.replace('_', "");
@@ -839,7 +853,7 @@ mod tests {
 
     #[test]
     fn the_questions_that_answer_a_user_action_stay_modal_and_focused() {
-        for k in [Kind::Trust, Kind::Security, Kind::OfflineOpen, Kind::Mic, Kind::Device("camera"), Kind::Attach] {
+        for k in [Kind::Trust, Kind::Security, Kind::OfflineOpen, Kind::Mic, Kind::Device("camera"), Kind::Attach, Kind::PluginAck] {
             assert_eq!(presentation(k), Presentation { modal: true, take_focus: true }, "{k:?}");
         }
         assert_ne!(presentation(Kind::Spawn), presentation(Kind::Trust));

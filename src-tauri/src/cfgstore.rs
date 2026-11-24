@@ -35,6 +35,7 @@ use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// MRU cap of the recent-vaults list
@@ -78,6 +79,12 @@ pub enum Op {
     /// security::dev_validate (and, for a weakening change, the native confirm); applied here only
     /// for a known row and a valid value, so even a forged Op cannot write anything else.
     SecurityDev(String, String),
+    /// #251: pin what the user allowed for one plugin of one vault (plugin_pins::apply_set). Sent
+    /// ONLY by store_install (the bytes it fetched and wrote) and by plugins_pin_ack after the
+    /// Allow answer of its native dialog (the bytes it measured and showed).
+    PluginPinSet { vault: String, plugin: String, pin: crate::plugin_pins::Pin },
+    /// #251: forget one plugin's pin (store_uninstall)
+    PluginPinDrop { vault: String, plugin: String },
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -96,11 +103,13 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
         match op {
             // #74: the grants are written by their own Ops only — a generic write naming the
             // key (Set / SetIn / MergeIn / InsertIn) can neither add nor wipe one
-            Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::spawn_allow::KEY || k == crate::security::KEY => {
+            Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::spawn_allow::KEY || k == crate::security::KEY || k == crate::plugin_pins::KEY => {
                 eprintln!("[cfg] refused a generic write of {k}");
             }
             Op::SpawnAllowAdd(g) => crate::spawn_allow::apply_add(v, g),
             Op::SpawnAllowRevoke { vault, plugin, program } => crate::spawn_allow::apply_revoke(v, vault, plugin, program),
+            Op::PluginPinSet { vault, plugin, pin } => crate::plugin_pins::apply_set(v, vault, plugin, pin),
+            Op::PluginPinDrop { vault, plugin } => crate::plugin_pins::apply_drop(v, vault, plugin),
             Op::SecuritySet(f, on) => match crate::security::validate(f, *on) {
                 Ok((f, on)) => {
                     if !v[crate::security::KEY].is_object() {
@@ -211,7 +220,9 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let name = t.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
     let r = (|| {
-        let mut f = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
+        // #251: the config holds the trust flags, spawn grants and plugin pins: owner-only (0600)
+        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
@@ -225,7 +236,13 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_in_place(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut f = OpenOptions::new().write(true).create(true).truncate(true).open(t)?;
+    let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(t)?;
+    // #288 review: an existing 0644 config would keep its mode here; trust flags, spawn
+    // grants and plugin pins are owner-only on this path too (best effort: a refused
+    // chmod must not lose the write)
+    if let Err(e) = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600)) {
+        eprintln!("[cfg] chmod 0600 {}: {e}", t.display());
+    }
     f.write_all(bytes)?;
     f.sync_all()
 }
@@ -538,5 +555,61 @@ mod tests {
         assert_eq!(v, before, "an invalid row / value or a foreign op changed a Device access row");
         apply(&mut v, &[Op::SecurityDev("pointerLock".into(), "off".into())]);
         assert_eq!(v[k]["pointerLock"], "off");
+    }
+
+    fn pin251(c: char) -> crate::plugin_pins::Pin {
+        let h: String = std::iter::repeat_n(c, 64).collect();
+        crate::plugin_pins::Pin { main: h.clone(), manifest: h, styles: None, version: "1.0".into(), by: "ack".into(), at: 1 }
+    }
+
+    /// #251: a pin written through its Op persists (the next start reads only the file), the file is
+    /// owner-only (0600), and the generic Ops can neither create, replace nor wipe the pins
+    #[test]
+    fn cfgstore_plugin_pins_only_through_their_ops_and_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("pins251");
+        let (cfg, locks) = (d.join(".opensidian.json"), d.join("locks"));
+        fs::write(&cfg, r#"{"theme":"dark"}"#).unwrap();
+        fs::set_permissions(&cfg, fs::Permissions::from_mode(0o644)).unwrap();
+        let set = Op::PluginPinSet { vault: "1:2".into(), plugin: "good".into(), pin: pin251('a') };
+        assert_eq!(update_in(&locks, &cfg, &[set]), Ok(Wrote::Renamed));
+        assert_eq!(fs::metadata(&cfg).unwrap().permissions().mode() & 0o777, 0o600, "the config is not owner-only");
+        let v: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(crate::plugin_pins::pin(&v, Some("1:2"), "good"), Ok(Some(pin251('a'))), "{v}");
+        assert_eq!(v["theme"], "dark");
+        let key = crate::plugin_pins::KEY;
+        let forged = serde_json::json!({"1:2": {"good": pin251('b'), "evil": pin251('c')}});
+        let mut w = v.clone();
+        apply(&mut w, &[Op::Set(key.into(), forged.clone()), Op::SetIn(key.into(), "1:2".into(), forged["1:2"].clone()), Op::InsertIn(key.into(), "9:9".into(), forged["1:2"].clone()), Op::MergeIn(key.into(), "1:2".into(), forged["1:2"].clone())]);
+        assert_eq!(w, v, "a generic op changed the pins");
+        let mut e = serde_json::json!({});
+        apply(&mut e, &[Op::Set(key.into(), forged)]);
+        assert!(e.get(key).is_none(), "a generic op created pins: {e}");
+        update_in(&locks, &cfg, &[Op::PluginPinDrop { vault: "1:2".into(), plugin: "good".into() }]).unwrap();
+        assert_eq!(crate::plugin_pins::pin(&read_value_in(&locks, &cfg), Some("1:2"), "good"), Ok(None));
+    }
+
+    /// #288 review (CodeAnt): the in-place fallback (create/rename refused) leaves the config
+    /// owner-only as well, even when the file existed with 0644
+    #[test]
+    fn cfgstore_in_place_fallback_is_owner_only_too() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tmp("inplace288");
+        let (dir, locks) = (d.join("ro"), d.join("locks"));
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join(".opensidian.json");
+        fs::write(&cfg, r#"{"theme":"dark"}"#).unwrap();
+        fs::set_permissions(&cfg, fs::Permissions::from_mode(0o644)).unwrap();
+        // the directory refuses the temp file: the rename path fails with EACCES
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let w = update_in(&locks, &cfg, &[Op::Set("k".into(), serde_json::json!(1))]);
+        let mode = fs::metadata(&cfg).unwrap().permissions().mode() & 0o777;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("cfgstore_in_place_fallback_is_owner_only_too: wrote {w:?}");
+        assert!(w.is_ok(), "{w:?}");
+        assert_eq!(mode, 0o600, "the config is not owner-only after {w:?}");
+        let v: Value = serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!((v["theme"].as_str(), v["k"].as_i64()), (Some("dark"), Some(1)));
+        let _ = fs::remove_dir_all(&d);
     }
 }
