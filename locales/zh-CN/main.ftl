@@ -355,6 +355,7 @@ menu-task-list = 任务列表
 menu-undo = 撤销
 menu-unlink-tab = 取消关联标签页
 menu-zoom-to-selection = 缩放到选中内容
+menu-back-to-previous-view = 返回上一个视图
 menu-as-obsidian-url = 作为 Obsidian URL
 menu-from-system-root = 从系统根目录
 menu-from-vault-folder = 从仓库文件夹

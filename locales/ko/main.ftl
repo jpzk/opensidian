@@ -355,6 +355,7 @@ menu-task-list = 할 일 목록
 menu-undo = 실행 취소
 menu-unlink-tab = 탭 연결 해제
 menu-zoom-to-selection = 선택 영역으로 확대
+menu-back-to-previous-view = 이전 보기로 돌아가기
 menu-as-obsidian-url = Obsidian URL로
 menu-from-system-root = 시스템 루트 기준
 menu-from-vault-folder = 보관함 폴더 기준

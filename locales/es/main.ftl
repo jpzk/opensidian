@@ -355,6 +355,7 @@ menu-task-list = Lista de tareas
 menu-undo = Deshacer
 menu-unlink-tab = Desvincular pestaña
 menu-zoom-to-selection = Ampliar a la selección
+menu-back-to-previous-view = Volver a la vista anterior
 menu-as-obsidian-url = como URL de Obsidian
 menu-from-system-root = desde la raíz del sistema
 menu-from-vault-folder = desde la carpeta de la bóveda

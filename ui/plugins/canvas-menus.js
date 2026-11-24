@@ -225,10 +225,13 @@
                       Remove background, Background style)
        several Zoom to selection, Create group | Cut, Copy, Paste | Delete
      Rows the app has no machinery for (one window, no file manager, no merge) are shown
-     disabled with the reason as their tooltip. */
+     disabled with the reason as their tooltip.
+     After this menu's "Zoom to selection", "Back to previous view" follows it in every card
+     menu and opens the board menu: it restores the zoom and pan from before, once. */
   const SVG_NS = "http://www.w3.org/2000/svg";
   const PATHS = {
     zoom: "M7 2.5a4.5 4.5 0 1 0 0 9a4.5 4.5 0 1 0 0-9zM10.3 10.3L14 14",
+    back: "M13.5 8h-11M6 4.5L2.5 8L6 11.5",
     edit: "M10.5 2.5l3 3L6 13H3v-3z",
     page: "M4 1.5h5l3 3v10H4zM9 1.5v3h3",
     trash: "M2.5 4h11M6 4V2.5h4V4M4 4l.8 10h6.4L12 4",
@@ -263,7 +266,7 @@
   const ICON_OF = {
     "Add card": "card", "Add note from vault": "note", "Add media from vault": "media", "Add web page": "web",
     "Create group": "group", "Undo": "undo", "Paste": "paste", "Snap to grid": "grid", "Snap to objects": "objects",
-    "Read-only": "lock", "Zoom to selection": "zoom", "Edit": "edit", "Convert to file": "page", "Remove": "trash",
+    "Read-only": "lock", "Zoom to selection": "zoom", "Back to previous view": "back", "Edit": "edit", "Convert to file": "page", "Remove": "trash",
     "Delete": "trash", "Swap file": "swap", "Narrow to heading": "heading", "Narrow to block": "block",
     "Open in new tab": "tab", "Open in new window": "win", "Rename": "rename", "Move file to": "move",
     "Bookmark": "mark", "Remove bookmark": "mark", "Merge entire file with": "merge", "Open in default app": "ext",
@@ -297,8 +300,18 @@
   const H = () => window.CanvasHistory || null;
   function zoomSel(c) {
     const nav = window.CanvasNav, s = window.CanvasSelect;
+    c._zoomBack = { zoom: c.zoom, tx: c.tx, ty: c.ty };   // the view "Back to previous view" returns to
     if (nav && typeof nav.zoomToSelection === "function") nav.zoomToSelection(c);
     else if (s && typeof s.zoomToSelection === "function") s.zoomToSelection(c);
+    later(c);
+  }
+  // the inverse of the menu's "Zoom to selection": the view (zoom and pan) it left, once
+  function backView(c) {
+    const v = c._zoomBack;
+    if (!v) return;
+    c._zoomBack = null;
+    c.zoom = v.zoom; c.tx = v.tx; c.ty = v.ty;
+    c.applyTransform();
     later(c);
   }
   function setOpt(c, k) {
@@ -466,7 +479,8 @@
       });
     });
     const sep = () => { const l = m.items[m.items.length - 1]; if (l && titleOf(l) !== null) m.addSeparator(); };
-    const zoom = () => item(I18N.m("Zoom to selection"), () => zoomSel(c));
+    const back = () => { if (c._zoomBack) item(I18N.m("Back to previous view"), () => backView(c)); };
+    const zoom = () => { item(I18N.m("Zoom to selection"), () => zoomSel(c)); back(); };
     const remove = (label) => { sep(); item(label || "Remove", () => c.deleteSelection()); };
     let ev = "canvas:menu", arg = c, fix = null;
     if (n) {
@@ -527,7 +541,7 @@
             const at = l => m.items.findIndex(i => isRow(i, l));
             const take = l => { const i = m.items.findIndex((x, j) => j >= base && isRow(x, l)); return i >= 0 ? m.items.splice(i, 1)[0] : null; };
             const chg = take("Change URL"), cpy = take("Copy URL");
-            if (chg) m.items.splice(at("Zoom to selection") + 1, 0, chg);
+            if (chg) m.items.splice(Math.max(at("Zoom to selection"), at("Back to previous view")) + 1, 0, chg);
             if (cpy) m.items.splice(at("Open external link") + 1, 0, cpy);
           };
         } else if (d.type === "group") {
@@ -551,6 +565,7 @@
     } else {
       const p = c.toCanvas(e.clientX, e.clientY), o = c.options || {}, st = h && typeof h.state === "function" ? h.state(c) : null;
       const why = lock ? "the board is read-only" : "";
+      if (c._zoomBack) { back(); sep(); }
       item(I18N.m("Add card"), () => c.createTextNode({ pos: p, focus: true }), { off: lock, why });
       item(I18N.m("Add note from vault"), () => pickNote(c, path => addFile(c, path, p)), { off: lock, why });
       item(I18N.m("Add media from vault"), () => pickMedia(c, path => addFile(c, path, p)), { off: lock, why });
