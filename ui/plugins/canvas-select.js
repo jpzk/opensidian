@@ -21,7 +21,9 @@
        Shift on an unselected card adds it, Shift-click on a selected one takes it out;
        Alt duplicates the selection and moves the copies; Shift locks the move to one axis;
        a moved group carries every card that lies wholly inside it
-     on the empty board       -> a selection rectangle (cards wholly inside it); Shift adds
+     on the empty board       -> pan, as its hand cursor and the help say (a click without
+       a drag clears the selection); Shift -> a selection rectangle (cards wholly inside
+       it), added to the selection
      middle button, or Space held at the press -> pan
    A card dragged to within PANZ px of the board pane's edge (or past it) pans the view
    that way while it is held there, faster the closer it is, and the card keeps riding
@@ -78,6 +80,7 @@
     s.textContent = [
       ".canvas-selection { position: absolute; box-sizing: border-box; pointer-events: none; border: 1px dashed var(--interactive-accent, #7f6df2); border-radius: 4px }",
       ".canvas-selection[hidden], .canvas-selection-toolbar[hidden], .canvas-selection-palette[hidden], .canvas-selection-marquee[hidden] { display: none }",
+      ".canvas-wrapper.is-board-panning { cursor: grabbing }",
       ".canvas-selection-marquee { position: absolute; box-sizing: border-box; pointer-events: none; z-index: 3; border: 1px solid var(--interactive-accent, #7f6df2); background: color-mix(in srgb, var(--interactive-accent, #7f6df2) 15%, transparent) }",
       ".canvas-selection-toolbar { position: absolute; z-index: 3; display: flex; gap: 2px; padding: 3px; border-radius: 6px; background: var(--background-secondary, #262626); border: 1px solid var(--background-modifier-border, #444); box-shadow: 0 2px 8px rgba(0,0,0,.3) }",
       ".canvas-selection-toolbar > button { min-width: 28px; height: 26px; padding: 0 6px; cursor: pointer }",
@@ -268,9 +271,12 @@
     const base = { sel: true, x: e.clientX, y: e.clientY, moved: false, tx: c.tx, ty: c.ty, node: n };
     if (e.button === 1 || (e.button === 0 && space)) { refresh(c); return Object.assign(base, { mode: "pan" }); }
     if (!n) {
-      const keep = e.shiftKey ? new Set(c.selection) : null;
-      if (!keep) c.deselectAll(); else refresh(c);
-      return Object.assign(base, { mode: "marquee", keep, rect: c.wrapperEl.getBoundingClientRect() });
+      if (e.button === 0 && !e.shiftKey) {   // the board's hand: a drag pans; up() clears the selection on a click
+        c.wrapperEl.classList.add("is-board-panning");
+        return Object.assign(base, { mode: "pan", board: true });
+      }
+      refresh(c);
+      return Object.assign(base, { mode: "marquee", keep: new Set(c.selection), rect: c.wrapperEl.getBoundingClientRect() });
     }
     if (ro(c)) return null;
     const sides = sidesAt(n, e);
@@ -423,7 +429,12 @@
     d.done = true;
     if (d.pan) { clearTimeout(d.pan.timer); d.pan = null; }
     if (d.mode === "marquee") { s.marqEl.hidden = true; refresh(c); notify(c); return; }
-    if (d.mode === "pan") return;
+    if (d.mode === "pan") {
+      if (!d.board) return;
+      c.wrapperEl.classList.remove("is-board-panning");
+      if (!d.moved) { c.deselectAll(); refresh(c); notify(c); }
+      return;
+    }
     if (d.mode === "move" && !d.moved && d.toggleOff && d.node) {   // shift-click on a selected card: out of the selection
       c.selection.delete(d.node); d.node.setSelected(false); selected(c); return;
     }
