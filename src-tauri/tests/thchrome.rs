@@ -312,3 +312,23 @@ fn i352_negative_no_mode_block_reintroduces_a_faint_literal() {
     // muted ink is NOT faint: the two must stay separate variables
     assert_ne!(decl_in(&c, "\nbody {", "--text-chrome-muted"), "var(--text-faint)", "#352: muted chrome ink collapsed onto faint");
 }
+
+// ---------------------------------------------------------------- #350
+#[test]
+fn i350_settings_desc_muted_heading_weight_and_card_surface() {
+    let c = css();
+    let d = rule(&c, ".sdesc");
+    assert!(d.contains("color: var(--text-chrome-muted)") && !d.contains("faint"), "#350: setting descriptions are not muted ink: {d}");
+    let h = rule(&c, ".snavh");
+    assert!(h.contains("font-weight: 600"), "#350: nav group heading weight is not 600: {h}");
+    let k = rule(&c, ".scard");
+    assert!(k.contains("background: var(--background-primary-alt)"), "#350: setting cards are not on --background-primary-alt: {k}");
+}
+#[test]
+fn i350_negative_heading_stays_faint_and_card_frame_unchanged() {
+    let c = css();
+    assert!(rule(&c, ".snavh").contains("color: var(--text-chrome-faint)"), "#350: the group heading ink is faint in stock (only its weight was off)");
+    let k = rule(&c, ".scard");
+    assert!(k.contains("border: 1px solid var(--bg-surface)") && k.contains("border-radius: 6px") && !k.contains("var(--bg-base)"), "#350: card frame out of scope / still page bg: {k}");
+    assert_eq!(decl_in(&c, "\nbody {", "--text-chrome-muted"), "var(--text-muted)", "#350: muted chrome ink must be the theme --text-muted");
+}
