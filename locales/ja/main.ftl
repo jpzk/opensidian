@@ -151,6 +151,17 @@ set-fileslinks-allow-uri-callbacks-desc = Opensidian URI を処理するとき�
 set-fileslinks-rebuild-vault-cache = 保管庫のキャッシュを再構築
 set-fileslinks-rebuild-vault-cache-desc = 保管庫の大きさによって、キャッシュの再構築には数秒から数分かかります。 | 詳しく見る
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = サンドボックス
+secsb-label = Landlock サンドボックス
+secsb-enforced = 有効
+secsb-not-enforced = 無効（適用されていません）
+secsb-off = オフ
+secsb-desc-enforced = このウィンドウは、保管庫とアプリに必要なフォルダーにだけ書き込めます。起動時に OPENSIDIAN_LANDLOCK=1 でオンになります。
+secsb-desc-not-enforced = サンドボックスはオンですが、このウィンドウでは適用されていないため、ここでは保管庫を開きません。
+secsb-desc-off = オンになっていません。OPENSIDIAN_LANDLOCK=1 で Opensidian を起動すると、保管庫の中に制限されます（Linux のみ）。
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = 設定を開く
