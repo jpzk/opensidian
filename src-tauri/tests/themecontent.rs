@@ -373,21 +373,36 @@ const CARD: &str = ":is(.canvas-text, .canvas-file-embed)";
 
 /// #339: canvas card markdown (text card .canvas-text, note card .canvas-file-embed) sits outside
 /// .lp/.preview, so no link rule reached it and the UA default (rgb(0,0,238), underline) won.
-/// Stock: card links = --link-color with no underline (Solarized rgb(38,139,210) td none, L=D).
+/// Stock: card links = --link-color (Solarized rgb(38,139,210), L=D), decoration --link-decoration:
+/// default theme underline (L+D), Minimal / Gruvbox / Solarized none (they set the variable),
+/// AnuPpuccin none (its own `.markdown-rendered .internal-link` rule, which must outrank ours as in stock).
 #[test]
 fn i339_canvas_card_links_use_link_styling() {
     let css = style_css();
     let w = format!("{CARD} a.wiki");
     assert_eq!(val(&css, &w, "color"), "var(--link-color, var(--accent-blue))");
-    assert_eq!(val(&css, &w, "text-decoration"), "var(--link-decoration, none)");
+    assert!(vals(&css, &w, "text-decoration").is_empty(), "#339: the card decoration belongs in the :where() rule");
+    let wd = ":where(.canvas-text, .canvas-file-embed) a.wiki";
+    assert_eq!(val(&css, wd, "text-decoration"), "var(--link-decoration, underline)");
+    // negative: no :is() card rule (specificity 0,2,1 > a theme's .markdown-rendered .internal-link) sets the decoration
+    assert!(rules(&css).iter().all(|(p, d)| !(p.starts_with(":is(.canvas-text") && d.contains("--link-decoration"))), "#339: an :is() card rule sets the decoration");
     let u = format!("{CARD} a.wiki-unresolved");
     assert_eq!(val(&css, &u, "color"), "var(--link-unresolved-color, var(--link-unresolved))");
     assert_eq!(val(&css, &u, "opacity"), "var(--link-unresolved-opacity, 1)");
     assert_eq!(val(&css, &u, "font-style"), "normal");
     let e = format!("{CARD} a.ext");
     assert_eq!(val(&css, &e, "color"), "var(--link-external-color, var(--accent-blue))");
-    // the default link decoration stays none (stock card links are not underlined)
-    assert_eq!(val(&css, DARK, "--link-decoration"), "none");
+    // the default link decoration is stock's underline (both modes); every bundled theme turns it off itself
+    assert_eq!(val(&css, DARK, "--link-decoration"), "underline");
+    assert!(vals(&css, LIGHT, "--link-decoration").is_empty(), "#339: light re-points the decoration");
+    for (t, needle) in [("Minimal", "--link-decoration: none"), ("Material Gruvbox", "--link-decoration:                none"),
+                        ("Solarized", "--link-decoration: none"), ("AnuPpuccin", ".markdown-rendered .internal-link {\n  text-decoration-line: none"),
+                        ("AnuPpuccin", ".cm-hmd-internal-link {\n  --link-decoration: none")] {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes").join(t).join("theme.css");
+        assert!(std::fs::read_to_string(&p).unwrap().contains(needle), "#339: {t} no longer turns link decoration off ({needle:?})");
+    }
+    // the LP link carries the stock class AnuPpuccin scopes its --link-decoration: none to
+    assert!(editor_js().contains("Ed.el(\"a\", \"wiki wl cm-hmd-internal-link\")"), "#339: LP link lost cm-hmd-internal-link");
     // the DOM carries the scope classes the selector needs
     assert!(ui_file("plugins/canvas-cards.js").contains("mk(\"div\", \"canvas-text markdown-rendered\")"), "#339: text card class changed");
     assert!(ui_file("plugins/canvas.js").contains("el(\"div\", \"canvas-file-embed\", this.contentEl)"), "#339: note card class changed");

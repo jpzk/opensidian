@@ -323,7 +323,7 @@ const Ed = {
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
         if (bar >= 0) add(Ed.mk(target + "|", "wl"), true);
-        const a = Ed.el("a", "wiki wl");
+        const a = Ed.el("a", "wiki wl cm-hmd-internal-link");   // #339: stock LP link class (AnuPpuccin scopes --link-decoration: none to it)
         a.href = "#";
         const note = hash >= 0 ? target.slice(0, hash) : target;
         if (note) a.dataset.note = note;

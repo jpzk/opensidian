@@ -353,7 +353,7 @@ body {
   --interactive-normal: var(--border);
   --link-color: var(--text-accent);   /* #332: stock links follow the theme accent */
   --link-color-hover: var(--text-accent-hover);
-  --link-decoration: none;
+  --link-decoration: underline;   /* #339: stock default-theme links are underlined (reading view, live preview, canvas cards); every bundled theme sets none itself */
   --link-external-color: var(--text-accent);   /* #332 */
   --link-external-decoration: underline;
   --link-unresolved-color: var(--link-color);   /* #321: stock derives the unresolved ink from the link colour */
@@ -1947,8 +1947,11 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-decoration-color, var(--link-unresolved-underline)); text-decoration-style: var(--link-unresolved-decoration-style, solid); filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }   /* REQ-15 */
 /* #339: canvas cards render markdown outside .lp/.preview (text card div.canvas-text.markdown-rendered,
    note card div.canvas-file-embed > .markdown-embed-content), so no link rule reached their anchors and the
-   UA blue + underline won. Stock gives card links the app link styling: --link-color, --link-decoration (none). */
-:is(.canvas-text, .canvas-file-embed) a.wiki { color: var(--link-color, var(--accent-blue)); text-decoration: var(--link-decoration, none); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit) }
+   UA blue + underline won. Stock gives card links the app link styling: --link-color, --link-decoration (default underline, a theme sets none). */
+:is(.canvas-text, .canvas-file-embed) a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit) }
+/* #339: the card link decoration at (0,1,1), under a theme's own .markdown-rendered .internal-link rule (AnuPpuccin none, (0,2,0)) as in stock;
+   default = --link-decoration (stock underline), Minimal/Gruvbox/Solarized set the variable none */
+:where(.canvas-text, .canvas-file-embed) a.wiki { text-decoration: var(--link-decoration, underline) }
 :is(.canvas-text, .canvas-file-embed) a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; opacity: var(--link-unresolved-opacity, 1); filter: var(--link-unresolved-filter, none) }
 :is(.canvas-text, .canvas-file-embed) a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none) }
 /* #353: the heading / bold / italic colour rules were scoped to .lp/.preview, so canvas card markdown painted
