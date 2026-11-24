@@ -1497,7 +1497,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
 .lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
-.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
+.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--code-background);   /* #331: stock paints LP code rows with --code-background */
              padding: 0 8px; white-space: pre; overflow-x: auto }
 .lp .bq { color: var(--blockquote-color, inherit) }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,

@@ -131,3 +131,17 @@ fn i325_bold_modifier_gives_600() {
     assert!(!all(&css, "font-weight").iter().any(|(_, v)| v == "650"), "#325: a rule hard-codes font-weight 650");
     assert_eq!(val(&css, ".lp b, .lp strong, .preview b, .preview strong", "font-weight"), "var(--bold-weight)");
 }
+
+/// #331: stock paints the live-preview/source fenced-code rows with --code-background
+/// (AnuPpuccin painted 220,224,232 L / 17,17,27 D; Solarized rgb(238,232,213) / rgb(7,54,66)),
+/// the same variable reading-view `pre` already uses.
+#[test]
+fn i331_lp_code_rows_use_code_background() {
+    let css = style_css();
+    assert_eq!(val(&css, ".lp .fence", "background"), "var(--code-background)");
+    // negative: the editor rows no longer paint our surface colour, and nothing else on .fence does
+    let fence: Vec<_> = rules(&css).into_iter().filter(|(p, _)| p.contains(".fence")).collect();
+    assert_eq!(fence.len(), 1, "#331: expected one .fence rule, got {fence:?}");
+    assert!(!fence[0].1.contains("--bg-surface"), "#331: .lp .fence still paints --bg-surface");
+    assert_eq!(val(&css, ".lp pre, .preview pre", "background-color"), "var(--code-background)");
+}
