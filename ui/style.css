@@ -1124,6 +1124,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .ctxmenu .mi svg { width: 12px; height: 12px; display: block }
 /* R38.29: `Delete file` is the ONE non-default-coloured row in the menu (red, see docs/requirements.md R38.29) */
 .ctxmenu div.del { color: var(--accent-red) }
+/* #345: a destructive row (.is-warning, the explorer note menu's Delete) is --text-error ink, as stock and ui/menu.css */
+.ctxmenu div.is-warning { color: var(--text-error, var(--accent-red)) }
 /* #220 General > Language: the active language is accented, a check after its name (issue mock-up) */
 .ctxmenu div.langon { color: var(--text-accent) }
 .ctxmenu .langchk { display: inline-block; width: 12px; height: 12px; margin-left: 6px; vertical-align: -1px }

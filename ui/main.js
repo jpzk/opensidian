@@ -2486,9 +2486,10 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const mkItem = (label, fn) => {
+  const mkItem = (label, fn, warn) => {     // warn: stock's destructive row (.is-warning = --text-error ink, #345)
     const d = document.createElement("div");
     d.textContent = label;
+    if (warn) d.className = "is-warning";
     d.onmousedown = ev => ev.stopPropagation();
     d.onclick = () => { closeMenu(); fn(); };
     m.appendChild(d);
@@ -2513,7 +2514,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
      user is when they decide a note is finished — and it opens a question, not
      a deletion. askDelete does no I/O of its own beyond counting the inbound
      links the confirmation has to state. */
-  mkItem("Delete", () => askDelete(nm));
+  mkItem("Delete", () => askDelete(nm), true);   // #345: .is-warning, like stock's file-menu Delete
   /* [mt:note:<name>] — WHICH ROW the browser's hit test actually handed us. The
      explorer row is found by OCR in the harness, and R20.8's lesson applies
      harder here than it did for tabs: an OCR row miss followed by "Delete" would
