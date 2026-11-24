@@ -114,3 +114,20 @@ fn i320_code_background_chains_to_background_primary_alt() {
     assert_eq!(val(&css, ".lp code, .preview code", "background-color"), "var(--code-background)");
     assert_eq!(val(&css, ".lp .code", "background"), "var(--code-background)");
 }
+
+/// #325: stock bold = 600 on every theme that leaves the weight alone (default, Minimal,
+/// AnuPpuccin, Gruvbox; strong, callout title, both modes): --font-weight 400 + modifier 200.
+#[test]
+fn i325_bold_modifier_gives_600() {
+    let css = style_css();
+    assert_eq!(all(&css, "--bold-modifier"), vec![(":root".to_string(), "200".to_string())],
+        "#325: --bold-modifier must be declared once, on :root, as 200 (400 + 200 = stock 600)");
+    assert_eq!(val(&css, ":root", "--font-weight"), "var(--font-normal, 400)");
+    // the two consumers still derive from it (so a theme's --bold-modifier/--bold-weight reaches them)
+    assert_eq!(val(&css, ":root", "--bold-weight"), "min(900, calc(var(--font-weight) + var(--bold-modifier)))");
+    assert!(all(&css, "--callout-title-weight").iter().any(|(_, v)| v == "calc(var(--font-weight) + var(--bold-modifier))"));
+    // negative: the old 250 (-> 650) is gone and no rule hard-codes a 650 weight
+    assert!(!all(&css, "--bold-modifier").iter().any(|(_, v)| v == "250"), "#325: old --bold-modifier 250 still present");
+    assert!(!all(&css, "font-weight").iter().any(|(_, v)| v == "650"), "#325: a rule hard-codes font-weight 650");
+    assert_eq!(val(&css, ".lp b, .lp strong, .preview b, .preview strong", "font-weight"), "var(--bold-weight)");
+}
