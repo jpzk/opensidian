@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+mod devperm; // devaccess: the ONE decision for every webview permission request (Settings › Security › Device access)
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
@@ -67,6 +68,7 @@ use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
 mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
+mod dropticket; // #280: a native drop is a one-shot ticket; attach_files consumes it
 mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
@@ -136,12 +138,15 @@ fn bind_vault(v: &Vault, p: &Path) -> Result<(), String> {
 enum BindErr {
     Bound(PathBuf, PathBuf),
     Lock(vaultlock::LockErr),
+    /// #293: the sandbox was asked for and is not in force (sandbox::boot_may_bind)
+    Sandbox(String),
 }
 impl std::fmt::Display for BindErr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             BindErr::Bound(cur, p) => write!(f, "this window already has a vault open ({}); open {} in a new window", cur.display(), p.display()),
             BindErr::Lock(e) => write!(f, "{e}"),
+            BindErr::Sandbox(why) => write!(f, "{} {why}", sandbox::REFUSED_HEAD),
         }
     }
 }
@@ -161,6 +166,11 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
 /// The claim half of a bind: everything but the walk + index (refuse if bound,
 /// flock, set-once root, built-in themes, app.json).
 fn claim_vault(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    // #293: every bind (boot, picker, create) consults the ONE decision first: asked for and
+    // not in force binds nothing — before the lock, the root or any vault write
+    if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome()) {
+        return Err(BindErr::Sandbox(why));
+    }
     if let Some(cur) = cur_vault(v) {
         return Err(BindErr::Bound(cur, p.to_path_buf()));
     }
@@ -1114,22 +1124,61 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Opt
    async runtime instead of the event loop (rule of order: no lag the user can
    feel). The index learns the copied images here because BOTH renderers
    resolve `![[x.png]]` against `Index::images()` (R29.11) — a file copied but
-   not indexed would not paint. */
+   not indexed would not paint.
+   #280: the page no longer names the paths. The native drop transport (xdnd.rs) stored them
+   under a one-shot ticket (dropticket.rs) and the page only got that ticket + the display
+   names; this command takes the ticket and consumes it (attach_ticket). A raw path, an
+   unknown, reused, expired or other-window ticket is refused before anything is touched. */
 #[tauri::command]
 async fn attach_files(
+    win: tauri::Window,
     v: State<'_, Vault>,
     note: String,
-    paths: Vec<PathBuf>,
+    ticket: String,
     otel: Option<perf::Ctx>,
 ) -> Result<Attached, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let n = paths.len();
-    let a = span_timed!(otel => "attach_files", attach_drop(&root, &note, &paths), serde_json::json!({"files": n}))
-        .map_err(|e| e.say())?;
+    let a = span_timed!(otel => "attach_files", attach_ticket(&root, &note, win.label(), &ticket), serde_json::json!({}))?;
+    index_attached(&v, &a);
+    Ok(a)
+}
+
+/// #280 THE gate in front of attach_drop for a drop: the paths come from the ticket the
+/// native drop minted, never from the caller. The ticket is consumed first (single use,
+/// whatever happens next); an Err here has moved, copied and created nothing.
+fn attach_ticket(root: &Path, note: &str, win: &str, ticket: &str) -> Result<Attached, String> {
+    let paths = dropticket::take(win, ticket).map_err(|e| {
+        eprintln!("[osdrop] attach_files refused: {e:?}");
+        e.say()
+    })?;
+    attach_drop(root, note, &paths).map_err(|e| e.say())
+}
+
+/// R29.11: both renderers resolve ![[x.png]] against the index, so it learns what landed
+fn index_attached(v: &Vault, a: &Attached) {
     let mut ix = v.index.lock().unwrap();
     for rel in &a.copied {
         ix.add_image(rel);
     }
+}
+
+/* #280 R31.7 "Insert attachment" (the typed path, the keyboard road for people and probes
+   with no pointer) names its path in the PAGE, so it cannot be told apart from a script
+   calling it. It is therefore no drop and gets no ticket: the user confirms the exact path
+   in a NATIVE dialog (consent::Kind::Attach, default answer Cancel) before attach_drop
+   runs; every rule after that is the drop's. No dialog = nothing attached (fail closed). */
+#[tauri::command]
+async fn attach_typed(win: tauri::Window, v: State<'_, Vault>, note: String, path: String) -> Result<Attached, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if path.trim().is_empty() {
+        return Err(DropErr::Empty.say());
+    }
+    let slot = consent::admit()?;
+    if !consent::ask(slot, win, consent::Kind::Attach, consent::attach_question(&path, &note)).await? {
+        return Err("attach cancelled".into());
+    }
+    let a = attach_drop(&root, &note, &[PathBuf::from(&path)]).map_err(|e| e.say())?;
+    index_attached(&v, &a);
     Ok(a)
 }
 
@@ -1190,6 +1239,14 @@ const REC_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 fn rec_close(app: &tauri::AppHandle, parent: &str) {
     use tauri::Manager;
     audiorec::sess_drop(parent);
+    if audiorec::indicator_on(parent) {
+        match app.get_webview_window(parent) {
+            Some(w) => rec_indicator(&w, false),
+            None => {
+                audiorec::indicator_set(parent, false);
+            }
+        }
+    }
     if let Some(rw) = app.get_webview_window(&audiorec::rec_label(parent)) {
         let _ = audiorec::mic_off(&rw); // reason: the webview is destroyed next either way
         audiorec::rec_offscreen_drop(&rw);
@@ -1197,6 +1254,89 @@ fn rec_close(app: &tauri::AppHandle, parent: &str) {
             eprintln!("[audiorec] recorder webview not closed: {e}");
         }
     }
+}
+
+/* #295 (audit F-8) the recording indicator the page cannot hide: while app window <label>
+   records, its NATIVE window title starts with audiorec::REC_MARK ("● Recording — "). Chosen over
+   a tray icon / desktop notification because the app has neither (no tray-icon feature, no
+   notification plugin: adding one = a new dependency), while the title is what the window manager,
+   the taskbar and the window switcher show on both platforms and is set from Rust here.
+   - Linux (GTK): a notify::title handler on the GtkWindow re-applies the mark on EVERY title change,
+     synchronously, so the page's own setTitle (pushTitle, or a plugin's) cannot drop it; removed
+     with the mark when the recording ends (rec_close).
+   - macOS / other: no title-change hook in our code, so a thread re-applies the mark every
+     audiorec::REC_MARK_TICK while the recording lasts; macOS also shows its own system
+     microphone-in-use indicator (menu bar), which no app code can hide. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static REC_TITLE_HOOK: std::cell::RefCell<std::collections::HashMap<String, gtk::glib::SignalHandlerId>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(target_os = "linux")]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    audiorec::indicator_set(win.label(), on);
+    let w2 = win.clone();
+    let r = win.run_on_main_thread(move || {
+        use gtk::glib::prelude::ObjectExt;
+        use gtk::prelude::GtkWindowExt;
+        let Ok(gw) = w2.gtk_window() else {
+            eprintln!("[audiorec] indicator: no GTK window for {}", w2.label());
+            return;
+        };
+        // devaccess: both marks in one fixed order (audiorec::title_with), so this hook and the
+        // camera hook (audiorec::cam_hook) always aim at the same title
+        let lab = w2.label().to_string();
+        let fix = move |gw: &gtk::ApplicationWindow, on: bool| {
+            let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(&lab)) {
+                gw.set_title(&t);
+            }
+        };
+        let label = w2.label().to_string();
+        REC_TITLE_HOOK.with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some(id) = h.remove(&label) {
+                gw.disconnect(id);
+            }
+            fix(&gw, on);
+            if on {
+                let id = gw.connect_notify_local(Some("title"), move |gw, _| fix(gw, true));
+                h.insert(label, id);
+            }
+        });
+        eprintln!("[audiorec] indicator {}: {}", w2.label(), if on { "on" } else { "off" });
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] indicator not applied: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    let gen = audiorec::indicator_set(win.label(), on);
+    let fix = |w: &tauri::WebviewWindow, on: bool| {
+        if let Ok(cur) = w.title() {
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(w.label())) {
+                let _ = w.set_title(&t); // reason: a window being destroyed takes its title with it
+            }
+        }
+    };
+    fix(win, on);
+    if let Some(gen) = gen {
+        let w = win.clone();
+        std::thread::spawn(move || {
+            while audiorec::indicator_live(w.label(), gen) {
+                fix(&w, true);
+                std::thread::sleep(audiorec::REC_MARK_TICK);
+            }
+            // a re-apply that raced the off: take the mark down again (unless a new recording runs)
+            if !audiorec::indicator_on(w.label()) {
+                fix(&w, false);
+            }
+        });
+    }
+    eprintln!("[audiorec] indicator {}: {}", win.label(), if on { "on" } else { "off" });
 }
 
 /// block (off the async runtime) on a hand-off from the recorder page
@@ -1208,11 +1348,36 @@ async fn rec_recv<T: Send + 'static>(rx: std::sync::mpsc::Receiver<T>, wait: std
 /// Err("<DOMException name>: <message>") when it could not (the webview is closed again)
 #[tauri::command]
 async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    use tauri::Manager;
     let parent = win.label().to_string();
     audiorec::authorized(&parent, &token)?;
     if audiorec::is_rec(&parent) {
         return Err("SecurityError: not an app window".into());
     }
+    /* #295 (audit F-8): the decision is NATIVE. Settings › Security › Microphone off (or lockdown)
+       refuses before any dialog; otherwise EVERY start asks the user in the native consent
+       (Record / Cancel, default Cancel) and only Record mints the one-shot grant that
+       audiorec::start_check consumes below. A page script driving the core recorder gets the
+       dialog, never a silent recording. */
+    security::mic_check(security::mic_effective(&cfg_value())).inspect_err(|e| eprintln!("[audiorec] start refused: {e}"))?;
+    /* #295 follow-up: Microphone = always allow (app-wide, set only through the native Security
+       confirm) skips THIS question and nothing else: the token above, the setting re-read by
+       start_check below and the native recording indicator (rec_indicator after the recorder
+       runs) apply to every start alike. Lockdown has already turned it into off above. */
+    if security::mic_asks(security::mic_effective(&cfg_value())) {
+        let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
+            eprintln!("[audiorec] start: cancelled in the native consent, nothing started");
+            return Err(audiorec::NO_GRANT.into());
+        }
+    } else {
+        eprintln!("[audiorec] start: Microphone = always allow, no per-start consent (token, setting and the recording indicator still apply)");
+    }
+    audiorec::grant(&parent, std::time::Instant::now());
+    // the setting is read AGAIN after the dialog (turned off / lockdown meanwhile = refused);
+    // the grant is consumed here, whatever the outcome
+    audiorec::start_check(&parent, &token, security::mic_check(security::mic_effective(&cfg_value())), std::time::Instant::now())?;
     rec_close(&app, &parent);
     let (gtx, grx) = std::sync::mpsc::channel();
     let (stx, srx) = std::sync::mpsc::channel();
@@ -1249,6 +1414,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     match rec_recv(srx, REC_START_WAIT).await {
         Some(Ok(())) => {
             eprintln!("[audiorec] recording in {}", rw.label());
+            rec_indicator(&win, true);
             Ok(())
         }
         r => {
@@ -5010,7 +5176,10 @@ async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> R
    raises a protection is written at once. Only Op::SecuritySet writes the key. */
 #[tauri::command]
 fn security_get() -> serde_json::Value {
-    security::report(&cfg_value())
+    let mut r = security::report(&cfg_value());
+    // #293: the sandbox state of THIS process (off / enforced / not-enforced), shown read-only
+    r["sandbox"] = sandbox::state_json();
+    r
 }
 
 /* #144 toggle 12 "Restart now" (also JIT / canvas "Applies after restart"): a switch onto THIS
@@ -5092,6 +5261,59 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
             Some(w) => sec_clip(&w, clip),
             None => eprintln!("[sec] appClipboard={clip}: no webview window {}", win.label()),
         }
+    }
+    Ok(security::report(&cfg_value()))
+}
+
+/// #295 Settings › Security › Microphone = "ask" | "always" | "off": validated; a change that lowers
+/// a protection (off -> ask, off / ask -> always) asks the native Security confirm first and is
+/// written only after Lower protection (security::mic_decide); a revoke (always -> ask / off,
+/// ask -> off) is written at once with no dialog; only Op::SecurityMic writes it
+#[tauri::command]
+async fn security_mic_set(win: tauri::Window, value: String) -> Result<serde_json::Value, String> {
+    let m = security::mic_validate(&value)?;
+    let stored = security::mic_stored(&cfg_value());
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_mic_question(m)).await?;
+    }
+    let Some(m) = security::mic_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set microphone={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityMic(m.as_str().into())]);
+    eprintln!("[sec] set microphone={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", security::MIC_FIELD);
+    }
+    Ok(security::report(&cfg_value()))
+}
+
+/// devaccess: one Settings › Security › Device access row (security::DEV_ROWS) = "ask" | "always" |
+/// "off": validated (known row, known value); a weakening change (off -> ask, off / ask -> always)
+/// asks the native Security confirm first and is written only after Lower protection
+/// (security::dev_decide); a revoke is written at once with no dialog; only Op::SecurityDev writes it.
+/// Keyed by the row alone: nothing the page reports (plugin id, vault, origin) enters the decision.
+#[tauri::command]
+async fn security_dev_set(win: tauri::Window, field: String, value: String) -> Result<serde_json::Value, String> {
+    let (f, m) = security::dev_validate(&field, &value)?;
+    let stored = security::dev_stored(&cfg_value(), f);
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_dev_question(f, m)).await?;
+    }
+    let Some(m) = security::dev_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set {f}={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityDev(f.into(), m.as_str().into())]);
+    eprintln!("[sec] set {f}={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", f);
     }
     Ok(security::report(&cfg_value()))
 }
@@ -8293,9 +8515,11 @@ fn main() {
             // vaultbleed D: the unconfined spawner, started BEFORE the ruleset
             // closes (an exec after enforce() is confined for life)
             let helper = spawner::start();
-            match sandbox::enforce(p) {
-                Ok(s) => eprintln!("landlock: {s:?}"),
-                Err(e) => eprintln!("landlock: off ({e})"),
+            // #293: the answer is published (sandbox::outcome) and decides the bind below
+            let o = sandbox::record(sandbox::enforce(p));
+            eprintln!("{}", o.log_line());
+            if let sandbox::Outcome::Partial { dropped } = o {
+                eprintln!("[sandbox] partially enforced: this kernel lacks {dropped:?}");
             }
             match helper {
                 // only a CONFINED window routes through it; otherwise the
@@ -8323,6 +8547,11 @@ fn main() {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
         let restart = switched.as_ref().and_then(|s| spawn::restart_of(&s.token));
+        // #293 (audit F-7): fail closed. The sandbox was asked for and is not in force => the
+        // vault is NOT bound: a native dialog says why, the process exits non-zero.
+        if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome()) {
+            sandbox::refuse_and_exit(&why, p);
+        }
         match bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart) {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
@@ -8560,14 +8789,14 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugins_pin_ack, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugins_pin_ack, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, security_dev_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
             updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, attach_typed, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, i18n_state, i18n_load, i18n_set, pdf_info,
@@ -10085,6 +10314,114 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #295 (audit F-8): audio_rec_start decides natively before it builds the recorder webview —
+    /// token, then Microphone off refuses (before any dialog), then the native Kind::Mic consent,
+    /// then the grant (only after a yes), then start_check consumes it; the grant is minted
+    /// nowhere else; the indicator goes on with the recording and off in rec_close
+    #[test]
+    fn mic295_audio_rec_start_asks_natively_before_the_recorder_exists() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let order = [
+            "audiorec::authorized(&parent, &token)?",
+            "security::mic_check(security::mic_effective(&cfg_value())).inspect_err(",
+            "consent::admit()?",
+            concat!("consent::Kind::", "Mic, consent::mic_question(&vault)"),
+            "return Err(audiorec::NO_GRANT.into())",
+            concat!("audiorec::", "grant(&parent,"),
+            "audiorec::start_check(&parent, &token,",
+            "rec_close(&app, &parent);",
+            "tauri::WebviewWindowBuilder::new(",
+            "rec_indicator(&win, true)",
+        ];
+        for w in order.windows(2) {
+            assert!(at(w[0]) < at(w[1]), "audio_rec_start: {} must come before {}", w[0], w[1]);
+        }
+        assert_eq!(src.matches(concat!("audiorec::", "grant(")).count(), 1, "a grant is minted only after the native consent");
+        assert_eq!(src.matches(concat!("consent::Kind::", "Mic")).count(), 1, "one mic question");
+        let rc = src.find("fn rec_close(").expect("rec_close");
+        assert!(src[rc..rc + src[rc..].find("\n}\n").expect("end")].contains("rec_indicator(&w, false)"), "the indicator outlives the recording");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_mic_set,"), "not registered");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (w, c) = (mb.find("security::mic_weakens(").expect("weakens"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(w < c && mb[w..c].contains("consent::Kind::Security"), "off -> ask written without the native confirm");
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityMic(")).count(), 1, "one writer of the microphone");
+    }
+
+    /// #295 follow-up, Microphone = always allow: it skips ONLY the per-start question. The token
+    /// check and the off/lockdown refusal come before the branch, the grant / start_check (token +
+    /// setting again) / recorder / indicator after it, outside it: an always-allow start still
+    /// needs the token and still turns the native indicator on. The setting is written only by
+    /// security_mic_set, behind mic_decide (a weakening change needs the native confirm's yes).
+    #[test]
+    fn mic295_always_allow_skips_only_the_question() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let branch = at(concat!("if security::mic_", "asks(security::mic_effective(&cfg_value())) {"));
+        let other = at("} else {\n        eprintln!(\"[audiorec] start: Microphone = always allow");
+        let join = branch + b[branch..].find("\n    }\n").expect("branch end");
+        assert!(at("audiorec::authorized(&parent, &token)?") < branch, "the token check must come before the always branch");
+        assert!(at("security::mic_check(security::mic_effective(&cfg_value())).inspect_err(") < branch, "off / lockdown must refuse before the always branch");
+        assert!(branch < at(concat!("consent::Kind::", "Mic,")) && at(concat!("consent::Kind::", "Mic,")) < other, "the question sits in the ask branch");
+        assert!(other < join, "branch shape");
+        for after in [concat!("audiorec::", "grant(&parent,"), "audiorec::start_check(&parent, &token,", "tauri::WebviewWindowBuilder::new(", "rec_indicator(&win, true)"] {
+            assert!(at(after) > join, "{after} must run for EVERY start (after the always branch), not inside it");
+        }
+        assert!(!b[branch..join].contains("rec_indicator") && !b[branch..join].contains("audiorec::start_check"), "the branch must not hold the token / indicator steps");
+        assert_eq!(b.matches("rec_indicator(&win, true)").count(), 1, "one indicator-on, for every recording");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (d, c) = (mb.find("security::mic_decide(stored, m, confirmed)").expect("decide"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(d < c && mb[..d].contains("confirmed = consent::ask(") && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind mic_decide + the native confirm");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+    }
+
+    /// devaccess: the app page's getUserMedia rejector (ui/main.js) forwards ONLY a rebuilt
+    /// { video } request to the native gate (devperm::decide); anything carrying audio, or with no
+    /// video, is still refused in the page. The audio key is never copied into the forwarded object.
+    #[test]
+    fn devacc_page_forwards_only_video_to_the_native_gate() {
+        let ui = include_str!("../../ui/main.js");
+        let a = ui.find("const deny = function getUserMedia(c) {").expect("rejector");
+        let body = &ui[a..a + ui[a..].find("\n  };").expect("rejector end")];
+        assert!(body.contains("!c.audio) v = c.video;"), "audio must exclude the forward: {body}");
+        assert!(body.contains("const ask = { video: (typeof v === \"object\" ? v : true) }; return gum(ask);"), "forward must be a rebuilt video-only object");
+        assert_eq!(body.matches("gum(").count(), 1, "one forward only");
+        assert!(!body.contains("gum(c"), "the caller's constraints object must never reach WebKit");
+        assert!(!body.contains("audio:"), "no audio key in the forwarded request");
+        assert!(body.contains("reserved for the Audio recorder core plugin.\", \"NotAllowedError\""), "everything else refused");
+        // both bindings still the rejector, non-writable
+        assert!(ui.contains("Object.defineProperty(md, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+        assert!(ui.contains("Object.defineProperty(MediaDevices.prototype, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+    }
+
+    /// devaccess: a Device access row is written only by security_dev_set, behind dev_decide and
+    /// the native Security confirm (confirmed defaults to NO); the setter takes only (field, value),
+    /// nothing page-reported (no plugin id / vault / origin) enters it; one writer of Op::SecurityDev
+    #[test]
+    fn devacc_row_written_only_behind_the_native_confirm() {
+        let src = include_str!("main.rs");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_dev_set,"), "not registered");
+        let ms = src.find("async fn security_dev_set(").expect("security_dev_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        assert!(mb.starts_with("async fn security_dev_set(win: tauri::Window, field: String, value: String) ->"), "the setter must take only the row and the value");
+        let at = |s: &str| mb.find(s).unwrap_or_else(|| panic!("security_dev_set lacks {s}"));
+        assert!(at("security::dev_validate(&field, &value)?") < at("security::mic_weakens(stored, m)"));
+        assert!(at("security::mic_weakens(stored, m)") < at("consent::Kind::Security, consent::security_dev_question(f, m)"));
+        let (d, c) = (at("security::dev_decide(stored, m, confirmed)"), at(concat!("cfgstore::Op::", "SecurityDev(")));
+        assert!(d < c && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind dev_decide");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+        for page in ["plugin", "vault", "origin"] {
+            assert!(!mb.contains(page), "security_dev_set must not be keyed by page-reported {page}");
+        }
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityDev(")).count(), 1, "one writer of the Device access rows");
     }
 
     /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the
@@ -13220,6 +13557,105 @@ mod tests {
         let _ = fs::remove_dir_all(&srcd);
     }
 
+    /// the vault's entries (names), sorted: "the attachment folder is unchanged"
+    fn vault_names(root: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    }
+
+    /// #280: attach_files no longer takes a path. A path the page names (no drop registered
+    /// it) is refused: nothing lands in the vault and the source (an image, which a drop
+    /// would MOVE) and a PDF (which a drop would copy) both stay exactly where they were.
+    #[test]
+    fn attach_ticket_refuses_a_raw_path_and_touches_nothing() {
+        let (root, srcd) = drop_vault("tk-raw");
+        let img = src_file(&srcd, "secret.png", b"\x89PNG\r\n\x1a\nSECRET");
+        let pdf = src_file(&srcd, "secret.pdf", b"%PDF-1.4\nSECRET");
+        let before = vault_names(&root);
+        for raw in [img.to_string_lossy().to_string(), format!("file://{}", img.display()), pdf.to_string_lossy().to_string(), String::new()] {
+            let e = attach_ticket(&root, "Note", "main", &raw).unwrap_err();
+            assert!(e.contains("not a path"), "{raw:?} -> {e}");
+        }
+        assert_eq!(fs::read(&img).unwrap(), b"\x89PNG\r\n\x1a\nSECRET", "the image source must stay in place");
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4\nSECRET", "the pdf source must stay in place");
+        assert_eq!(vault_names(&root), before, "the attachment folder (vault root) must be unchanged");
+        assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), "# Note\n\nEND\n");
+        // an id-shaped string nobody minted is refused the same way
+        let e = attach_ticket(&root, "Note", "main", &"0".repeat(32)).unwrap_err();
+        assert!(e.contains("unknown"), "{e}");
+        assert!(img.exists() && pdf.exists());
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: a REAL drop (what xdnd mints) still imports exactly as before — the image is
+    /// MOVED, the pdf COPIED — and the same ticket is refused on its second use
+    #[test]
+    fn a_dropped_ticket_imports_once_and_is_refused_on_reuse() {
+        let (root, srcd) = drop_vault("tk-real");
+        let img = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT");
+        let pdf = src_file(&srcd, "doc.pdf", b"%PDF-1.4\nDOC");
+        let o = xdnd::offer("main", &[img.clone(), pdf.clone()]).expect("urandom");
+        assert_eq!(o.names, vec!["cat.png", "doc.pdf"]);
+        let a = attach_ticket(&root, "Note", "main", &o.ticket).unwrap();
+        assert_eq!(a.text, "![[cat.png]]\n![[doc.pdf]]");
+        assert_eq!(a.copied, vec!["cat.png".to_string(), "doc.pdf".to_string()]);
+        assert!(!img.exists(), "osdrop: a dropped image is still MOVED");
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4\nDOC", "pdfdrop: a dropped pdf is still COPIED");
+        assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"\x89PNG\r\n\x1a\nCAT");
+        // reuse: refused, nothing new in the vault, the (re-seeded) source untouched
+        let img2 = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT2");
+        let before = vault_names(&root);
+        let e = attach_ticket(&root, "Note", "main", &o.ticket).unwrap_err();
+        assert!(e.contains("already used"), "{e}");
+        assert_eq!(vault_names(&root), before);
+        assert_eq!(fs::read(&img2).unwrap(), b"\x89PNG\r\n\x1a\nCAT2");
+        // another window cannot spend this window's drop
+        let o2 = xdnd::offer("main", std::slice::from_ref(&img2)).expect("urandom");
+        assert!(attach_ticket(&root, "Note", "other", &o2.ticket).unwrap_err().contains("another window"));
+        assert!(img2.exists());
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: an expired ticket is refused and moves nothing (the table's own clock is
+    /// unit-tested in dropticket.rs; here the refusal is checked end to end through
+    /// attach_ticket with a ticket minted TTL ago)
+    #[test]
+    fn an_expired_ticket_is_refused_end_to_end() {
+        let (root, srcd) = drop_vault("tk-exp");
+        let img = src_file(&srcd, "old.png", b"\x89PNG\r\n\x1a\nOLD");
+        let then = std::time::Instant::now().checked_sub(dropticket::TTL + std::time::Duration::from_secs(1));
+        let Some(then) = then else { return }; // a monotonic clock younger than the TTL: nothing to test
+        let k = dropticket::mint_at_for_test("main", std::slice::from_ref(&img), then);
+        let before = vault_names(&root);
+        let e = attach_ticket(&root, "Note", "main", &k).unwrap_err();
+        assert!(e.contains("expired"), "{e}");
+        assert_eq!(fs::read(&img).unwrap(), b"\x89PNG\r\n\x1a\nOLD");
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: the typed "Insert attachment" path asks natively first; the question names the
+    /// path and the move, and its title is the one the harness finds the dialog by
+    #[test]
+    fn the_typed_attach_question_names_the_path_and_the_move() {
+        let t = consent::attach_text("/home/u/Pictures/a.png", "Note");
+        assert!(t.contains("\"/home/u/Pictures/a.png\""), "{t}");
+        assert!(t.contains("MOVED"), "{t}");
+        assert_eq!(consent::ATTACH_TITLE, "opensidian: attach file?");
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let i = src.find("async fn attach_typed(").expect("attach_typed");
+        let body = &src[i..i + src[i..].find("\n}\n").unwrap()];
+        let ask = body.find("consent::ask(").expect("attach_typed must ask natively");
+        let att = body.find("attach_drop(").expect("attach_typed attaches");
+        assert!(ask < att, "the question comes BEFORE the attach");
+    }
+
     /// R31.4 + S5: three drops of the SAME name give `cat.png`, `cat 1.png`,
     /// `cat 2.png` (Obsidian's convention, verified against 1.13.7), and the
     /// earlier files are BYTE-IDENTICAL afterwards. A drop that overwrites a
@@ -14150,6 +14586,81 @@ fn nob_probe() -> bool {
 #[tauri::command]
 fn psg_probe() -> bool {
     std::env::var("OPENSIDIAN_PSGPROBE").as_deref() == Ok("1")
+}
+
+/// #293 (audit F-7): no bind without the fail-closed decision — SOURCE SHAPE, since the
+/// refusal itself (a kernel that cannot enforce) is not reachable from a unit test
+#[cfg(test)]
+mod ll293_tests {
+    /// main.rs without its #[cfg(test)] modules: what ships
+    fn prod_src() -> String {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let mut out = String::new();
+        let mut rest = src.as_str();
+        while let Some(i) = rest.find("#[cfg(test)]\nmod ") {
+            let eol = i + rest[i + 13..].find('\n').expect("line end") + 13;
+            if !rest[i..eol].ends_with('{') {
+                // `mod x;` — a file module, nothing inline to cut
+                out.push_str(&rest[..eol]);
+                rest = &rest[eol..];
+                continue;
+            }
+            out.push_str(&rest[..i]);
+            let end = rest[i..].find("\n}\n").expect("test module end");
+            rest = &rest[i + end + 3..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let i = src.find(sig).unwrap_or_else(|| panic!("{sig}"));
+        &src[i..i + src[i..].find("\n}\n").expect("end")]
+    }
+
+    const DECIDE: &str = "sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome())";
+
+    #[test]
+    fn ll293_main_consults_the_decision_between_enforce_and_the_boot_bind() {
+        let src = prod_src();
+        let m = body(&src, "\nfn main() {");
+        let enforce = m.find("sandbox::record(sandbox::enforce(p))").expect("enforce's answer is recorded");
+        let decide = m.find(DECIDE).expect("main consults boot_may_bind");
+        let refuse = m.find("sandbox::refuse_and_exit(&why, p)").expect("a refusal exits");
+        let bind = m.find("bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart)").expect("boot bind");
+        assert!(enforce < decide && decide < refuse && refuse < bind, "enforce -> decide -> refuse -> bind");
+        assert_eq!(m.matches("bind_vault_boot_after(").count(), 1, "one boot bind");
+        assert_eq!(m.matches("sandbox::enforce(").count(), 1, "one enforce, its answer recorded");
+    }
+
+    #[test]
+    fn ll293_every_bind_goes_through_claim_vault_which_decides_first() {
+        let src = prod_src();
+        let c = body(&src, "\nfn claim_vault(");
+        let decide = c.find(DECIDE).expect("claim_vault consults boot_may_bind");
+        for later in ["vaultlock::acquire_in(", "v.root.set(", "builtins::seed_and_record(", "ensure_app_json("] {
+            assert!(decide < c.find(later).unwrap_or_else(|| panic!("{later}")), "{later} before the sandbox decision");
+        }
+        let first = c.lines().skip(2).map(str::trim).find(|t| !t.is_empty() && !t.starts_with("//")).expect("a statement");
+        assert!(first.starts_with("if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind("), "the decision is the first statement: {first}");
+        // the root is assigned in claim_vault only, and claim_vault is called by the two binders only
+        assert_eq!(src.matches(".root.set(").count(), 1, "one place assigns a vault root");
+        assert_eq!(src.matches("claim_vault(").count(), 3, "definition + bind_vault_locked + bind_vault_boot");
+        assert!(body(&src, "\nfn bind_vault_locked(").contains("claim_vault(v, p, lock_dir)?;"));
+        assert!(body(&src, "\nfn bind_vault_boot(").contains("claim_vault(v, p, lock_dir)?;"));
+        // and nothing else in main.rs consults or skips it
+        assert_eq!(src.matches("boot_may_bind(").count(), 2, "main() and claim_vault");
+        for f in ["sandbox.rs", "spawn.rs", "spawner.rs", "security.rs"] {
+            let s = std::fs::read_to_string(format!("{}/src/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            assert!(!s.contains(".root.set("), "{f} assigns a vault root");
+        }
+    }
+
+    #[test]
+    fn ll293_security_get_reports_the_sandbox_state() {
+        let src = prod_src();
+        assert!(body(&src, "\nfn security_get(").contains("r[\"sandbox\"] = sandbox::state_json();"));
+    }
 }
 
 /* vaultbleed (operator 2026-10-03, SEVERE): "i see tags from another vault in

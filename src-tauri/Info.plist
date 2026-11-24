@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Opensidian uses the microphone only while the Audio recorder is recording a note.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Opensidian uses the camera only when Settings › Security › Device access › Camera allows it (ask before every request, or always allow).</string>
 </dict>
 </plist>

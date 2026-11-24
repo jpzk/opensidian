@@ -154,6 +154,17 @@ set-fileslinks-allow-uri-callbacks-desc = Enable the use of x-callback-url throu
 set-fileslinks-rebuild-vault-cache = Rebuild vault cache
 set-fileslinks-rebuild-vault-cache-desc = Rebuilding the cache could take a few seconds to a few minutes depending on the size of your vault. | Learn more (description rendered in WARNING ORANGE)
 
+## Settings > Security > Sandbox (#293): the Landlock state of this window, read-only
+
+secsb-section = Sandbox
+secsb-label = Landlock sandbox
+secsb-enforced = Enforced
+secsb-not-enforced = Not enforced
+secsb-off = Off
+secsb-desc-enforced = This window can write only inside its vault and the folders the app needs. Turned on at start with OPENSIDIAN_LANDLOCK=1.
+secsb-desc-not-enforced = The sandbox is turned on but is not in force in this window, so no vault is opened here.
+secsb-desc-off = Not turned on. Start Opensidian with OPENSIDIAN_LANDLOCK=1 to confine it to the vault (Linux only).
+
 ## Command palette and Settings > Hotkeys: cmd-<slug(command id)>
 
 cmd-app-open-settings = Open settings
@@ -361,3 +372,24 @@ menu-zoom-to-selection = Zoom to selection
 menu-as-obsidian-url = as Obsidian URL
 menu-from-system-root = from system root
 menu-from-vault-folder = from vault folder
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = Device access
+secdev-camera = Camera
+secdev-camera-desc = Camera access for the app and community plugins. While the camera is on, the window title starts with "● Camera".
+secdev-location = Location
+secdev-location-desc = Your location, for the app and community plugins.
+secdev-notifications = Notifications
+secdev-notifications-desc = Desktop notifications from the app and community plugins.
+secdev-pointerlock = Pointer lock
+secdev-pointerlock-desc = The app or a community plugin may hide and capture the mouse pointer after you click (3D views, games); Esc releases it.
+secdev-values = Ask: every request is asked in a separate system window. Always allow: granted without that window (you confirm this choice once, in a system window). Off: every request is refused and no window is shown.
+secdev-na = Not available
+secdev-na-desc = Never granted to the app or to plugins, and no window is shown: screen capture, device names, protected media (EME), website data access, WebXR, MIDI.
+secmic-label = Microphone
+secmic-desc = Ask: the Audio recorder asks in a separate system window before every recording. Always allow: recordings start without that window (you confirm this choice once, in a system window). Off: every recording is refused and no window is shown. While the microphone is on, the window title starts with "● Recording".
+secmic-ask = Ask
+secmic-always = Always allow
+secmic-off = Off
+secmic-forced = Forced off by { $name }.

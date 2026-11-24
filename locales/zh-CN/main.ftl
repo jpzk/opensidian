@@ -151,6 +151,17 @@ set-fileslinks-allow-uri-callbacks-desc = 处理 Opensidian URI 时，允许通�
 set-fileslinks-rebuild-vault-cache = 重建仓库缓存
 set-fileslinks-rebuild-vault-cache-desc = 根据仓库大小，重建缓存可能需要几秒到几分钟。 | 了解更多
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = 沙盒
+secsb-label = Landlock 沙盒
+secsb-enforced = 已生效
+secsb-not-enforced = 未生效
+secsb-off = 关闭
+secsb-desc-enforced = 此窗口只能写入其仓库以及应用所需的文件夹。启动时通过 OPENSIDIAN_LANDLOCK=1 开启。
+secsb-desc-not-enforced = 沙盒已开启，但在此窗口中未生效，因此这里不会打开任何仓库。
+secsb-desc-off = 未开启。使用 OPENSIDIAN_LANDLOCK=1 启动 Opensidian，可将其限制在仓库内（仅限 Linux）。
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = 打开设置
@@ -358,3 +369,24 @@ menu-zoom-to-selection = 缩放到选中内容
 menu-as-obsidian-url = 作为 Obsidian URL
 menu-from-system-root = 从系统根目录
 menu-from-vault-folder = 从仓库文件夹
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = 设备访问
+secdev-camera = 摄像头
+secdev-camera-desc = 应用和社区插件对摄像头的访问。摄像头开启期间，窗口标题以“● Camera”开头。
+secdev-location = 位置
+secdev-location-desc = 提供给应用和社区插件的你的位置。
+secdev-notifications = 通知
+secdev-notifications-desc = 来自应用和社区插件的桌面通知。
+secdev-pointerlock = 指针锁定
+secdev-pointerlock-desc = 你点击后，应用或社区插件可以隐藏并捕获鼠标指针（3D 视图、游戏）；按 Esc 释放。
+secdev-values = 询问：每个请求都在单独的系统窗口中询问。始终允许：不弹出该窗口直接允许（此选项只需在系统窗口中确认一次）。关闭：拒绝所有请求，也不显示窗口。
+secdev-na = 不可用
+secdev-na-desc = 从不授予应用或插件，也不显示窗口：屏幕捕获、设备名称、受保护的媒体（EME）、网站数据访问、WebXR、MIDI。
+secmic-label = 麦克风
+secmic-desc = 询问：每次录音前，录音机都会在单独的系统窗口中询问。始终允许：录音直接开始，不再弹出该窗口（此选项只需在系统窗口中确认一次）。关闭：拒绝所有录音，也不显示窗口。麦克风开启期间，窗口标题以“● Recording”开头。
+secmic-ask = 询问
+secmic-always = 始终允许
+secmic-off = 关闭
+secmic-forced = 已被 { $name } 强制关闭。
