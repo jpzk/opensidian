@@ -176,3 +176,19 @@ fn i349_negative_resting_row_stays_muted_and_light_mode_does_not_override() {
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--nav-item-color-hover:"), "#349: light mode must inherit the same hover default");
 }
+
+// ---------------------------------------------------------------- #351
+#[test]
+fn i351_outline_current_heading_reads_the_active_nav_item_colours() {
+    let r = rule(&css(), ".tocrow.active");
+    assert!(r.contains("color: var(--nav-item-color-active)"), "#351: current heading ink is not --nav-item-color-active: {r}");
+    assert!(r.contains("background: var(--nav-item-background-active)"), "#351: current heading fill is not --nav-item-background-active: {r}");
+    assert!(!r.contains("--bg-surface") && !r.contains("--text-chrome"), "#351: the old literal surface/ink is still read: {r}");
+}
+#[test]
+fn i351_negative_other_outline_rows_are_unchanged() {
+    let c = css();
+    let r = rule(&c, ".tocrow");
+    assert!(r.contains("color: var(--text-chrome-muted)") && !r.contains("--nav-item-color-active"), "#351: resting outline rows changed: {r}");
+    assert!(!rule(&c, ".tocrow:hover").contains("--nav-item-background-active"), "#351: hover is not the active fill");
+}

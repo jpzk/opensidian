@@ -811,7 +811,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tocrow { display: flex; align-items: center; gap: var(--size-2-1, 2px); padding: 3px 6px 3px 0;
           color: var(--text-chrome-muted); cursor: pointer; white-space: nowrap; overflow: hidden }
 .tocrow:hover { background: var(--bg-surface) }
-.tocrow.active { color: var(--text-chrome); background: var(--bg-surface) }
+.tocrow.active { color: var(--nav-item-color-active); background: var(--nav-item-background-active) }   /* #351: the current heading = stock's active tree item */
 .tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
 .tocrow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
 .tocrow.open .tc svg { transform: rotate(90deg) }
