@@ -129,7 +129,7 @@ expect_fail "merge: tag with junk" "bad tag" "$here/sbom-merge.sh" -o "$t/x" -t 
 "$here/vex-osv-config.sh" >"$t/osv.toml"
 n_vex=$(jq '[.vulnerabilities[] | [.id] + [.references[]?.id] | unique[]] | length' "$root/supply-chain/vex.cdx.json")
 [ "$(grep -c '^\[\[IgnoredVulns\]\]$' "$t/osv.toml")" -eq "$n_vex" ] && ok "osv config: $n_vex IgnoredVulns (ids + aliases)" || bad "osv config count"
-grep -q '^id = "RUSTSEC-2026-0433"$' "$t/osv.toml" && grep -q '^effectiveUntil = 2027-01-15T23:59:59Z$' "$t/osv.toml" \
+grep -q '^id = "RUSTSEC-2026-0543"$' "$t/osv.toml" && grep -q '^effectiveUntil = 2027-05-15T23:59:59Z$' "$t/osv.toml" \
   && ok "osv config: effectiveUntil = VEX expiry" || bad "osv config ignoreUntil"
 jq '.vulnerabilities[0].properties = []' "$root/supply-chain/vex.cdx.json" >"$t/vex-noexp.json"
 expect_fail "osv config: VEX entry without expiry" "no opensidian:expires" "$here/vex-osv-config.sh" "$t/vex-noexp.json"
