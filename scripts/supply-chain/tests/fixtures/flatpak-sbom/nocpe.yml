@@ -1,0 +1,16 @@
+app-id: dev.koto.opensidian
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+modules:
+  - name: brotli
+    buildsystem: cmake-ninja
+    sources:
+      - type: archive
+        url: https://github.com/google/zopfli/archive/refs/tags/v1.2.1.tar.gz
+        sha256: 1111111111111111111111111111111111111111111111111111111111111111
+  - name: opensidian
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ../..

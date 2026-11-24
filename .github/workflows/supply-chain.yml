@@ -14,6 +14,7 @@
 #   gate-tests         scripts/supply-chain/tests/*.test.sh: every gate still turns red on its fixture
 #   (no SBOM job: release.yml generates it in the appimage build container,
 #                      see the note above codemirror-rebuild)
+#   sbom-crosscheck    #299: latest release SBOMs scanned by pinned osv-scanner AND pinned grype, findings diffed
 #   codemirror-rebuild opt-in (workflow_dispatch input / weekly cron): rebuild cm6.js, compare sha256
 # See docs/supply-chain.md for what each check catches and how to audit a new crate.
 #
@@ -61,7 +62,11 @@ on:
         description: 'also run the opt-in CodeMirror reproducible-rebuild check'
         type: boolean
         default: false
-  # no inputs since 2026-11-19 (the `attest` input fed the removed attest-sbom job)
+      sbom_run:
+        description: 'Release run id: cross-check THAT run''s CI-built SBOMs (must be built from this ref''s commit) instead of the latest release'
+        type: string
+        default: ''
+  # (the `attest` input fed the attest-sbom job, removed 2026-11-19; sbom_run added for #299)
   workflow_call:
 
 permissions:
@@ -225,6 +230,86 @@ jobs:
           persist-credentials: false
       - name: VEX == deny.toml / audit.toml ignores, nothing expired
         run: scripts/supply-chain/vex-check.sh
+
+  sbom-crosscheck:
+    name: SBOM cross-check (osv-scanner vs grype)
+    permissions:
+      contents: read
+      actions: read   # fetch-android: the sbom-scan-android artifact of the latest successful SBOM scan run
+    # #299: the SAME SBOMs as code scanning (latest PUBLISHED release, every *.cdx.json asset, each verified
+    # against its .sha256 asset; android = artifact sbom-scan-android of the latest successful SBOM
+    # scan run, digest-verified) scanned by two independent scanners, both pinned by version +
+    # per-arch sha256 (osv-scanner.pins, grype.pins): a CVE one scanner misses shows up as a
+    # one-sided row in crosscheck-diff.tsv. Informational: findings do not fail the job (the
+    # gates are cargo audit / deny and release.yml); a scanner that does not complete DOES.
+    # Advisory data (osv offline DBs, grype DB) is fetched fresh by this run. Logic + self-test:
+    # scripts/supply-chain/sbom-crosscheck.sh, tests/sbom-crosscheck.test.sh.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: install pinned osv-scanner + grype (sha256-verified)
+        run: |
+          osv=$(scripts/supply-chain/osv-install.sh "$RUNNER_TEMP/osv")      # a bare assignment fails the step;
+          grype=$(scripts/supply-chain/grype-install.sh "$RUNNER_TEMP/grype") # echo "X=$(...)" would not
+          printf "OSV=%s\nGRYPE=%s\n" "$osv" "$grype" >> "$GITHUB_ENV"
+      - name: fetch + verify the latest published release's SBOMs (or, with input sbom_run, that Release run's)
+        env:
+          SBOM_RUN: ${{ inputs.sbom_run }}
+        run: |
+          if [ -n "${SBOM_RUN:-}" ]; then
+            # #299: the CI-built SBOMs of the commit under test (release dry_run), not the published ones
+            scripts/supply-chain/sbom-crosscheck.sh fetch-run "$SBOM_RUN" "$GITHUB_SHA" "$RUNNER_TEMP/xc/sbom" >/dev/null
+            echo "TAG=release run $SBOM_RUN @ ${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          SBOMS=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(endswith(".cdx.json"))] | join(" ")')
+          [ -n "$SBOMS" ] || { echo "::error::release $tag has no *.cdx.json asset"; exit 1; }
+          echo "release $tag: $SBOMS"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          SBOMS=$SBOMS scripts/supply-chain/sbom-crosscheck.sh fetch "$tag" "$RUNNER_TEMP/xc/sbom"
+      - name: fetch + verify the android SBOMs (artifact of the latest successful SBOM scan run)
+        run: |
+          run=$(scripts/supply-chain/sbom-crosscheck.sh fetch-android "$RUNNER_TEMP/xc/sbom")   # fails the step on error
+          echo "ANDROID_RUN=$run" >> "$GITHUB_ENV"
+      - name: grype DB (fresh)
+        run: |
+          export GRYPE_DB_CACHE_DIR=$RUNNER_TEMP/grypedb GRYPE_CHECK_FOR_APP_UPDATE=false
+          "$GRYPE" db update
+          "$GRYPE" db status
+      - name: scan each SBOM with both scanners, normalize, diff
+        run: |
+          export GRYPE_DB_CACHE_DIR=$RUNNER_TEMP/grypedb GRYPE_CHECK_FOR_APP_UPDATE=false GRYPE_DB_AUTO_UPDATE=false
+          export OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=$RUNNER_TEMP/osvdb
+          x=scripts/supply-chain/sbom-crosscheck.sh o=$RUNNER_TEMP/xc/out
+          mkdir -p "$o/raw"; : > "$o/osv.tsv"; : > "$o/grype.tsv"
+          for f in "$RUNNER_TEMP"/xc/sbom/*.cdx.json; do
+            l=$(basename "$f" .cdx.json)
+            echo "::group::$l"
+            scripts/supply-chain/osv-json.sh "$o/raw/$l.osv.json" "$OSV" scan source --offline-vulnerabilities \
+              --download-offline-databases --format json -L "$f"
+            "$GRYPE" "sbom:$f" -o json --file "$o/raw/$l.grype.json"
+            "$x" norm-osv "$o/raw/$l.osv.json" "$l" >> "$o/osv.tsv"
+            "$x" norm-grype "$o/raw/$l.grype.json" "$l" >> "$o/grype.tsv"
+            echo "::endgroup::"
+          done
+          "$x" diff "$o/osv.tsv" "$o/grype.tsv" > "$o/crosscheck-diff.tsv"
+          { echo "### SBOM cross-check $TAG + android SBOMs of SBOM scan run $ANDROID_RUN (osv-scanner $(awk '$1=="version"{print $2}' scripts/supply-chain/osv-scanner.pins) vs grype $(awk '$1=="version"{print $2}' scripts/supply-chain/grype.pins))"
+            "$x" summary "$o/crosscheck-diff.tsv"
+            echo; echo "rows: matched by id/alias per sbom+package+version; one-sided rows in artifact crosscheck-diff.tsv"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cut -f1 "$o/crosscheck-diff.tsv" | sort | uniq -c
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-crosscheck
+          path: ${{ runner.temp }}/xc/
+          if-no-files-found: error
+          retention-days: 14
 
   gate-tests:
     name: supply-chain gate self-tests (red fixtures)

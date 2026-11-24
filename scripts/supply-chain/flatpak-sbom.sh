@@ -26,6 +26,10 @@ mf=${1:-$root/packaging/flatpak/dev.koto.opensidian.yml}
 die() { echo "flatpak-sbom: $*" >&2; exit 1; }
 # module name -> SPDX license of the pinned upstream source. brotli v1.2.1: LICENSE = MIT.
 MODLIC='{"brotli":"MIT"}'
+# github owner/repo -> NVD CPE vendor:product (#299 G4). pkg:github has no OSV ecosystem, so a
+# github-sourced module is only matchable by a CPE-based scanner (grype); a github module with no
+# entry here fails closed instead of shipping an unscannable component.
+MODCPE='{"google/brotli":"google:brotli"}'
 [ -f "$mf" ] || die "no $mf"
 val() { sed -n "s/^$1:[[:space:]]*['\"]\{0,1\}\([^'\" ]*\)['\"]\{0,1\}[[:space:]]*$/\1/p" "$mf" | head -1; }
 rt=$(val runtime); rv=$(val runtime-version); app=$(val app-id)
@@ -44,7 +48,7 @@ awk '
   /^        sha256:/      { sha=v($0); next }
   END { emit() }' "$mf" >"$t/arch.tsv"
 ts=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)
-jq -R -s --arg ts "$ts" --arg applic "$applic" --arg rt "$rt" --arg rv "$rv" --arg app "$app" --argjson lic "$MODLIC" '
+jq -R -s --arg ts "$ts" --arg applic "$applic" --arg rt "$rt" --arg rv "$rv" --arg app "$app" --argjson lic "$MODLIC" --argjson cpe "$MODCPE" '
   [split("\n")[] | select(length > 0) | split("\t") | {mod: .[0], url: .[1], sha: .[2]}] as $a
   | if ($a | map(select((.sha | test("^[0-9a-f]{64}$") | not) or .url == "")) | length) > 0
       then error("archive source without url/sha256: \($a | map(select((.sha | test("^[0-9a-f]{64}$") | not))) | map(.mod) | join(", "))")
@@ -53,10 +57,16 @@ jq -R -s --arg ts "$ts" --arg applic "$applic" --arg rt "$rt" --arg rv "$rv" --a
       then error("module without a known license (add it to MODLIC): \($a | map(select($lic[.mod] == null) | .mod) | join(", "))")
     else . end
   | def comp($x):
-      ($x.url | capture("^https://github\\.com/(?<o>[^/]+)/(?<r>[^/]+)/archive/refs/tags/(?<tag>.+)\\.tar\\.gz$")?) as $g
+      # first(...)? // null: a bare capture()? on a non-matching url yields NO value, which made
+      # `as $g` emit nothing and silently dropped the module from the SBOM
+      (first($x.url | capture("^https://github\\.com/(?<o>[^/]+)/(?<r>[^/]+)/archive/refs/tags/(?<tag>.+)\\.tar\\.gz$"))? // null) as $g
       | if $g then
           {type: "library", "bom-ref": "\($g.r)@\($g.tag | ltrimstr("v"))", name: $g.r, version: ($g.tag | ltrimstr("v")),
-           purl: "pkg:github/\($g.o)/\($g.r)@\($g.tag)"}
+           purl: "pkg:github/\($g.o)/\($g.r)@\($g.tag)",
+           cpe: ($cpe["\($g.o)/\($g.r)"] // error("github module without a CPE mapping (add it to MODCPE): \($g.o)/\($g.r)")
+                 | "cpe:2.3:a:\(.):\($g.tag | ltrimstr("v")):*:*:*:*:*:*:*")}
+        elif ($x.url | test("^https?://([^/]*\\.)?(github\\.com|githubusercontent\\.com)/"; "i")) then
+          error("github-hosted archive not in the https://github.com/<o>/<r>/archive/refs/tags/<tag>.tar.gz form (it would ship as a CPE-less pkg:generic no scanner matches): \($x.mod) \($x.url)")
         else
           {type: "library", "bom-ref": "flatpak-module:\($x.mod)", name: $x.mod,
            purl: "pkg:generic/\($x.mod)?download_url=\($x.url | @uri)"}

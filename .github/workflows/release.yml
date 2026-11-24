@@ -451,8 +451,12 @@ jobs:
   supply-chain:
     name: supply-chain
     uses: ./.github/workflows/supply-chain.yml
+    # a called workflow can only get what the caller grants: without actions: read the run is a
+    # startup_failure, because supply-chain.yml's sbom-crosscheck job (#299) asks for it (it reads
+    # the sbom-scan-android artifact). Read-only; nothing here can write.
     permissions:
       contents: read
+      actions: read
 
   # DRAFT release only — CI never publishes. The operator signs SHA256SUMS
   # OFFLINE (gpg key never touches GitHub), uploads SHA256SUMS.asc, and only

@@ -1,0 +1,10 @@
+# grype pin for the SBOM cross-check (sbom-crosscheck.yml, #299): a SECOND scanner, independent of
+# osv-scanner, run only in CI. Not a release gate; its findings are diffed against osv-scanner's.
+# v0.120.1 published 2026-10-06 (>= 6 weeks before 2026-11-23). Cross-checked 2026-11-23 against
+# the release asset grype_0.120.1_checksums.txt AND the GitHub release API asset "digest" fields.
+# grype-install.sh verifies the tarball with sha256sum -c; mismatch -> no binary, job red.
+# The vulnerability DB is advisory DATA fetched fresh per run (like osv-scanner's offline DBs).
+# format: version <tag> | sha256 <goarch> <64 hex>   (sha256 of grype_<ver>_linux_<goarch>.tar.gz)
+version v0.120.1
+sha256 amd64 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
+sha256 arm64 29f47391dc283aa79fcc38e65224cd61f64dec0ecfd0db7074128ebf8ff23514
