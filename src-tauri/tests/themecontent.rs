@@ -317,7 +317,28 @@ fn i336_accent_hsl_and_font_bold_defined() {
     // negative: the default look is unchanged (accent colour, tag tint and header weight keep their own rows)
     assert_eq!(val(&css, DARK, "--color-accent"), "hsl(var(--accent-h), var(--accent-s), var(--accent-l))");
     assert_eq!(val(&css, DARK, "--font-semibold"), "600");
-    assert_eq!(val(&css, DARK, "--tag-background"), "hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1)");
+    // (the default tag tint is #334's, fitted per mode: see i334_default_tag_tint_per_mode)
+    assert!(val(&css, DARK, "--tag-background").starts_with("hsla(calc(var(--accent-h)"));
+}
+
+/// #334: stock's default tag / tags-pill tint is not the accent triple at .1 and differs per mode
+/// (observed: default + AnuPpuccin L rgba(147,118,245,.1), D rgba(137,88,245,.1); ours
+/// rgba(138,92,245,.1) both). Fitted factors on the triple, multiplicative so a theme's hue in deg
+/// stays valid; themes that set --tag-background (Solarized, Gruvbox, Minimal) still win.
+#[test]
+fn i334_default_tag_tint_per_mode() {
+    let css = style_css();
+    assert_eq!(val(&css, DARK, "--tag-background"), "hsla(calc(var(--accent-h) * 1.0028), calc(var(--accent-s) * 1.008), calc(var(--accent-l) * .9893), .1)");
+    assert_eq!(val(&css, LIGHT, "--tag-background"), "hsla(calc(var(--accent-h) * .9833), calc(var(--accent-s) * .982), calc(var(--accent-l) * 1.079), .1)");
+    // negative: no additive hue offset (calc(17.57deg - 3) is invalid and would drop the tint)
+    for (_, v) in all(&css, "--tag-background") {
+        assert!(!v.contains("var(--accent-h) -") && !v.contains("var(--accent-h) +"), "#334: additive hue in {v}");
+    }
+    // negative: the theme definitions stay (they must keep overriding the default)
+    for t in ["Solarized", "Material Gruvbox", "Minimal"] {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes").join(t).join("theme.css");
+        assert!(std::fs::read_to_string(&p).unwrap().contains("--tag-background:"), "#334: {t} lost its --tag-background");
+    }
 }
 
 fn props_js() -> String {

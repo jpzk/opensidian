@@ -124,7 +124,7 @@ body {
      --interactive-accent and Obsidian still tints selection with it, so the
      triple is the wrong source. tag pill: the triple at .1 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 33%, transparent);
-  --tag-background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1);
+  --tag-background: hsla(calc(var(--accent-h) * 1.0028), calc(var(--accent-s) * 1.008), calc(var(--accent-l) * .9893), .1);   /* #334: fitted to stock dark computed tint (default accent -> rgba(137,88,245,.1)); multiplicative so a theme hue in deg stays valid */
   /* ---- chrome surfaces under Obsidian's theme names (themelight audit):
      the active tree row and the selected palette row are the SAME white veil;
      the active tab = the note surface; file tree ink = --text-muted. */
@@ -498,6 +498,7 @@ body:where(.theme-light) {
   --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --text-accent: var(--color-accent);
   --interactive-accent: var(--color-accent-1);
+  --tag-background: hsla(calc(var(--accent-h) * .9833), calc(var(--accent-s) * .982), calc(var(--accent-l) * 1.079), .1);   /* #334: fitted to stock light computed tint (default accent -> rgba(147,118,245,.1)) */
   /* light selection = --interactive-accent at .2 (Wasp and 1984 agree); the
      tree row and palette row hover = black at .067 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
