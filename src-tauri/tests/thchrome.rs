@@ -264,3 +264,26 @@ fn i326_negative_prompt_border_is_not_the_focus_accent() {
     assert!(d.starts_with("var(--color-base-40"), "#326: prompt border reads the focus var first: {d}");
     assert!(!c.contains("\n  --color-base-40:"), "#326: our default theme defines no base-40 ramp (the fallback carries the stock default)");
 }
+
+// ---------------------------------------------------------------- #337
+#[test]
+fn i337_focused_prompt_input_reads_border_focus_and_dropdowns_interactive_normal() {
+    let c = css();
+    let f = rule(&c, "#minput:focus");
+    assert!(f.contains("border-color: var(--background-modifier-border-focus)"), "#337: focused prompt input ignores --background-modifier-border-focus: {f}");
+    assert_eq!(decl_in(&c, "\nbody {", "--dropdown-background"), "var(--interactive-normal)", "#337: dropdowns do not read --interactive-normal");
+    let d = rule(&c, ".sctl.dropdown");
+    assert!(d.contains("background: var(--dropdown-background") && d.contains("border: 0;"), "#337: dropdown fill/border-width not stock: {d}");
+    assert!(d.contains("box-shadow: var(--input-shadow, inset 0 0 0 1px var(--border))"), "#337: dropdown frame must come from --input-shadow: {d}");
+}
+#[test]
+fn i337_negative_live_dropdown_and_separator_unchanged() {
+    let c = css();
+    let live = rule(&c, ".sctl.dropdown.live");
+    assert!(!live.contains("background"), "#337: the Themes dropdown must not repaint a different fill than the others: {live}");
+    let f = rule(&c, "#minput:focus");
+    assert!(f.contains("border-bottom-color: var(--border)"), "#337: the palette separator keeps its own colour on focus: {f}");
+    assert!(rule(&c, "#minput").contains("outline: none"), "#337: no extra outline ring on the prompt input");
+    // focus rings on buttons are a separate affordance: --border-focus-ring is untouched here
+    assert_eq!(decl_in(&c, "\nbody {", "--border-focus-ring"), "#bdbdbd", "#337: button focus rings are out of scope");
+}

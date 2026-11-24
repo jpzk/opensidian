@@ -319,7 +319,7 @@ body {
   --divider-color-hover: var(--border-strong);
   --drag-item-background: var(--bm-drop-src-bg);
   --drag-item-shadow: 0 4px 14px var(--shadow-popover);
-  --dropdown-background: var(--bg-sidebar);
+  --dropdown-background: var(--interactive-normal);   /* #337: stock dropdowns are --interactive-normal buttons (Solarized L 238,232,213 / D 7,54,66) */
   --dropdown-padding: 0 8px;
   --font-interface-theme: var(--font-interface-override), system-ui, sans-serif;
   --font-monospace-theme: var(--font-monospace-override), var(--font-monospace-default);
@@ -1242,6 +1242,9 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
           flex: 0 0 auto;
           border-bottom: 1px solid var(--border); background: var(--bg-base);
           color: var(--text-chrome); font-size: 14px; outline: none }
+/* #337: a focused stock prompt input is framed in --background-modifier-border-focus (Solarized: its accent
+   203,75,22); our separator under it keeps its own colour */
+#minput:focus { border-color: var(--background-modifier-border-focus); border-bottom-color: var(--border) }
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }
@@ -1563,14 +1566,15 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .sctl.toggle.on > i { left: calc(var(--toggle-width, 40px) - var(--toggle-thumb-width, 16px) - var(--toggle-border-width, 2px) - 1px); background: var(--bg-base) }
 .sctl.toggle:active > i { opacity: var(--toggle-thumb-opacity-active, 1) }
 .sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: var(--dropdown-padding, 0 8px); background: var(--dropdown-background, var(--bg-sidebar));
-                 border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
+                 border: 0; box-shadow: var(--input-shadow, inset 0 0 0 1px var(--border)); border-radius: 4px;   /* #337: stock border-width 0 (frame = input shadow) */
+                 white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
 .sctl.dropdown { background-position-x: var(--inset-end, 0%) }   /* own rule: keeps the background shorthand above serialisable in CSSOM */
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
    Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
    Obsidian's settings with no behaviour, rendered inert; this one gets the affordances that
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
-.sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
+.sctl.dropdown.live { cursor: pointer }   /* #337: same --dropdown-background as every stock dropdown */
 .sctl.dropdown.live:hover { border-color: var(--border-strong); background-color: var(--dropdown-background-hover, var(--bg-surface)); }
 .sctl.dropdown.live:focus-visible { outline: var(--input-border-width-focus, 2px) solid var(--border-focus-ring); outline-offset: 1px }
 .sctl.text { width: 141px; height: var(--input-height, 24px); box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
