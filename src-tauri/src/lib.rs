@@ -9029,6 +9029,75 @@ mod tests {
         assert!(zoom_next(0.0, "").is_none());
     }
 
+    /* PR #38 CodeAnt (appdirs.rs:40): on android cfg_path() is "" until android_boot
+       runs in setup(), so the `.manage(ZoomLevel(read_zoom_cfg()))` on the builder
+       reads {} -> 0.0. The run must re-read the level AFTER android_boot, inside the
+       same android block, or the first zoom press steps from 0 and overwrites the saved
+       level. android-only code cannot run here, so this pins the ORDER in the source:
+       production code only, comments are not code. */
+    #[test]
+    fn zoom_level_is_reread_after_android_boot_sets_the_config_path() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+        let tests_at = src.find("#[cfg(test)]\nmod tests").expect("tests module");
+        let code: Vec<&str> = src[..tests_at]
+            .lines()
+            .map(str::trim)
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with("* ") || *t == "*" || t.starts_with("*/")))
+            .collect();
+        let boot = code.iter().position(|l| l.starts_with("android_boot(app)")).expect("setup calls android_boot(app)");
+        assert!(boot > 0 && code[boot - 1] == "{" && code[boot - 2] == "#[cfg(target_os = \"android\")]",
+            "android_boot must open an android-only block in setup: {:?}", &code[boot.saturating_sub(2)..=boot]);
+        let block_end = boot + code[boot..].iter().position(|l| *l == "}").expect("android block unterminated");
+        let reread = code[boot..block_end]
+            .iter()
+            .any(|l| l.contains("app.state::<ZoomLevel>()") && l.contains("= read_zoom_cfg()"));
+        assert!(reread, "ZoomLevel is not re-read after android_boot in the android setup block: {:?}", &code[boot..block_end]);
+    }
+
+    /// ui/mobile.js, code lines only (no line or block comments), trimmed
+    fn mobile_js_code() -> Vec<String> {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/mobile.js")).unwrap();
+        src.lines()
+            .map(str::trim)
+            .filter(|t| !(t.is_empty() || t.starts_with("//") || t.starts_with("/*") || t.starts_with("* ") || *t == "*" || t.starts_with("*/")))
+            .map(String::from)
+            .collect()
+    }
+
+    /* PR #38 CodeAnt (mobile.js:416): a touchcancel is the OS or a scroll taking the touch
+       away, not a finished gesture. It must drop the pending swipe (t0 = null) and never run
+       swipeEnd, which would open/close a drawer or launch the Quick Action from the last point
+       of a touch the user did not finish. No JS runner on this VM / in cargo: source-level. */
+    #[test]
+    fn mobile_a_cancelled_touch_is_never_acted_on_as_a_swipe() {
+        let code = mobile_js_code();
+        assert!(code.iter().any(|l| l.starts_with("const swipeEnd = ")), "swipeEnd handler not found");
+        assert!(code.iter().any(|l| l.contains("addEventListener(\"touchend\", swipeEnd,")), "touchend must run swipeEnd");
+        let cancels: Vec<&String> = code.iter().filter(|l| l.contains("addEventListener(\"touchcancel\"")).collect();
+        assert!(!cancels.is_empty(), "no touchcancel listener");
+        assert!(cancels.iter().all(|l| !l.contains("swipeEnd")), "a touchcancel listener runs swipeEnd: {cancels:?}");
+        assert!(cancels.iter().any(|l| l.contains("t0 = null")), "touchcancel must drop the pending swipe (t0 = null): {cancels:?}");
+    }
+
+    /* PR #38 CodeAnt (mobile.js:600): the bottom-nav / header history buttons open a note
+       like the OS back does, so they take the same quiet-focus rule (quiet() before histGo),
+       or the loaded note focuses the editor and the IME covers the nav bar. */
+    #[test]
+    fn mobile_history_buttons_keep_the_keyboard_down_like_os_back() {
+        let code = mobile_js_code();
+        for (btn, dir) in [("nBack", "-1"), ("nFwd", "1")] {
+            let l = code
+                .iter()
+                .find(|l| l.starts_with(&format!("{btn}.onclick = ")))
+                .unwrap_or_else(|| panic!("{btn}.onclick not found"));
+            let q = l.find("quiet();").unwrap_or_else(|| panic!("{btn}.onclick does not call quiet(): {l}"));
+            let h = l.find(&format!("histGo({dir})")).unwrap_or_else(|| panic!("{btn}.onclick does not call histGo({dir}): {l}"));
+            assert!(q < h, "{btn}.onclick must go quiet BEFORE histGo: {l}");
+        }
+        assert!(code.iter().any(|l| l.contains("hBack.onclick = nBack.onclick") && l.contains("hFwd.onclick = nFwd.onclick")),
+            "the header history buttons must reuse the quiet bottom-nav handlers");
+    }
+
     #[test]
     fn block_lines_maps_every_top_level_block_to_its_source_line() {
         // one of each shape the scroll fixture uses. The mapping is what the
