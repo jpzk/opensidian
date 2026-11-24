@@ -446,3 +446,21 @@ fn i328_negative_ours_does_not_outrank_theme_nav_rules() {
     assert!(rule(&c, ".snavi").contains("color: var(--text-chrome)"), "#328: resting nav ink changed");
     assert!(ui("main.js").contains("querySelectorAll(\".snavi\")"), "#328: nav lookups by .snavi removed");
 }
+#[test]
+fn i337_mono_rgb_100_is_defined_like_stock() {
+    // Minimal: input.prompt-input { border-color: rgba(var(--mono-rgb-100), 0.05) }. Undefined var ->
+    // invalid at computed time -> currentColor (ours 15,15,15 / 209,209,209). Stock: L 0,0,0 / D 255,255,255.
+    let c = css();
+    assert_eq!(decl_in(&c, "\nbody {", "--mono-rgb-100"), "255, 255, 255", "#337: dark --mono-rgb-100 not stock");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--mono-rgb-100"), "0, 0, 0", "#337: light --mono-rgb-100 not stock");
+}
+#[test]
+fn i337_negative_mono_rgb_is_a_bare_triplet_not_a_colour() {
+    // rgba(var(--mono-rgb-100), a) only parses with a bare "r, g, b" triplet; a colour value (#fff, rgb())
+    // would make every theme rule using it invalid again.
+    let c = css();
+    for scope in ["\nbody {", "\nbody:where(.theme-light) {"] {
+        let v = decl_in(&c, scope, "--mono-rgb-100");
+        assert!(!v.contains('#') && !v.contains('(') && v.split(',').count() == 3, "#337: --mono-rgb-100 is not a bare triplet: {v}");
+    }
+}
