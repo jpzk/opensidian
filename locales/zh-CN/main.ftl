@@ -21,6 +21,21 @@ set-general-plugin-api-version = 插件 API 版本 { $v }
 set-general-plugin-api-version-desc = 此版本实现的插件 API；要求更高 minAppVersion 的插件将被拒绝加载。
 set-general-automatic-updates = 自动更新
 set-general-automatic-updates-desc = 自动更新暂时停用。请使用“检查更新”查找新的已签名版本。
+# #294 Check for updates: the verdict (updates.rs check_with) and its line in Settings
+update-none = Opensidian 已是最新版本（{ $v }）；未找到已发布的版本。
+update-available = Opensidian { $version } 可用 — 校验和由 { $key } 签名，请用此哈希值核对你下载的文件。
+update-current = Opensidian 已是最新版本（{ $v }）。最新发布的版本 { $version }：校验和由 { $key } 签名。
+update-unsigned = 最新发布的版本 { $version } 未签名（或签名无效）— 已忽略。
+update-mismatch = 最新发布的版本 { $version }：发布文件与已签名的校验和不一致 — 已忽略。
+update-rollback = 之前见过已签名的版本 { $version }，但现在能通过验证的最新版本是 { $v } — 不会提供更旧的版本。
+update-warn-unsigned = 较新的版本 { $version } 未签名（或签名无效）— 已忽略。
+update-warn-mismatch = 较新的版本 { $version }：发布文件与已签名的校验和不一致 — 已忽略。
+update-no-artefact = 已签名的校验和中没有适用于此平台的发布文件。
+update-artefact-missing = 此平台的已签名发布文件（{ $file }）未附加到该版本。
+update-rollback-none = 之前见过已签名的版本 { $version }，但 GitHub 现在未列出任何版本 — 不提供任何版本。
+update-checking = 正在 GitHub 上查找已签名的版本…
+update-view-release = 查看此版本
+update-error = 无法检查更新：{ $error }
 set-general-language = 语言
 set-general-language-desc = 更改界面显示语言。 | 了解如何为 Opensidian 添加新语言。
 set-general-help = 帮助
@@ -150,6 +165,17 @@ set-fileslinks-allow-uri-callbacks = 允许 URI 回调
 set-fileslinks-allow-uri-callbacks-desc = 处理 Opensidian URI 时，允许通过 x-success 或 x-error 使用 x-callback-url。 | 了解更多
 set-fileslinks-rebuild-vault-cache = 重建仓库缓存
 set-fileslinks-rebuild-vault-cache-desc = 根据仓库大小，重建缓存可能需要几秒到几分钟。 | 了解更多
+
+## Settings > Security > Sandbox (#293)
+
+secsb-section = 沙盒
+secsb-label = Landlock 沙盒
+secsb-enforced = 已生效
+secsb-not-enforced = 未生效
+secsb-off = 关闭
+secsb-desc-enforced = 此窗口只能写入其仓库以及应用所需的文件夹。启动时通过 OPENSIDIAN_LANDLOCK=1 开启。
+secsb-desc-not-enforced = 沙盒已开启，但在此窗口中未生效，因此这里不会打开任何仓库。
+secsb-desc-off = 未开启。使用 OPENSIDIAN_LANDLOCK=1 启动 Opensidian，可将其限制在仓库内（仅限 Linux）。
 
 ## Command palette and Settings > Hotkeys
 
@@ -358,3 +384,24 @@ menu-zoom-to-selection = 缩放到选中内容
 menu-as-obsidian-url = 作为 Obsidian URL
 menu-from-system-root = 从系统根目录
 menu-from-vault-folder = 从仓库文件夹
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = 设备访问
+secdev-camera = 摄像头
+secdev-camera-desc = 应用和社区插件对摄像头的访问。摄像头开启期间，窗口标题以“● Camera”开头。
+secdev-location = 位置
+secdev-location-desc = 提供给应用和社区插件的你的位置。
+secdev-notifications = 通知
+secdev-notifications-desc = 来自应用和社区插件的桌面通知。
+secdev-pointerlock = 指针锁定
+secdev-pointerlock-desc = 你点击后，应用或社区插件可以隐藏并捕获鼠标指针（3D 视图、游戏）；按 Esc 释放。
+secdev-values = 询问：每个请求都在单独的系统窗口中询问。始终允许：不弹出该窗口直接允许（此选项只需在系统窗口中确认一次）。关闭：拒绝所有请求，也不显示窗口。
+secdev-na = 不可用
+secdev-na-desc = 从不授予应用或插件，也不显示窗口：屏幕捕获、设备名称、受保护的媒体（EME）、网站数据访问、WebXR、MIDI。
+secmic-label = 麦克风
+secmic-desc = 询问：每次录音前，录音机都会在单独的系统窗口中询问。始终允许：录音直接开始，不再弹出该窗口（此选项只需在系统窗口中确认一次）。关闭：拒绝所有录音，也不显示窗口。麦克风开启期间，窗口标题以“● Recording”开头。
+secmic-ask = 询问
+secmic-always = 始终允许
+secmic-off = 关闭
+secmic-forced = 已被 { $name } 强制关闭。

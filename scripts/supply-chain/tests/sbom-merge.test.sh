@@ -134,7 +134,7 @@ jq '(.vulnerabilities[] | select(.id=="UBUNTU-CVE-2024-43091") | .analysis.state
 "$here/vex-osv-config.sh" "$t/vex-na.json" | grep -q '^id = "UBUNTU-CVE-2024-43091"$' \
   && ok "osv config: the same entry as not_affected WOULD be ignored (filter is on the state)" || bad "osv config: state filter"
 [ "$(grep -c '^\[\[IgnoredVulns\]\]$' "$t/osv.toml")" -eq "$n_vex" ] && ok "osv config: $n_vex IgnoredVulns (ids + aliases)" || bad "osv config count"
-grep -q '^id = "RUSTSEC-2026-0433"$' "$t/osv.toml" && grep -q '^effectiveUntil = 2027-01-15T23:59:59Z$' "$t/osv.toml" \
+grep -q '^id = "RUSTSEC-2026-0543"$' "$t/osv.toml" && grep -q '^effectiveUntil = 2027-05-15T23:59:59Z$' "$t/osv.toml" \
   && ok "osv config: effectiveUntil = VEX expiry" || bad "osv config ignoreUntil"
 jq '.vulnerabilities[0].properties = []' "$root/supply-chain/vex.cdx.json" >"$t/vex-noexp.json"
 expect_fail "osv config: VEX entry without expiry" "no opensidian:expires" "$here/vex-osv-config.sh" "$t/vex-noexp.json"

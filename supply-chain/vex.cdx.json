@@ -18,20 +18,6 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:cargo/pulldown-cmark@0.13.4",
-      "name": "pulldown-cmark",
-      "version": "0.13.4",
-      "purl": "pkg:cargo/pulldown-cmark@0.13.4"
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:cargo/tokio@1.53.1",
-      "name": "tokio",
-      "version": "1.53.1",
-      "purl": "pkg:cargo/tokio@1.53.1"
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:cargo/proc-macro-error@1.0.4",
       "name": "proc-macro-error",
       "version": "1.0.4",
@@ -130,87 +116,6 @@
     }
   ],
   "vulnerabilities": [
-    {
-      "bom-ref": "vex:RUSTSEC-2026-0433",
-      "id": "RUSTSEC-2026-0433",
-      "source": {
-        "name": "RustSec",
-        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0433.html"
-      },
-      "affects": [
-        {
-          "ref": "pkg:cargo/pulldown-cmark@0.13.4"
-        }
-      ],
-      "analysis": {
-        "state": "not_affected",
-        "detail": "Needs Options::ENABLE_WIKILINKS, which opensidian removes at every parser site (src-tauri/src/main.rs:2925, :3198). Fix 0.13.6 is < 6 weeks old (dependency age policy); bump to >=0.13.6 by expiry.",
-        "justification": "code_not_reachable",
-        "response": [
-          "update"
-        ]
-      },
-      "properties": [
-        {
-          "name": "opensidian:expires",
-          "value": "2027-01-15"
-        }
-      ]
-    },
-    {
-      "bom-ref": "vex:RUSTSEC-2026-0414",
-      "id": "RUSTSEC-2026-0414",
-      "source": {
-        "name": "RustSec",
-        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0414.html"
-      },
-      "affects": [
-        {
-          "ref": "pkg:cargo/pulldown-cmark@0.13.4"
-        }
-      ],
-      "analysis": {
-        "state": "not_affected",
-        "detail": "Needs Options::ENABLE_WIKILINKS, disabled at main.rs:2925, :3198. Fixed in 0.13.5; bump by expiry.",
-        "justification": "code_not_reachable",
-        "response": [
-          "update"
-        ]
-      },
-      "properties": [
-        {
-          "name": "opensidian:expires",
-          "value": "2027-01-15"
-        }
-      ]
-    },
-    {
-      "bom-ref": "vex:RUSTSEC-2026-0386",
-      "id": "RUSTSEC-2026-0386",
-      "source": {
-        "name": "RustSec",
-        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0386.html"
-      },
-      "affects": [
-        {
-          "ref": "pkg:cargo/tokio@1.53.1"
-        }
-      ],
-      "analysis": {
-        "state": "not_affected",
-        "detail": "AsyncFd::new I/O-safety unsoundness; opensidian never calls AsyncFd. Bump tokio by expiry.",
-        "justification": "code_not_reachable",
-        "response": [
-          "update"
-        ]
-      },
-      "properties": [
-        {
-          "name": "opensidian:expires",
-          "value": "2027-01-15"
-        }
-      ]
-    },
     {
       "bom-ref": "vex:RUSTSEC-2024-0370",
       "id": "RUSTSEC-2024-0370",

@@ -184,6 +184,37 @@
     if (m) m.hidden = !R.lockdown;
     try { if (typeof pushTitle === "function" && tWant) pushTitle(tWant); } catch (_) {}
   }
+  /* #293 (audit F-7) Sandbox: the Landlock state of THIS process as Rust reports it (security_get
+     .sandbox.state = "enforced" | "not-enforced" | "off", sandbox::state_json). Read-only: there is
+     no in-app switch, the sandbox is asked for at start (OPENSIDIAN_LANDLOCK=1) and a boot that asks
+     for it and cannot enforce it never opens the vault. Census [secsb:<state>]. Strings: secsb-*. */
+  const SB_I18 = window.I18N;   // captured at load, before any plugin script
+  const sbTr = (id, en) => { try { const s = SB_I18 && SB_I18.t(id); if (s && s !== id) return s; } catch (_) {} return en; };
+  const SB_TEXT = {
+    "enforced": ["secsb-enforced", "Enforced", "secsb-desc-enforced", "This window can write only inside its vault and the folders the app needs. Turned on at start with OPENSIDIAN_LANDLOCK=1."],
+    "not-enforced": ["secsb-not-enforced", "Not enforced", "secsb-desc-not-enforced", "The sandbox is turned on but is not in force in this window, so no vault is opened here."],
+    "off": ["secsb-off", "Off", "secsb-desc-off", "Not turned on. Start Opensidian with OPENSIDIAN_LANDLOCK=1 to confine it to the vault (Linux only)."],
+  };
+  function sandboxRow(pg) {
+    const S = R && R.sandbox, t = S && SB_TEXT[S.state];
+    if (!t) return;
+    pg.appendChild(el("div", "ssec", sbTr("secsb-section", "Sandbox")));
+    const card = el("div", "scard"); pg.appendChild(card);
+    const r = el("div", "srow"); r.dataset.secsb = S.state;
+    const info = el("div", "sinfo");
+    info.appendChild(el("div", "slabel", sbTr("secsb-label", "Landlock sandbox")));
+    info.appendChild(el("div", "sdesc", sbTr(t[2], t[3])));
+    if (S.detail) info.appendChild(el("div", "sdesc ssecforced", S.detail));
+    r.appendChild(info);
+    const v = el("div", "sctl ssecsbstate", sbTr(t[0], t[1])); v.id = "ssecsb";
+    r.appendChild(v);
+    card.appendChild(r);
+  }
+  function sbTok() {
+    if (!R || !R.sandbox || typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return "";
+    const v = document.getElementById("ssecsb");
+    return " [secsb:" + R.sandbox.state + "/" + (v ? v.textContent : "-") + "]";
+  }
   async function refresh() { R = await inv("security_get"); publish(); return R; }
   async function set(f, on) {
     if (busy) return; busy = true;
@@ -251,11 +282,14 @@
         nRows++; if (lock) nForced++;
       }
     }
+    micRow(pg);
     if (typeof updateTitle === "function") updateTitle();
+    sandboxRow(pg);
   }
   function tok() {
     if (!R) return "";
     let ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
+    ld += sbTok(); // #293: only while the Security pane is open
     // [secd:<id of the focused control>] while the confirm is up (default focus = ld-no)
     if (ldOpen) { const a = document.activeElement; ld += " [secd:" + (a && a.id ? a.id : "-") + "]"; }
     // [secm:<marker rect>|<vault-name rect>] x,y,w,h while the marker shows: the harness intersects them
@@ -274,7 +308,137 @@
     }).join(",");
     const nt = document.querySelector('#spage .srow[data-sec="offline"] .sctl.toggle'), nb = nt && nt.getBoundingClientRect();
     const sn = nb ? " [secn:" + Math.round(nb.x + nb.width / 2) + "," + Math.round(nb.y + nb.height / 2) + "]" : "";
-    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + ld;
+    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + micTok() + devTok() + ld;
+  }
+  /* #295 (audit F-8) Microphone: "ask" (default) | "always" (#295 follow-up) | "off". Not one of the
+     boolean switches above (security.rs keeps it apart; [secp:]/[secv:]/[secf:] stay theirs): its
+     own row (data-secmic, not data-sec), a three-way choice, its own command security_mic_set. The
+     page only ASKS for a value: a change that lowers protection (off -> ask, to always allow) is
+     confirmed in the NATIVE "lower protection?" window before Rust writes it; a revoke (back to ask
+     / off) applies at once. The start decision itself is native too (audio_rec_start).
+     Census: [secmic:<stored>/<effective>/<forced 1|0>@<cx>,<cy>] — @ = the button the old switch
+     press led to (Off, or Ask while off), so the T1 secmic cases keep their clicks — and
+     [secmicv:ask@x,y,always@x,y,off@x,y] (every button's centre). Strings: locales secmic-*. */
+  const I18 = window.I18N;   // captured at load, before any plugin script (a later global cannot relabel the row)
+  const tr = (id, args, en) => { try { const s = I18 && I18.t(id, args); if (s && s !== id) return s; } catch (_) {} return en; };
+  const MIC_VALUES = [["ask", "secmic-ask", "Ask"], ["always", "secmic-always", "Always allow"], ["off", "secmic-off", "Off"]];
+  async function setMic(v) {
+    if (busy) return; busy = true;
+    try { R = await inv("security_mic_set", { value: v }); publish(); }
+    catch (e) { console.error("[sec] set microphone:", e); if (typeof say === "function") say("Security: " + String(e && e.message || e)); }
+    busy = false;
+    if (typeof settingsOpen !== "undefined" && settingsOpen && sPane === "security") build(document.getElementById("spage"));
+  }
+  function micRow(pg) {
+    const M = R.microphone;
+    if (!M) return;
+    // devaccess: the Microphone opens Settings › Security › Device access (it was "Privacy" in #302)
+    pg.appendChild(el("div", "ssec", tr("secdev-section", null, "Device access")));
+    const card = el("div", "scard"); pg.appendChild(card);
+    const lock = !!M.forced;
+    const r = el("div", "srow" + (lock ? " dis" : ""));
+    r.dataset.secmic = "1";
+    if (lock) r.setAttribute("aria-disabled", "true");
+    const info = el("div", "sinfo");
+    info.appendChild(el("div", "slabel", tr("secmic-label", null, M.name || "Microphone")));
+    info.appendChild(el("div", "sdesc", tr("secmic-desc", null, "Ask: the Audio recorder asks in a separate system window before every recording. Always allow: recordings start without that window (you confirm this choice once, in a system window). Off: every recording is refused and no window is shown. While the microphone is on, the window title starts with \"● Recording\".")));
+    if (lock) info.appendChild(el("div", "sdesc ssecforced", tr("secmic-forced", { name: WHY[M.forced] || M.forced }, "Forced off by " + (WHY[M.forced] || M.forced) + ".")));
+    r.appendChild(info);
+    const cur = lock ? M.effective : M.stored;
+    const seg = el("div", "sctl ssecmicseg");
+    seg.id = "ssecmic";
+    seg.setAttribute("role", "radiogroup");
+    seg.setAttribute("aria-label", tr("secmic-label", null, "Microphone"));
+    for (const [v, id, en] of MIC_VALUES) {
+      const b = el("button", "sbtn" + (v === cur ? " acc" : ""), tr(id, null, en));
+      b.dataset.secmicv = v;
+      b.setAttribute("role", "radio"); b.setAttribute("aria-checked", v === cur ? "true" : "false");
+      if (lock) { b.disabled = true; b.setAttribute("aria-disabled", "true"); }
+      else b.onclick = ev => { ev.stopPropagation(); if (v !== M.stored) setMic(v); };
+      seg.appendChild(b);
+    }
+    r.appendChild(seg);
+    card.appendChild(r);
+    devRows(card);
+  }
+  /* devaccess: Settings › Security › Device access = the Microphone row above plus one row per
+     device surface stock 1.13.7 offers (security.rs DEV_ROWS: camera, location, notifications,
+     pointerLock), each ask | always | off through security_dev_set (Rust validates the row and the
+     value; a weakening change is confirmed in the NATIVE "lower protection?" window; a revoke applies
+     at once). The decision on every request is native (devperm.rs decide); this pane only asks for
+     a value. Then the "not available" list (never granted). Census:
+     [secdev:<field>=<stored>/<effective>/<forced 1|0>@ask:x,y|always:x,y|off:x,y;...] and
+     [secdevna:<n>]. Strings: locales secdev-*. */
+  const DEV_TXT = {
+    camera: ["secdev-camera", "Camera", "secdev-camera-desc", "Camera access for the app and community plugins. While the camera is on, the window title starts with \"● Camera\"."],
+    location: ["secdev-location", "Location", "secdev-location-desc", "Your location, for the app and community plugins."],
+    notifications: ["secdev-notifications", "Notifications", "secdev-notifications-desc", "Desktop notifications from the app and community plugins."],
+    pointerLock: ["secdev-pointerlock", "Pointer lock", "secdev-pointerlock-desc", "The app or a community plugin may hide and capture the mouse pointer after you click (3D views, games); Esc releases it."],
+  };
+  async function setDev(f, v) {
+    if (busy) return; busy = true;
+    try { R = await inv("security_dev_set", { field: f, value: v }); publish(); }
+    catch (e) { console.error("[sec] set " + f + ":", e); if (typeof say === "function") say("Security: " + String(e && e.message || e)); }
+    busy = false;
+    if (typeof settingsOpen !== "undefined" && settingsOpen && sPane === "security") build(document.getElementById("spage"));
+  }
+  function devRows(card) {
+    const D = R.device;
+    if (!D || !Array.isArray(D.rows)) return;
+    for (const M of D.rows) {
+      const t = DEV_TXT[M.field];
+      if (!t) continue;   // a row this pane does not know is not drawn (Rust still decides it)
+      const lock = !!M.forced;
+      const r = el("div", "srow" + (lock ? " dis" : ""));
+      r.dataset.secdev = M.field;
+      if (lock) r.setAttribute("aria-disabled", "true");
+      const info = el("div", "sinfo");
+      info.appendChild(el("div", "slabel", tr(t[0], null, t[1])));
+      info.appendChild(el("div", "sdesc", tr(t[2], null, t[3]) + " " + tr("secdev-values", null, "Ask: every request is asked in a separate system window. Always allow: granted without that window (you confirm this choice once, in a system window). Off: every request is refused and no window is shown.")));
+      if (lock) info.appendChild(el("div", "sdesc ssecforced", tr("secmic-forced", { name: WHY[M.forced] || M.forced }, "Forced off by " + (WHY[M.forced] || M.forced) + ".")));
+      r.appendChild(info);
+      const cur = lock ? M.effective : M.stored;
+      const seg = el("div", "sctl ssecmicseg");
+      seg.id = "ssecdev-" + M.field;
+      seg.setAttribute("role", "radiogroup");
+      seg.setAttribute("aria-label", tr(t[0], null, t[1]));
+      for (const [v, id, en] of MIC_VALUES) {
+        const b = el("button", "sbtn" + (v === cur ? " acc" : ""), tr(id, null, en));
+        b.dataset.secdevv = v;
+        b.setAttribute("role", "radio"); b.setAttribute("aria-checked", v === cur ? "true" : "false");
+        if (lock) { b.disabled = true; b.setAttribute("aria-disabled", "true"); }
+        else b.onclick = ev => { ev.stopPropagation(); if (v !== M.stored) setDev(M.field, v); };
+        seg.appendChild(b);
+      }
+      r.appendChild(seg);
+      card.appendChild(r);
+    }
+    const na = el("div", "srow");
+    na.dataset.secdevna = String((D.notAvailable || []).length);
+    const ni = el("div", "sinfo");
+    ni.appendChild(el("div", "slabel", tr("secdev-na", null, "Not available")));
+    ni.appendChild(el("div", "sdesc", tr("secdev-na-desc", null, "Never granted to the app or to plugins, and no window is shown: screen capture, device names, protected media (EME), website data access, WebXR, MIDI.")));
+    na.appendChild(ni);
+    card.appendChild(na);
+  }
+  function devTok() {
+    const D = R && R.device;
+    if (!D || !Array.isArray(D.rows) || !document.getElementById("ssecmic")) return "";
+    const rows = D.rows.map(M => {
+      const seg = document.getElementById("ssecdev-" + M.field);
+      const c = v => { const b = seg && seg.querySelector('[data-secdevv="' + v + '"]'); if (!b) return "-"; const q = b.getBoundingClientRect(); return Math.round(q.x + q.width / 2) + "," + Math.round(q.y + q.height / 2); };
+      return M.field + "=" + M.stored + "/" + M.effective + "/" + (M.forced ? 1 : 0) + "@" + MIC_VALUES.map(([v]) => v + ":" + c(v)).join("|");
+    });
+    const na = document.querySelector("#spage [data-secdevna]");
+    return " [secdev:" + rows.join(";") + "] [secdevna:" + (na ? na.dataset.secdevna : "-") + "]";
+  }
+  function micTok() {
+    const M = R && R.microphone, seg = document.getElementById("ssecmic");
+    if (!M || !seg) return "";
+    const c = v => { const b = seg.querySelector('[data-secmicv="' + v + '"]'); if (!b) return null; const q = b.getBoundingClientRect(); return Math.round(q.x + q.width / 2) + "," + Math.round(q.y + q.height / 2); };
+    const legacy = c(M.stored === "off" ? "ask" : "off");
+    return " [secmic:" + M.stored + "/" + M.effective + "/" + (M.forced ? 1 : 0) + "@" + legacy + "]" +
+      " [secmicv:" + MIC_VALUES.map(([v]) => v + "@" + c(v)).join(",") + "]";
   }
   /* [secg:nav=<h>/<font>/<padT>/<padL>/<radius>/<same 1|0>,row=<padT>/<padB>,lbl=<font>,desc=<font>,tg=<w>x<h>]
      the painted chrome of the Security tab, read with getComputedStyle — the T3 phase compares it to
