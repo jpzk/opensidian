@@ -203,11 +203,42 @@ fn file_id_path(path: &Path) -> io::Result<(u32, u64)> {
     file_id_handle(&f)
 }
 
+/// Why a name is one Windows itself would not take as written, or None. Without this, the
+/// app could create entries that Explorer, a sync client or `git` cannot open, rename or
+/// delete, or write somewhere else than the name says:
+///   `name:stream`   addresses an alternate data stream of `name` (hidden data in a note);
+///   `< > " | ? *`   and control characters are not valid in a name;
+///   a trailing dot or space is silently dropped by Win32 (`note.` would write `note`);
+///   CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without an extension, are devices.
+/// plugin_rel already refuses ':' for plugin paths; this covers every path, the app's too.
+fn bad_name(s: &str) -> Option<&'static str> {
+    if s.contains(':') {
+        return Some("':' in a name (alternate data stream form)");
+    }
+    if s.chars().any(|ch| ch.is_control() || matches!(ch, '<' | '>' | '"' | '|' | '?' | '*')) {
+        return Some("a character Windows does not allow in a name");
+    }
+    if s.ends_with('.') || s.ends_with(' ') {
+        return Some("a name ending in a dot or a space");
+    }
+    let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = |p: &str| stem.strip_prefix(p).is_some_and(|d| d.len() == 1 && d != "0" && d.chars().all(|x| x.is_ascii_digit()));
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT") {
+        return Some("a reserved Windows device name");
+    }
+    None
+}
+
 fn parts(rel: &Path) -> io::Result<Vec<&std::ffi::OsStr>> {
     let mut out = Vec::new();
     for c in rel.components() {
         match c {
-            Component::Normal(s) => out.push(s),
+            Component::Normal(s) => {
+                if let Some(why) = bad_name(&s.to_string_lossy()) {
+                    return Err(refused(rel, why));
+                }
+                out.push(s)
+            }
             Component::CurDir => {}
             _ => return Err(refused(rel, "bad path component")),
         }
@@ -573,7 +604,7 @@ impl Vault {
         }
         let mut committed = None;
         for cand in names {
-            if cand.is_empty() || cand.contains('/') || cand.contains('\\') || cand.starts_with('.') {
+            if cand.is_empty() || cand.contains('/') || cand.contains('\\') || cand.starts_with('.') || bad_name(&cand).is_some() {
                 continue;
             }
             let dest = d.path.join(&cand);
@@ -1082,6 +1113,34 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// a name Windows itself would not take as written is refused before any call, for the
+    /// app's paths and the plugins' alike, and nothing is left on disk; look-alikes are fine
+    #[test]
+    fn names_windows_cannot_handle_are_refused() {
+        let root = fresh("names");
+        let v = Vault::open(&root).unwrap();
+        let listing = |r: &Path| -> Vec<String> { fs::read_dir(r).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect() };
+        for p in [
+            "n.md:hidden", "sub/a:b", "CON.md", "nul", "sub/Aux.txt", "COM1.md", "lpt9", "con .md", "a?.md", "a*.md", "a|b.md",
+            "a<b>.md", "q\"uote.md", "dot./x.md", "end.", "end ", "tab\tx.md",
+        ] {
+            let e = v.write_atomic(Path::new(p), b"x", false).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{p:?}: {e}");
+            assert!(v.mkdir_p(Path::new(p)).is_err(), "mkdir {p:?}");
+            assert!(v.p_write(Path::new(p), b"x", false).is_err(), "plugin write {p:?}");
+        }
+        assert!(listing(&root).is_empty(), "{:?}", listing(&root));
+        // the ':' form would have written a hidden stream into an existing note
+        v.write_atomic(Path::new("n.md"), b"note", false).unwrap();
+        assert!(v.write_atomic(Path::new("n.md:hidden"), b"x", false).is_err());
+        assert!(fs::read(root.join("n.md:hidden")).is_err(), "no stream was written");
+        // look-alikes that are ordinary names
+        for p in ["CONSOLE.md", "COM10.md", "COM0.md", "nullable.md", "a.b.c.md", ".hidden", "é ü ñ.md", "LPT.md", "sub/x.md"] {
+            v.write_atomic(Path::new(p), b"x", false).unwrap_or_else(|e| panic!("{p:?}: {e}"));
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
