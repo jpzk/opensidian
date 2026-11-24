@@ -66,6 +66,16 @@ done
 C=$(cd "$C" && pwd)
 [[ $ref =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || die "bad -R '$ref'"
 G="$C/src-tauri/gen/android"
+# The checkout is DATA (CodeQL 968/969, cache poisoning): the scan runs in the default-branch
+# context, so nothing from the android branch may execute. cargo metadata (here or in sbom-scan.yml)
+# runs with cwd $C/src-tauri and would honour a cargo config in $C/src-tauri/.cargo or $C/.cargo
+# (build.rustc-wrapper, build.rustc, ...): refuse any such file, symlinks and dangling links
+# included. rust-toolchain.toml stays readable: the caller pins RUSTUP_TOOLCHAIN, which wins.
+for d in "$C/src-tauri/.cargo" "$C/.cargo"; do
+  for f in "$d/config" "$d/config.toml"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then die "cargo config ${f#"$C"/} in the checkout: refused (the android tree is data; a cargo config there could run code)"; fi
+  done
+done
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
 
 # --- the Android triples, as the branch's Gradle build compiles them ---------------------------
