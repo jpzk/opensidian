@@ -351,7 +351,7 @@ body {
   --input-height: 24px;
   --input-padding: 4px 6px;
   --input-radius: 4px;
-  --interactive-normal: var(--border);
+  --interactive-normal: var(--color-base-30);   /* #337: stock dark dropdown/button fill = base-30 (Solarized D base02 7,54,66); light block: base-00 */
   --link-color: var(--accent-blue);
   --link-color-hover: var(--text-accent-hover);
   --link-decoration: none;
@@ -469,6 +469,7 @@ body:where(.theme-light) {
   --background-primary-alt: var(--color-base-10, #fafafa);
   --background-secondary: #f6f6f6;
   --background-modifier-border-hover: var(--color-base-35, #dadada);   /* #327: stock default L 218 (Gruvbox sets none: 218; Solarized L base2 238,232,213) */
+  --interactive-normal: var(--color-base-00, #ffffff);   /* #337: stock default L dropdown 255 (Gruvbox sets none: 255; Solarized L base2) */
   --background-secondary-alt: var(--color-base-05, #e5e5e5);
   --ribbon-background: #f6f6f6;
   --background-modifier-border: var(--color-base-30, #e4e4e4);
@@ -1240,13 +1241,14 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
         max-height: 100%; min-height: 0; display: flex; flex-direction: column;
         border: 1px solid var(--prompt-border-color); border-radius: 8px; overflow: hidden;
         box-shadow: 0 8px 30px var(--shadow-modal) }
-#minput { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
+#minput { width: 100%; box-sizing: border-box; padding: 10px 14px; border-width: 0;   /* #337: width only - an ID-level border colour would outrank theme input.prompt-input rules (Minimal) */
           flex: 0 0 auto;
           border-bottom: 1px solid var(--border); background: var(--bg-base);
           color: var(--text-chrome); font-size: 14px; outline: none }
 /* #337: a focused stock prompt input is framed in --background-modifier-border-focus (Solarized: its accent
    203,75,22); our separator under it keeps its own colour */
-#minput:focus { border-color: var(--background-modifier-border-focus); border-bottom-color: var(--border) }
+.prompt-input:focus { border-color: var(--background-modifier-border-focus) }   /* #337: (0,2,0) so a theme input.prompt-input:focus rule wins, as on stock */
+#minput:focus { border-bottom-color: var(--border) }
 /* #352: WebKit paints its own grey placeholder (#a9a9a9 in both modes) unless told; stock = --text-faint */
 #minput::placeholder, #rninput::placeholder { color: var(--input-placeholder-color, var(--text-faint)) }
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
