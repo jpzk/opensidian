@@ -476,7 +476,7 @@ body:where(.theme-light) {
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
   --text-warning: var(--color-orange, #ec7500);               /* deep-templater F10: stock 1.13.7 pixel of templater's device-only note (edge/ev/stock-r1-F10-tab2.png) */
-  --text-highlight-bg: #ffec99;
+  --text-highlight-bg: rgba(255, 208, 0, .4);   /* #323/#335: stock light computes the translucent tint, not its opaque over-white #ffec99 (wrong over any non-white surface) */
   /* the code token names (deep-templater F24): plugin highlighters paint with them,
      templater's <% %> commands most visibly (var(--code-property, #d4d4d4) etc.), and
      without them they took their dark fallbacks on a light page. Values = stock

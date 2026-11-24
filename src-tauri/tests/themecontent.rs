@@ -283,6 +283,9 @@ fn i335_lp_highlight_is_span_cm_highlight() {
     let css = style_css();
     assert_eq!(val(&css, ".cm-highlight", "background-color"), "var(--text-highlight-bg)");
     assert_eq!(val(&css, ".cm-highlight", "color"), "var(--text-normal)");
+    // stock light computes the translucent tint rgba(255,208,0,.4) (= 255,236,153 only over white)
+    assert_eq!(val(&css, LIGHT, "--text-highlight-bg"), "rgba(255, 208, 0, .4)");
+    assert!(!css.to_lowercase().contains("--text-highlight-bg: #ffec99"), "#335: opaque light highlight still defined");
     // negative: no rule more specific than the bare class sets the highlight ink or padding
     assert!(rules(&css).iter().all(|(p, _)| p != ".lp .hl"), "#335: `.lp .hl` still hard-codes the ink");
     let over: Vec<_> = rules(&css).into_iter().map(|(p, _)| p).filter(|p| p != ".cm-highlight" && p.contains("cm-highlight")).collect();
