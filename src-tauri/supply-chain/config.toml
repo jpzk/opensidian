@@ -143,8 +143,9 @@ version = "4.6.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.cookie]]
-version = "0.18.2"
+version = "0.18.3"
 criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0594 (GHSA-8wcq-xq25-7fhm, private cookie AES-GCM nonces can repeat after fork, patched >= 0.18.3); delta 0.18.2 -> 0.18.3 reviewed by jpzk 2026-11-23 (tag 0.18.3 = 1ab14faf, fix commit 98de6032: PrivateJar nonce from rand::rngs::OsRng instead of thread_rng, src/secure/private.rs +2 -2, plus version/CHANGELOG; same dependency set, no new unsafe/build.rs/io); not reachable here (private feature off, aes-gcm not in the graph); exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-23: replace with an imported audit"
 
 [[exemptions.core-foundation]]
 version = "0.10.1"
@@ -321,6 +322,11 @@ criteria = "safe-to-deploy"
 [[exemptions.foreign-types-macros]]
 version = "0.2.4"
 criteria = "safe-to-deploy"
+
+[[exemptions.form_urlencoded]]
+version = "1.2.3"
+criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0592 (GHSA-hrj5-67jp-wqp9): url 2.5.9 strictly requires form_urlencoded ^1.2.3; delta 1.2.2 -> 1.2.3 (mozilla-audited 1.2.2) reviewed by jpzk 2026-11-22: version bumps + Serializer::for_suffix clamps start_position instead of panicking (rust-url #1172), no unsafe/build.rs/io; exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-22: replace with an imported audit"
 
 [[exemptions.futures-task]]
 version = "0.3.34"
@@ -855,8 +861,9 @@ version = "1.0.107"
 criteria = "safe-to-deploy"
 
 [[exemptions.pulldown-cmark]]
-version = "0.13.4"
+version = "0.13.6"
 criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0414 + RUSTSEC-2026-0433 (wikilink DoS, patched >= 0.13.5 / >= 0.13.6; opensidian removes ENABLE_WIKILINKS, so not reachable, bumped anyway); delta 0.13.4 -> 0.13.6 (tag sha1 014b61d3) read by jpzk 2026-11-23: src/firstpass.rs + src/parse.rs only (wikilink fixes #1102 #1186, definition-list/tight-list flags, lazy-continuation and UTF-8 boundary fixes #1142), build.rs change is the gen-tests generator only, unsafe count 5 unchanged, deps unchanged; mozilla imports only safe-to-run deltas up to 0.13.6, so no imported safe-to-deploy audit exists; exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-23: replace with an imported audit"
 
 [[exemptions.pulldown-cmark-escape]]
 version = "0.11.0"
@@ -1152,8 +1159,9 @@ version = "1.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.tokio]]
-version = "1.53.1"
+version = "1.53.3"
 criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0386 (AsyncFd::new I/O-safety unsoundness, patched >= 1.53.3; opensidian never calls AsyncFd, bumped anyway); delta 1.53.1 -> 1.53.3 (tag sha1 a85c3f5b, published by Darksonn) read by jpzk 2026-11-23: CHANGELOG 1.53.2 + 1.53.3 = AsyncFd::register (unsafe) added + safe constructors deprecated (#8587), sync/rt/fs waker-outside-lock and overflow fixes, no build.rs, deps unchanged; bytecode-alliance trusts Darksonn only via a local [[trusted]] entry, which cargo vet does not import; exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-23: replace with an imported audit"
 
 [[exemptions.tokio-util]]
 version = "0.7.19"
@@ -1241,8 +1249,9 @@ version = "1.0.24"
 criteria = "safe-to-deploy"
 
 [[exemptions.url]]
-version = "2.5.8"
+version = "2.5.9"
 criteria = "safe-to-deploy"
+notes = "security fix RUSTSEC-2026-0592 (GHSA-hrj5-67jp-wqp9, stack overflow in Url::origin on nested blob: URLs, patched >= 2.5.9); delta 2.5.8 -> 2.5.9 reviewed by jpzk 2026-11-22 (tag v2.5.9 = ad1c66cb, rust-url #1186 fix + WHATWG conformance #1140 #1127 #1187 #1161, no new unsafe/build.rs/io); exempt from the six-week rule (operator standing CVE rule); EXPIRES 2027-02-22: replace with an imported audit"
 
 [[exemptions.uuid]]
 version = "1.26.0"
