@@ -39,6 +39,7 @@ pub const MAX_VALUE: usize = 64 * 1024;
 /// the error a restricted-mode vault gets; the bus is never touched
 pub const REFUSED: &str = "EPERM: restricted mode, secret storage is off";
 
+#[cfg_attr(windows, allow(dead_code))] // Windows has a keyring of its own (secrets_win.rs)
 fn unsupported(cause: impl std::fmt::Display) -> String {
     format!("unsupported: secret storage needs a Secret Service (org.freedesktop.secrets) on the session bus: {cause}")
 }
@@ -318,8 +319,12 @@ pub fn run(_addr: Option<&str>, vault: &str, op: Op) -> Result<serde_json::Value
     }
 }
 
+/// Windows: the user's Credential Manager (secrets_win.rs), same ops, same shapes
+#[cfg(windows)]
+pub use crate::secrets_win::run;
+
 /// no OS keyring we speak elsewhere: unsupported, never a fallback store
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn run(_addr: Option<&str>, _vault: &str, _op: Op) -> Result<serde_json::Value, String> {
     Err(unsupported("this platform has no freedesktop Secret Service"))
 }

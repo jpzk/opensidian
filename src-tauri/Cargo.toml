@@ -120,12 +120,15 @@ libc = "=0.2.189"
 objc2 = "=0.6.4"
 block2 = "=0.6.2"
 
-# Windows plugin-store HTTPS (plugin_store.rs -> http_win.rs): WinHTTP, the system's own client
-# (Schannel TLS, system trust store and proxy), as libsoup is on Linux. NO NEW CRATE:
-# windows-sys 0.61.2 is ALREADY in Cargo.lock (tauri -> muda, dirs-sys); `=` pins the locked version
-# and only the WinHttp bindings are compiled in.
+# Windows: what Linux gets from libraries webkit already links comes from Windows itself.
+#   plugin-store HTTPS (plugin_store.rs -> http_win.rs): WinHTTP, the system's own client
+#     (Schannel TLS, system trust store and proxy), as libsoup is on Linux;
+#   app.secretStorage (secrets.rs -> secrets_win.rs): the Credential Manager, as the Secret
+#     Service (libdbus) is on Linux and the Keychain on macOS.
+# NO NEW CRATE: windows-sys 0.61.2 is ALREADY in Cargo.lock (tauri -> muda, dirs-sys); `=` pins
+# the locked version and only these bindings are compiled in (features add no package).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinHttp"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinHttp", "Win32_Security_Credentials"] }
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
