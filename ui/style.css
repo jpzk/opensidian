@@ -132,7 +132,7 @@ body {
   --nav-item-color-active: var(--text-normal);
   --nav-item-color-hover: var(--text-normal);   /* #349: stock's hovered tree row = body ink (not the muted resting ink) */
   --tab-outline-color: var(--background-modifier-border);   /* #322: stock outlines the active tab in the divider ink (= table/divider border colour) */
-  --prompt-border-color: var(--background-modifier-border-focus);   /* #326: stock frames the palette/switcher in the focus border (default #555555 dark / #bdbdbd light) */
+  --prompt-border-color: var(--color-base-40, var(--background-modifier-border-focus));   /* #326: stock frames the palette/switcher in --color-base-40 (Solarized stock = its base-40 base00/base0, NOT its accent focus border); our default theme sets no base ramp, so the stock default base-40 #bdbdbd light / #555555 dark comes from the focus-border defaults */
   --nav-item-background-active: var(--background-modifier-hover);
   --tab-container-background: #333333;
   --tab-background-active: var(--background-primary);

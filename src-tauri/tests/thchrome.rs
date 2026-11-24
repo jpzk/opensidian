@@ -219,7 +219,7 @@ fn i326_palette_and_switcher_border_reads_prompt_border_color() {
     let r = rule(&c, "#mbox");
     assert!(r.contains("border: 1px solid var(--prompt-border-color)"), "#326: #mbox border does not read --prompt-border-color: {r}");
     assert!(!r.contains("var(--border)"), "#326: #mbox still draws the generic --border: {r}");
-    assert_eq!(decl_in(&c, "\nbody {", "--prompt-border-color"), "var(--background-modifier-border-focus)", "#326: no stock default for --prompt-border-color");
+    assert_eq!(decl_in(&c, "\nbody {", "--prompt-border-color"), "var(--color-base-40, var(--background-modifier-border-focus))", "#326: --prompt-border-color must default to the base-40 ramp (Solarized stock = base-40, not its accent focus border)");
 }
 #[test]
 fn i326_negative_geometry_and_other_modals_are_unchanged() {
@@ -254,4 +254,13 @@ fn i327_negative_no_elevated_surface_and_geometry_unchanged() {
     let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--menu-background:") && light.contains("--background-secondary: #f6f6f6"), "#327: light must inherit the wiring via its own secondary (stock 246)");
+}
+#[test]
+fn i326_negative_prompt_border_is_not_the_focus_accent() {
+    // Solarized sets --background-modifier-border-focus = its orange accent, yet stock frames the
+    // prompt in base00/base0 (= its --color-base-40): the default must not read the focus var first.
+    let c = css();
+    let d = decl_in(&c, "\nbody {", "--prompt-border-color");
+    assert!(d.starts_with("var(--color-base-40"), "#326: prompt border reads the focus var first: {d}");
+    assert!(!c.contains("\n  --color-base-40:"), "#326: our default theme defines no base-40 ramp (the fallback carries the stock default)");
 }
