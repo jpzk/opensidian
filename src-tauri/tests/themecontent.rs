@@ -385,7 +385,11 @@ fn i339_canvas_card_links_use_link_styling() {
     let wd = ":where(.canvas-text, .canvas-file-embed) a.wiki";
     assert_eq!(val(&css, wd, "text-decoration"), "var(--link-decoration, underline)");
     // negative: no :is() card rule (specificity 0,2,1 > a theme's .markdown-rendered .internal-link) sets the decoration
-    assert!(rules(&css).iter().all(|(p, d)| !(p.starts_with(":is(.canvas-text") && d.contains("--link-decoration"))), "#339: an :is() card rule sets the decoration");
+    // (token match: the a.ext rule legitimately uses --link-decoration-thickness, which is not the decoration)
+    let uses_deco = |d: &str| d.contains("var(--link-decoration,") || d.contains("var(--link-decoration)");
+    assert!(rules(&css).iter().all(|(p, d)| !(p.starts_with(":is(.canvas-text") && uses_deco(d))), "#339: an :is() card rule sets the decoration");
+    // and no :is() card rule for internal links (a.wiki / a.wiki-unresolved) carries a text-decoration at all
+    assert!(rules(&css).iter().all(|(p, d)| !(p.starts_with(":is(.canvas-text") && p.contains("a.wiki") && d.contains("text-decoration"))), "#339: an :is() card a.wiki rule sets text-decoration");
     let u = format!("{CARD} a.wiki-unresolved");
     assert_eq!(val(&css, &u, "color"), "var(--link-unresolved-color, var(--link-unresolved))");
     assert_eq!(val(&css, &u, "opacity"), "var(--link-unresolved-opacity, 1)");
