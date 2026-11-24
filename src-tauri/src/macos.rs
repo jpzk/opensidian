@@ -224,6 +224,14 @@ pub mod keychain {
         format!("secret storage: keychain {what}: OSStatus {st}{}", msg.map(|m| format!(" ({m})")).unwrap_or_default())
     }
 
+    /// the object SecItemCopyMatching stored in `out` with errSecSuccess. Security documents a +1
+    /// object whenever a kSecReturn* key was set, but nothing enforces that: a NULL fails closed here
+    /// instead of being dereferenced (CodeQL 1722/1723, rust/access-invalid-pointer)
+    pub(super) fn copied<'a>(out: *const c_void, what: &str) -> Result<&'a AnyObject, String> {
+        // SAFETY: out is NULL or the live +1 CF object SecItemCopyMatching stored; as_ref checks NULL
+        unsafe { (out as *const AnyObject).as_ref() }.ok_or_else(|| format!("secret storage: keychain {what}: success without a result"))
+    }
+
     /// the ids stored for this vault, sorted
     pub fn ids(vault: &str) -> Result<Vec<String>, String> {
         let q = base(vault);
@@ -238,10 +246,10 @@ pub mod keychain {
         if st != 0 {
             return Err(err("list", st));
         }
+        let arr = copied(out, "list")?;
         let mut ids = vec![];
-        // SAFETY: out is an NSArray of NSDictionary (released below)
+        // SAFETY: arr (= out) is an NSArray of NSDictionary (released below)
         unsafe {
-            let arr = &*(out as *const AnyObject);
             let n: usize = msg_send![arr, count];
             for i in 0..n {
                 let item: *const AnyObject = msg_send![arr, objectAtIndex: i];
@@ -272,9 +280,9 @@ pub mod keychain {
         if st != 0 {
             return Err(err("read", st));
         }
-        // SAFETY: out is an NSData (released below)
+        let d = copied(out, "read")?;
+        // SAFETY: d (= out) is an NSData (released below)
         let v = unsafe {
-            let d = &*(out as *const AnyObject);
             let len: usize = msg_send![d, length];
             let p: *const u8 = msg_send![d, bytes];
             let v = if len == 0 { Vec::new() } else { std::slice::from_raw_parts(p, len).to_vec() };
@@ -627,5 +635,16 @@ mod tests {
         kc::delete(&v, "k-one").expect("delete");
         assert_eq!(kc::get(&v, "k-one").expect("get3"), None);
         assert!(kc::ids(&v).expect("ids2").is_empty());
+    }
+
+    /// CodeQL 1722/1723: a success status with a NULL result fails closed instead of being
+    /// dereferenced (the non-NULL path is keychain_roundtrip above)
+    #[test]
+    fn keychain_success_without_result_is_an_error() {
+        use super::keychain as kc;
+        for what in ["list", "read"] {
+            let e = kc::copied(std::ptr::null(), what).expect_err("NULL result must be an error");
+            assert_eq!(e, format!("secret storage: keychain {what}: success without a result"));
+        }
     }
 }

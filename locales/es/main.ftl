@@ -151,6 +151,17 @@ set-fileslinks-allow-uri-callbacks-desc = Permite usar x-callback-url mediante x
 set-fileslinks-rebuild-vault-cache = Reconstruir la caché de la bóveda
 set-fileslinks-rebuild-vault-cache-desc = Reconstruir la caché puede llevar de unos segundos a unos minutos según el tamaño de tu bóveda. | Más información
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = Aislamiento
+secsb-label = Aislamiento Landlock
+secsb-enforced = Activo
+secsb-not-enforced = No activo
+secsb-off = Desactivado
+secsb-desc-enforced = Esta ventana solo puede escribir dentro de su bóveda y en las carpetas que necesita la aplicación. Se activa al iniciar con OPENSIDIAN_LANDLOCK=1.
+secsb-desc-not-enforced = El aislamiento está activado, pero no se aplica en esta ventana, así que aquí no se abre ninguna bóveda.
+secsb-desc-off = No está activado. Inicia Opensidian con OPENSIDIAN_LANDLOCK=1 para limitarlo a la bóveda (solo Linux).
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = Abrir ajustes

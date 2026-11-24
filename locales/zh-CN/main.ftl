@@ -151,6 +151,17 @@ set-fileslinks-allow-uri-callbacks-desc = 处理 Opensidian URI 时，允许通�
 set-fileslinks-rebuild-vault-cache = 重建仓库缓存
 set-fileslinks-rebuild-vault-cache-desc = 根据仓库大小，重建缓存可能需要几秒到几分钟。 | 了解更多
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = 沙盒
+secsb-label = Landlock 沙盒
+secsb-enforced = 已生效
+secsb-not-enforced = 未生效
+secsb-off = 关闭
+secsb-desc-enforced = 此窗口只能写入其仓库以及应用所需的文件夹。启动时通过 OPENSIDIAN_LANDLOCK=1 开启。
+secsb-desc-not-enforced = 沙盒已开启，但在此窗口中未生效，因此这里不会打开任何仓库。
+secsb-desc-off = 未开启。使用 OPENSIDIAN_LANDLOCK=1 启动 Opensidian，可将其限制在仓库内（仅限 Linux）。
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = 打开设置

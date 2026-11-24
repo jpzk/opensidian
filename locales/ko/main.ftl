@@ -151,6 +151,17 @@ set-fileslinks-allow-uri-callbacks-desc = Opensidian URI를 처리할 때 x-succ
 set-fileslinks-rebuild-vault-cache = 보관함 캐시 다시 만들기
 set-fileslinks-rebuild-vault-cache-desc = 보관함 크기에 따라 캐시를 다시 만드는 데 몇 초에서 몇 분이 걸릴 수 있습니다. | 자세히 알아보기
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = 샌드박스
+secsb-label = Landlock 샌드박스
+secsb-enforced = 적용됨
+secsb-not-enforced = 적용되지 않음
+secsb-off = 꺼짐
+secsb-desc-enforced = 이 창은 보관함과 앱에 필요한 폴더에만 쓸 수 있습니다. 시작할 때 OPENSIDIAN_LANDLOCK=1로 켭니다.
+secsb-desc-not-enforced = 샌드박스가 켜져 있지만 이 창에는 적용되지 않았으므로 여기서는 보관함을 열지 않습니다.
+secsb-desc-off = 켜져 있지 않습니다. OPENSIDIAN_LANDLOCK=1로 Opensidian을 시작하면 보관함 안으로 제한됩니다(Linux 전용).
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = 설정 열기

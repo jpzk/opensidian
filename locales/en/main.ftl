@@ -154,6 +154,17 @@ set-fileslinks-allow-uri-callbacks-desc = Enable the use of x-callback-url throu
 set-fileslinks-rebuild-vault-cache = Rebuild vault cache
 set-fileslinks-rebuild-vault-cache-desc = Rebuilding the cache could take a few seconds to a few minutes depending on the size of your vault. | Learn more (description rendered in WARNING ORANGE)
 
+## Settings > Security > Sandbox (#293): the Landlock state of this window, read-only
+
+secsb-section = Sandbox
+secsb-label = Landlock sandbox
+secsb-enforced = Enforced
+secsb-not-enforced = Not enforced
+secsb-off = Off
+secsb-desc-enforced = This window can write only inside its vault and the folders the app needs. Turned on at start with OPENSIDIAN_LANDLOCK=1.
+secsb-desc-not-enforced = The sandbox is turned on but is not in force in this window, so no vault is opened here.
+secsb-desc-off = Not turned on. Start Opensidian with OPENSIDIAN_LANDLOCK=1 to confine it to the vault (Linux only).
+
 ## Command palette and Settings > Hotkeys: cmd-<slug(command id)>
 
 cmd-app-open-settings = Open settings

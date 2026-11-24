@@ -10188,17 +10188,25 @@ function dropAt(at) {
    answer is: refuse, visibly. Copying the file in anyway and inserting it
    somewhere we guessed is the worse failure — it writes to the vault for an
    action the user cannot see the result of. */
-async function attachDrop(paths, at) {
+/* #280: what is attached is EITHER a real drop's one-shot ticket ({ticket, names}, from the
+   drop-files event: Rust holds the paths, the page never sees them) OR a path the user typed
+   into "Insert attachment" ({path}: Rust asks natively before it touches anything). This is
+   the one place that picks the command for each; canvas-drop.js calls it through host.call. */
+function attachCall(note, src) {
+  return src && src.ticket ? inv("attach_files", { note, ticket: src.ticket })
+    : inv("attach_typed", { note, path: String((src && src.path) || "") });
+}
+async function attachDrop(src, at) {
   // cv-drop CV-101: a board under the drop point (no point: the active leaf) takes the paths as file cards
   const cvb = window.CanvasDrop ? window.CanvasDrop.claim(at) : null;
-  if (cvb) return window.CanvasDrop.attach(cvb, paths, at, { inv, refresh: refreshTree, say: dropSay, update: updateTitle });
+  if (cvb) return window.CanvasDrop.attach(cvb, src, at, { inv, call: attachCall, refresh: refreshTree, say: dropSay, update: updateTitle });
   if (at) dropAt(at);              // osdrop: a real drop inserts at the drop point
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return dropSay("open a note first");
   if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (" + MODNAME + "+E) to attach a file"); return updateTitle(); }
   let a;
-  try { a = await inv("attach_files", { note: t.name, paths }); }
+  try { a = await attachCall(t.name, src); }
   catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
   // R29.11: both renderers resolve ![[x.png]] against the index list, and the
   // LP engine reads its own copy (imgsCache) — a file copied but not re-listed
@@ -11605,7 +11613,7 @@ $("apath").onkeydown = async e => {
   if (e.key !== "Enter") return;
   const p = $("apath").value.trim();
   closeAttach();
-  if (p) await attachDrop([p]);
+  if (p) await attachDrop({ path: p });   // #280: a typed path is no drop: attach_typed asks natively
 };
 
 /* ---------- graph controls card (goals graphparity + graphctx; harness docs/recon-graphpanel,
@@ -13690,8 +13698,9 @@ TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // 
 TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
 TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
-// osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
-TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
+// osdrop: the payload is [offer, x, y] (xdnd.rs), x/y physical px in the webview; #280: the
+// offer is {ticket, names} — a one-shot ticket attach_files consumes, never the paths
+TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || {}, { x: p[1], y: p[2] }); });
 /* tab-dataloss: QUIT FLUSHES. The window close (button, Alt+F4, WM) and SIGTERM
    no longer destroy the page with a debounce timer still armed: the backend
    holds the quit and sends "app-quit" (main.rs QUIT_EVENT); this flushes every

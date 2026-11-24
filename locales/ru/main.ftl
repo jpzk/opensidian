@@ -151,6 +151,17 @@ set-fileslinks-allow-uri-callbacks-desc = Разрешить x-callback-url че
 set-fileslinks-rebuild-vault-cache = Перестроить кэш хранилища
 set-fileslinks-rebuild-vault-cache-desc = В зависимости от размера хранилища перестройка кэша может занять от нескольких секунд до нескольких минут. | Подробнее
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = Песочница
+secsb-label = Песочница Landlock
+secsb-enforced = Действует
+secsb-not-enforced = Не действует
+secsb-off = Выключена
+secsb-desc-enforced = Это окно может писать только в своё хранилище и в папки, нужные приложению. Включается при запуске с OPENSIDIAN_LANDLOCK=1.
+secsb-desc-not-enforced = Песочница включена, но в этом окне не действует, поэтому хранилище здесь не открывается.
+secsb-desc-off = Не включена. Запустите Opensidian с OPENSIDIAN_LANDLOCK=1, чтобы ограничить его хранилищем (только Linux).
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = Открыть настройки

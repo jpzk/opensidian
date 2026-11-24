@@ -58,6 +58,8 @@ pub const MIC_TITLE: &str = "opensidian: record audio?";
 /// devaccess: the per-request consent of a Settings › Security › Device access row set to "ask"
 /// (Cancel / Allow once, default Cancel)
 pub const DEVICE_TITLE: &str = "opensidian: allow device access?";
+/// #280: the confirm before "Insert attachment" imports a path the page typed
+pub const ATTACH_TITLE: &str = "opensidian: attach file?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -74,6 +76,8 @@ pub enum Kind {
     /// devaccess: one webview permission request of a Device access row set to ask
     /// (audiorec::install_then -> ask_device); the field is the row (security::DEV_ROWS)
     Device(&'static str),
+    /// #280: attach_typed (R31.7 "Insert attachment": a path named by the page, not a drop)
+    Attach,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -407,6 +411,7 @@ pub fn device_question(field: &str) -> Option<Question> {
     let text = device_text(field)?;
     Some(Question { head: head.into(), log: text.clone(), text, remember: None, always: false })
 }
+const ATTACH_HEAD: &str = "Attach this file from outside the vault?";
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
@@ -448,6 +453,20 @@ pub fn security_question(field: &str, on: bool) -> Question {
 pub fn offline_open_question(url: &str) -> Question {
     let text = crate::security::offline_open_text(url);
     Question { head: OFFLINE_OPEN_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
+/// #280: the confirm before "Insert attachment" imports a path typed in the page. `path` and
+/// `note` are page text: Debug-quoted in a read-only body, never markup, never cut.
+pub fn attach_text(path: &str, note: &str) -> String {
+    format!(
+        "File: {:?}\nInto the vault, for note: {:?}\n\nAn image is MOVED into the attachment folder (it is removed from where it is now); a PDF is copied.\nOnly answer Attach if you typed this path yourself.",
+        path, note
+    )
+}
+
+pub fn attach_question(path: &str, note: &str) -> Question {
+    let text = attach_text(path, note);
+    Question { head: ATTACH_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
@@ -562,6 +581,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
         Kind::OfflineOpen => "offline-open",
         Kind::Mic => "mic",
         Kind::Device(_) => "device",
+        Kind::Attach => "attach",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -572,6 +592,39 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
     .unwrap_or(false);
     eprintln!("[consent] {what}: {}", if yes { "allowed" } else { "denied" });
     Ok(yes)
+}
+
+/* #296: how a question takes the screen. The trust, security and offline-open questions answer
+   something the user JUST did (the restricted-mode switch, a Settings › Security change, a link
+   click): modal, focused, in front — the next key the user presses is meant for them. A plugin's
+   spawn question is not: a plugin starts programs on its own schedule (obsidian-git runs
+   `git show --textconv :<file>` when a note is opened or changed, `git status` on a timer), so its
+   dialog maps while the user is typing somewhere else. Modal + present() took the keyboard at
+   that instant: the rest of what was typed for the quick switcher / palette / note went into the
+   dialog and the typed Return answered Deny (the default) — the plugin's program was refused
+   (EPERM "denied by the user", the plugin's console error at node-desktop.js deskErr) and the
+   user's own action was lost (harness gitdiffloop on develop 3b46919: 3 of 20 diff-view runs).
+   So a spawn question maps WITHOUT the keyboard and WITHOUT a modal grab: the window the user
+   types in keeps every key, nothing typed for it can answer the question, and the dialog stays
+   in front (keep-above) until the user answers it with a click or by focusing it (then Enter is
+   still Deny). Nothing is answered for the user: every question still needs its button. */
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Presentation {
+    /// a GTK modal grab: the parent window gets no input while the question is up
+    pub modal: bool,
+    /// map with the keyboard focus and present() it (raise + focus)
+    pub take_focus: bool,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn presentation(kind: Kind) -> Presentation {
+    match kind {
+        Kind::Spawn => Presentation { modal: false, take_focus: false },
+        Kind::Trust | Kind::Security | Kind::OfflineOpen | Kind::Mic | Kind::Device(_) | Kind::Attach => {
+            Presentation { modal: true, take_focus: true }
+        }
+    }
 }
 
 /// the scrolled body's fixed size (F2/F6): the dialog never outgrows the screen
@@ -634,14 +687,17 @@ fn present(parent: Option<gtk::Window>, kind: Kind, q: &Question, on: impl FnOnc
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
         Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
         Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
+        Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
     // as plain text, never markup: a page value cannot style or hide part of
     // the prompt, and nothing is cut — the view scrolls (F2)
+    let how = presentation(kind);
+    let flags = if how.modal { gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT } else { gtk::DialogFlags::DESTROY_WITH_PARENT };
     let d = gtk::MessageDialog::new(
         parent.as_ref(),
-        gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+        flags,
         gtk::MessageType::Warning,
         gtk::ButtonsType::None,
         head,
@@ -682,6 +738,9 @@ fn present(parent: Option<gtk::Window>, kind: Kind, q: &Question, on: impl FnOnc
     d.set_default_response(gtk::ResponseType::Reject);
     d.set_keep_above(true);
     let on = std::cell::RefCell::new(AnswerOnce(Some(Box::new(on))));
+    // #296: a spawn question maps without the keyboard (presentation): what the user is typing
+    // elsewhere stays there and cannot answer it
+    d.set_focus_on_map(how.take_focus);
     d.connect_response(move |d, r| {
         on.borrow_mut().give(answer_of(r));
         // SAFETY: the dialog is ours alone (no other Rust handle outlives this
@@ -690,11 +749,16 @@ fn present(parent: Option<gtk::Window>, kind: Kind, q: &Question, on: impl FnOnc
         unsafe { d.destroy() };
     });
     d.show_all();
-    // Enter answers Deny/Cancel even though the text view can take focus
+    // Enter answers Deny/Cancel even though the text view can take focus (the focus INSIDE the
+    // dialog: it becomes the keyboard's only once the dialog has the window focus)
     if let Some(b) = d.widget_for_response(gtk::ResponseType::Reject) {
         b.grab_focus();
     }
-    d.present();
+    // present() raises AND focuses (on X without a window manager: XSetInputFocus) — only for the
+    // questions that answer the user's own action; a spawn question is shown, kept above, unfocused
+    if how.take_focus {
+        d.present();
+    }
 }
 
 /// the answer callback of one dialog, called exactly once: with the response, or with No when the
@@ -730,6 +794,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
         Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
         Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
+        Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
     };
     // GTK mnemonics ("_Trust") have no meaning in AppKit
     let plain = |s: &str| s.replace('_', "");
@@ -761,6 +826,67 @@ fn show_dialog(_win: &tauri::Window, _kind: Kind, _q: &Question, tx: std::sync::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* #296: a plugin's spawn question maps without the keyboard and without a modal grab (what
+       the user types for the quick switcher / palette / a note stays there and cannot answer
+       it); the questions that answer the user's own action keep modal + focus. */
+    #[test]
+    fn a_spawn_question_neither_grabs_nor_takes_the_keyboard() {
+        let p = presentation(Kind::Spawn);
+        assert!(!p.modal, "a spawn question must not grab the parent's input: {p:?}");
+        assert!(!p.take_focus, "a spawn question must not take the keyboard when it maps: {p:?}");
+    }
+
+    #[test]
+    fn the_questions_that_answer_a_user_action_stay_modal_and_focused() {
+        for k in [Kind::Trust, Kind::Security, Kind::OfflineOpen, Kind::Mic, Kind::Device("camera"), Kind::Attach] {
+            assert_eq!(presentation(k), Presentation { modal: true, take_focus: true }, "{k:?}");
+        }
+        assert_ne!(presentation(Kind::Spawn), presentation(Kind::Trust));
+    }
+
+    /// the Linux dialog takes its modality and focus from presentation() and nowhere else:
+    /// no hard-coded MODAL flag, set_focus_on_map from the policy, present() only under it
+    #[test]
+    fn the_linux_dialog_follows_the_presentation_policy() {
+        let src = include_str!("consent.rs");
+        // merge #295 + #296: the Linux show_dialog hands every question to present() (which the
+        // devaccess questions use too), so the policy is checked where the dialog is built
+        let sd = &src[src.find("#[cfg(target_os = \"linux\")]\nfn show_dialog(").expect("linux show_dialog")..];
+        let sd = &sd[..sd.find("\n}\n").expect("show_dialog unterminated")];
+        assert!(sd.contains("present(parent, kind, q, "), "linux show_dialog no longer goes through present()");
+        let head = "#[cfg(target_os = \"linux\")]\nfn present(";
+        let at = src.find(head).expect("linux present");
+        let body = &src[at..];
+        let body = &body[..body.find("\n}\n").expect("show_dialog unterminated")];
+        assert!(body.contains("let how = presentation(kind);"), "show_dialog does not ask presentation()");
+        assert_eq!(body.matches("gtk::DialogFlags::MODAL").count(), 1, "MODAL outside the policy branch");
+        assert!(body.contains("if how.modal { gtk::DialogFlags::MODAL"), "MODAL not gated on how.modal");
+        assert!(body.contains("d.set_focus_on_map(how.take_focus);"), "focus-on-map not from the policy");
+        let p = body.find("d.present();").expect("present() gone for the focused questions");
+        let gate = body[..p].rfind("if how.take_focus {").expect("present() not under how.take_focus");
+        assert!(!body[gate..p].contains('}'), "present() is not inside the how.take_focus block");
+        assert_eq!(body.matches("d.present();").count(), 1, "a second, unconditional present()");
+    }
+
+    /// negative: the policy must still refuse keyboard answers by default — Enter on a focused
+    /// spawn dialog stays Deny (the default response), and only the buttons map to a yes
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unfocused_spawn_dialog_still_defaults_to_deny() {
+        let src = include_str!("consent.rs");
+        let sd = &src[src.find("#[cfg(target_os = \"linux\")]\nfn show_dialog(").expect("linux show_dialog")..];
+        let sd = &sd[..sd.find("\n}\n").expect("show_dialog unterminated")];
+        assert!(sd.contains("present(parent, kind, q, "), "linux show_dialog no longer goes through present()");
+        let at = src.find("#[cfg(target_os = \"linux\")]\nfn present(").expect("linux present");
+        let body = &src[at..];
+        let body = &body[..body.find("\n}\n").expect("show_dialog unterminated")];
+        assert!(body.contains("d.set_default_response(gtk::ResponseType::Reject);"), "default response is no longer Deny");
+        assert_eq!(answer_of(gtk::ResponseType::Reject), Answer::No);
+        assert_eq!(answer_of(gtk::ResponseType::DeleteEvent), Answer::No);
+        assert_eq!(answer_of(gtk::ResponseType::None), Answer::No);
+        assert_eq!(answer_of(gtk::ResponseType::Accept), Answer::Once);
+    }
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
         Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
