@@ -366,3 +366,28 @@ fn i339_canvas_card_links_use_link_styling() {
         assert!(!s.contains("canvas-text a") && !s.contains("canvas-file-embed a"), "#339: {f} styles card links itself");
     }
 }
+
+/// #353: the heading / bold / italic colour rules were scoped to .lp/.preview, so canvas card
+/// markdown painted headings and bold in body ink (Gruvbox L rgb(101,71,53)) where stock uses
+/// --h1-color (red) and --bold-color (orange) as in the note view.
+#[test]
+fn i353_canvas_card_headings_and_bold_use_theme_colours() {
+    let css = style_css();
+    for i in 1..=6 {
+        assert_eq!(val(&css, &format!("{CARD} h{i}"), "color"), format!("var(--h{i}-color, var(--text-heading, currentColor))"), "#353: card h{i}");
+        // the card heading colour chains exactly like the reading-view one
+        assert!(vals(&css, &format!(".lp h{i}, .preview h{i}"), "color").contains(&format!("var(--h{i}-color, var(--text-heading, currentColor))")));
+    }
+    assert_eq!(val(&css, &format!("{CARD} :is(b, strong)"), "color"), "var(--bold-color, inherit)");
+    assert_eq!(val(&css, &format!("{CARD} em"), "color"), "var(--italic-color, inherit)");
+    // negative: the default theme declares no heading/bold colour, so card ink stays the body ink (currentColor / inherit)
+    for v in ["--h1-color", "--bold-color", "--italic-color", "--text-heading"] {
+        assert!(all(&css, v).is_empty(), "#353: style.css now sets {v}, the default card look would move");
+    }
+    // negative: colours only - card heading size/weight/spacing (#342, default-theme card typography) untouched here
+    for i in 1..=6 {
+        for p in ["font-size", "font-weight", "margin", "margin-block", "line-height"] {
+            assert!(vals(&css, &format!("{CARD} h{i}"), p).is_empty(), "#353: card h{i} sets {p}");
+        }
+    }
+}

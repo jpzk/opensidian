@@ -1949,6 +1949,17 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 :is(.canvas-text, .canvas-file-embed) a.wiki { color: var(--link-color, var(--accent-blue)); text-decoration: var(--link-decoration, none); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit) }
 :is(.canvas-text, .canvas-file-embed) a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; opacity: var(--link-unresolved-opacity, 1); filter: var(--link-unresolved-filter, none) }
 :is(.canvas-text, .canvas-file-embed) a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none) }
+/* #353: the heading / bold / italic colour rules were scoped to .lp/.preview, so canvas card markdown painted
+   them in body ink; stock paints card headings --hN-color and bold --bold-color as in the note view (Gruvbox red /
+   orange). Colours only: card heading sizes and spacing are the default-theme card typography (#342). */
+:is(.canvas-text, .canvas-file-embed) h1 { color: var(--h1-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h2 { color: var(--h2-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h3 { color: var(--h3-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h4 { color: var(--h4-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h5 { color: var(--h5-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h6 { color: var(--h6-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) :is(b, strong) { color: var(--bold-color, inherit) }
+:is(.canvas-text, .canvas-file-embed) em { color: var(--italic-color, inherit) }
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
 .preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: var(--indentation-guide-width, 1px);
   background: var(--indentation-guide-color); pointer-events: none }
