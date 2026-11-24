@@ -293,7 +293,8 @@ body {
   --anim-duration-fast: transform .1s;
   --background-modifier-active-hover: var(--bg-surface);
   --background-modifier-cover: rgba(0,0,0,.35);
-  --background-modifier-message: rgba(30,30,30,0.95);
+  --background-modifier-message: rgba(0,0,0,0.9);   /* #344: stock default (computed oklch(0 0 0 / .9), no theme sets it in Minimal); the inverted notice card + tooltips */
+  --text-on-message: #fafafa;   /* #344: stock notice ink, 250 in light AND dark (default, Gruvbox, Minimal) */
   --blockquote-font-style: normal;
   --border-width: 1px;
   --button-radius: 4px;
@@ -1437,8 +1438,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    token it publishes does NOT expire with the banner (dropTok's lesson: "no
    refusal happened" and "a refusal whose banner faded" must not look alike). */
 #notice { position: fixed; right: 12px; bottom: 12px; z-index: 71; max-width: 420px;
-          padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-strong);
-          background: var(--bg-surface); color: var(--text-chrome); font-size: 12px; line-height: 1.4;
+          padding: 8px 12px; border-radius: 6px; border: 0;
+          background: var(--background-modifier-message); color: var(--text-on-message); font-size: 12px; line-height: 1.4;   /* #344: stock's inverted notice (dark card, light ink, both modes) */
           white-space: pre-line }
 #notice[hidden] { display: none }
 #saveerr:not([hidden]) ~ #notice, #dropmsg:not([hidden]) ~ #notice { bottom: 58px }

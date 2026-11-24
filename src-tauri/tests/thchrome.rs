@@ -363,3 +363,30 @@ fn i341_negative_body_ink_icons_live_preview_strike_and_widget_unchanged() {
     assert!(p.contains("if (!r) return { d: Decoration.none, end: -1, r };"), "#341: fmrow must not apply in Live Preview (the widget covers it)");
     assert!(p.contains("v.lp.classList.contains(\"src\")) || (tb && tb.mode === \"reading\") || Props.mode === \"source\") return Decoration.none;"), "#341: the Properties widget must still yield to raw mode");
 }
+#[test]
+fn i344_notices_are_stock_inverted_cards() {
+    let c = css();
+    assert_eq!(decl_in(&c, "LAYER 4", "--background-modifier-message"), "rgba(0,0,0,0.9)", "#344: stock default message background (oklch(0 0 0 / .9))");
+    assert_eq!(decl_in(&c, "LAYER 4", "--text-on-message"), "#fafafa", "#344: stock notice ink is 250 in both modes");
+    let n = rule(&c, "#notice");
+    assert!(n.contains("background: var(--background-modifier-message)") && n.contains("color: var(--text-on-message)") && n.contains("border: 0"),
+        "#344: the app's own notice is not the inverted card: {n}");
+    let p = ui("plugins/plugins.css");
+    let pn = rule(&p, ":where(.notice-container) .notice");
+    assert!(pn.contains("background: var(--background-modifier-message)") && pn.contains("color: var(--text-on-message)") && pn.contains("border: 0"),
+        "#344: plugin Notice is not the inverted card: {pn}");
+}
+#[test]
+fn i344_negative_surface_card_gone_and_theme_notice_rule_still_wins() {
+    let c = css();
+    let n = rule(&c, "#notice");
+    assert!(!n.contains("var(--bg-surface)") && !n.contains("var(--text-chrome)"), "#344: #notice is a surface card again: {n}");
+    let p = ui("plugins/plugins.css");
+    // one-class specificity like stock: a theme's `.notice { color }` (AnuPpuccin) must still override ours
+    assert!(!p.contains("\n.notice-container .notice {"), "#344: two-class notice selector outranks theme .notice rules");
+    assert!(!rule(&p, ":where(.notice-container) .notice").contains("var(--bg-elevated)"), "#344: plugin notice back on the elevated surface");
+    // the container (position/stacking) is untouched
+    assert!(rule(&p, ".notice-container").contains("position: fixed; top: 38px; right: 12px; z-index: 80"), "#344: notice stack position changed");
+    // tooltips keep reading the same variable (no second message colour)
+    assert!(ui("plugins/api-functions.js").contains("st.background = \"var(--background-modifier-message, rgba(30,30,30,0.95))\""), "#344: tooltip background source changed");
+}
