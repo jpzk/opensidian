@@ -681,7 +681,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .shit { padding: 2px 8px 2px 16px; color: var(--text-chrome-muted); cursor: pointer;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background-color: var(--search-result-background, transparent); }
 .shit:hover { background: var(--bg-surface) }
-.shit mark { background: none; color: var(--accent-yellow) }
+/* #323: a search / backlink match is stock's .search-result-file-matched-text: the theme highlight
+   behind --text-normal ink. ONE bare class selector (0,1,0) so a theme rule for the class (Solarized
+   ink --text-on-accent, Gruvbox --text-highlight-fg) wins by load order, exactly as in stock. */
+.search-result-file-matched-text { background-color: var(--text-highlight-bg); color: var(--text-normal) }
 .sempty { padding: 8px; color: var(--text-chrome-dim) }
 /* bmfolder: `flex: 1` is LOAD-BEARING, not tidiness. .spane is a flex column, so
    a content-sized #bmlist ends at its last row and the area below the rows is the
@@ -802,7 +805,6 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: var(--font-ui-smaller, 12px);   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
-.blline mark { background: none; color: var(--accent-yellow) }
 .outrow { padding: 4px 10px; color: var(--text-chrome); cursor: pointer; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis }
 .outrow:hover { background: var(--bg-surface) }

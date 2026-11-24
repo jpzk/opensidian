@@ -226,3 +226,35 @@ fn i330_blockquote_background_consumed() {
     // negative: a nested LP quote does not stack the translucent paint a second time
     assert_eq!(val(&css, ".lp .bq .bq", "background-color"), "transparent");
 }
+
+fn main_js() -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/main.js");
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// #323: stock paints a search / backlink match as `.search-result-file-matched-text` =
+/// --text-highlight-bg behind --text-normal ink (default L 255,236,153 painted ink 34,34,34;
+/// Minimal rgba(255,225,0,.5); AnuPpuccin rgba(yellow,.2)); themes style that class directly
+/// (Solarized ink --text-on-accent, Gruvbox --text-highlight-fg). Ours hard-coded
+/// `background: none; color: --accent-yellow` on `.shit mark` / `.blline mark`.
+#[test]
+fn i323_search_matches_use_text_highlight_bg() {
+    let css = style_css();
+    let sel = ".search-result-file-matched-text";
+    assert_eq!(val(&css, sel, "background-color"), "var(--text-highlight-bg)");
+    assert_eq!(val(&css, sel, "color"), "var(--text-normal)");
+    // negative: the hard-coded rules are gone, and nothing more specific than the bare class
+    // styles a match (a theme's own `.search-result-file-matched-text` rule must win by load order)
+    for old in [".shit mark", ".blline mark"] {
+        assert!(rules(&css).iter().all(|(p, _)| p != old), "#323: `{old}` still styles the match");
+    }
+    let over: Vec<_> = rules(&css).into_iter().map(|(p, _)| p)
+        .filter(|p| p != sel && (p.contains("matched-text") || p.ends_with(" mark") && (p.contains("shit") || p.contains("blline")))).collect();
+    assert!(over.is_empty(), "#323: rules outrank the stock match class: {over:?}");
+    // every <mark> the search / backlink / unlinked-mention builders create carries the class
+    let js = main_js();
+    let marks = js.matches("createElement(\"mark\")").count();
+    let classed = js.lines().filter(|l| l.contains("search-result-file-matched-text") && l.contains("className")).count();
+    assert_eq!(marks, 5, "#323: mark builders in ui/main.js changed ({marks}); re-check each carries the class");
+    assert_eq!(classed, marks, "#323: {classed}/{marks} search/backlink marks carry .search-result-file-matched-text");
+}

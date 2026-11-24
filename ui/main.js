@@ -435,6 +435,7 @@ async function rBacklinks(n) {
       d.title = "line " + (ln + 1);
       text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
         const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+        if (i % 2) el.className = "search-result-file-matched-text";   // #323: stock match class, so theme rules for it reach the mark
         if (i % 2) el.textContent = part;
         d.appendChild(el);
       });
@@ -482,7 +483,7 @@ async function rBacklinks(n) {
     const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
     if (i >= 0 && i < t.length && w > 0) {
       d.appendChild(document.createTextNode(t.slice(0, i)));
-      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
+      const mk = document.createElement("mark"); mk.className = "search-result-file-matched-text"; mk.textContent = t.slice(i, i + w); d.appendChild(mk);   // #323
       d.appendChild(document.createTextNode(t.slice(i + w)));
     } else d.textContent = t;
     sideRow(d, m.note);
@@ -1199,7 +1200,7 @@ async function runSearch() {
     const at = h.snippet.toLowerCase().indexOf(ql);  // highlight first hit
     if (at >= 0) {
       row.append(h.snippet.slice(0, at));
-      const m = document.createElement("mark");
+      const m = document.createElement("mark"); m.className = "search-result-file-matched-text";   // #323: stock match class
       m.textContent = h.snippet.slice(at, at + q.length);
       row.appendChild(m);
       row.append(h.snippet.slice(at + q.length));
@@ -1231,7 +1232,7 @@ async function runSearch() {
       const w = q.toLowerCase().split(/\s+/)[0], at = h.snippet.toLowerCase().indexOf(w);
       if (at >= 0) {
         row.append(h.snippet.slice(0, at));
-        const m = document.createElement("mark");
+        const m = document.createElement("mark"); m.className = "search-result-file-matched-text";   // #323: stock match class
         m.textContent = h.snippet.slice(at, at + w.length);
         row.appendChild(m);
         row.append(h.snippet.slice(at + w.length));
@@ -9825,6 +9826,7 @@ function cvBacklinkRows(box, cvb) {   // one row per canvas + one line per link 
       d.className = "blline"; d.dataset.ol = "bl:" + b.canvas;
       String(text).split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
         const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+        if (i % 2) el.className = "search-result-file-matched-text";   // #323: stock match class
         if (i % 2) el.textContent = part;
         d.appendChild(el);
       });
