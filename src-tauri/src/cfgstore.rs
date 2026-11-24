@@ -69,6 +69,9 @@ pub enum Op {
     /// security::validate (and, for a change that lowers protection, the native confirm);
     /// applied here only for a known field, so even a forged Op cannot write anything else.
     SecuritySet(String, bool),
+    /// #294 F-58: raise "updateSeen" (updates::SEEN_KEY) to this version, never lower
+    /// it (updates::apply_seen). Sent ONLY by updates::update_check.
+    UpdateSeen(String),
     /// #295: Settings › Security › Microphone ("ask" | "always" | "off"). Sent ONLY by security_mic_set
     /// after security::mic_validate (and, for a weakening change — off -> ask, off / ask -> always —
     /// the native confirm); applied here only for a
@@ -106,6 +109,10 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
             Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::spawn_allow::KEY || k == crate::security::KEY || k == crate::plugin_pins::KEY => {
                 eprintln!("[cfg] refused a generic write of {k}");
             }
+            Op::Set(k, _) | Op::MergeIn(k, _, _) | Op::SetIn(k, _, _) | Op::InsertIn(k, _, _) if k == crate::updates::SEEN_KEY => {
+                eprintln!("[cfg] refused a generic write of {k}");
+            }
+            Op::UpdateSeen(ver) => crate::updates::apply_seen(v, ver),
             Op::SpawnAllowAdd(g) => crate::spawn_allow::apply_add(v, g),
             Op::SpawnAllowRevoke { vault, plugin, program } => crate::spawn_allow::apply_revoke(v, vault, plugin, program),
             Op::PluginPinSet { vault, plugin, pin } => crate::plugin_pins::apply_set(v, vault, plugin, pin),

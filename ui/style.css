@@ -1614,6 +1614,9 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .sbtn, .supdlink, #sbox [role=button], #sbox button { cursor: pointer }
 #sbox [aria-disabled="true"], #sbox .srow.dis .sbtn { cursor: default }
 .supd { margin-top: 4px }
+/* #294: the signed sha256 line (copyable, sha256sum format) and one line per warning */
+.supdsha { font-family: var(--font-monospace); user-select: text; overflow-wrap: anywhere; margin-top: 2px }
+.supdwarn { color: var(--text-error); margin-top: 2px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }

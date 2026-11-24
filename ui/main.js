@@ -14109,12 +14109,16 @@ const SACT = {
   check_updates: (r, d) => sCheckUpdates(d),
 };
 /* Check for updates (updates.rs update_check): ONE signed-release check per press,
-   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc)
-   and verifies the signature against the embedded pinned key; the page only shows
-   the verdict. The result line sits under the row description; a release link is
-   offered ONLY for status "available" (signed), and its URL is the one Rust built
-   from the validated tag, opened through open_external. [upd:<status>:<latest>]
-   is the census token a phase or a drive asserts on. */
+   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc),
+   verifies the signature against the embedded pinned key(s) AND every release asset
+   against the signed sums (#294), and hands back a verdict already worded in the UI
+   language; the page only shows it. Under the verdict: the SIGNED sha256 of this
+   platform's release file as a sha256sum line (the user checks the download against
+   it; the app downloads nothing), then one line per warning (a higher release that
+   is unsigned or whose assets do not match). A release link is offered ONLY for
+   status "available", and its URL is the one Rust built from the validated tag,
+   opened through open_external. [upd:<status>:<latest>] is the census token a
+   phase or a drive asserts on. */
 let sUpd = null, sUpdBusy = false;
 function sCheckUpdates(d) {
   if (sUpdBusy) return;
@@ -14122,7 +14126,7 @@ function sCheckUpdates(d) {
   if (!info) return;
   let out = info.querySelector(".supd");
   if (!out) { out = document.createElement("div"); out.className = "sdesc supd"; info.appendChild(out); }
-  out.textContent = "Checking GitHub for a signed release…";
+  out.textContent = I18N.tk("update-checking", "Checking GitHub for a signed release…");
   sUpdBusy = true; sUpd = { status: "checking", latest: "" }; updateTitle();
   inv("update_check").then(res => {
     sUpd = { status: String(res.status), latest: String(res.latest || "") };
@@ -14130,13 +14134,22 @@ function sCheckUpdates(d) {
     out.dataset.status = sUpd.status;
     if (res.status === "available" && res.url) {
       const a = document.createElement("span"); a.className = "slink supdlink"; a.tabIndex = 0;
-      a.textContent = " View release";
+      a.textContent = " " + I18N.tk("update-view-release", "View release");
       a.onclick = ev => { ev.stopPropagation(); sOpenExt(String(res.url)); };
       out.appendChild(a);
     }
+    if ((res.status === "available" || res.status === "current") && res.sha256 && res.file) {
+      const h = document.createElement("div"); h.className = "supdsha";
+      h.textContent = String(res.sha256) + "  " + String(res.file);
+      out.appendChild(h);
+    }
+    for (const w of Array.isArray(res.warnings) ? res.warnings : []) {
+      const l = document.createElement("div"); l.className = "supdwarn"; l.textContent = String(w);
+      out.appendChild(l);
+    }
   }).catch(err => {
     sUpd = { status: "error", latest: "" };
-    out.textContent = "Could not check for updates: " + String(err && err.message || err);
+    out.textContent = I18N.tk("update-error", "Could not check for updates: " + String(err && err.message || err), { error: String(err && err.message || err) });
     out.dataset.status = "error";
   }).finally(() => { sUpdBusy = false; updateTitle(); });
 }
