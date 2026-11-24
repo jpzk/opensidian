@@ -406,8 +406,8 @@ body {
   --tag-color: var(--accent-blue);
   --tag-decoration: none;
   --tag-padding-y: 0;
-  --tag-radius: 999px;
-  --tag-size: .85em;
+  --tag-radius: 2em;                /* #343: stock 1.13.7 tag pill corner = 28px on a 14px tag (2em) */
+  --tag-size: .875em;               /* #343: stock tag font-size 14px at 16px text */
   /* callouts (#59 slice 1): stock 1.13.7 app.css body block, verbatim names + formulas (see the
      ".callout" section at the end of this file). The colours fall back to Obsidian's dark palette
      literals instead of defining --color-* here: --text-error etc. already read var(--color-red, …)
@@ -753,7 +753,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
              color: var(--text-chrome-muted) }
 .trow .tfi svg { width: var(--icon-s, 14px); height: var(--icon-s, 14px) }
 .trow .tfi svg[stroke-width="2"] { stroke-width: var(--icon-s-stroke-width, 2) }
-.trow.folder { font-weight: 500; padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
+.trow.folder { padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
 .trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: var(--nav-tag-radius, 3px);   /* goal canvas-core: the CANVAS tag on a .canvas row */
              font-size: 0.7em; letter-spacing: .04em; color: var(--nav-tag-color, var(--text-chrome-dim)); background: var(--nav-tag-background, var(--bg-surface)); font-weight: var(--nav-tag-weight, inherit); }
 .trow.active .ttag { color: var(--nav-tag-color-active, var(--nav-tag-color, var(--text-chrome-dim))) }
@@ -995,7 +995,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
-  border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .85em); text-decoration: var(--tag-decoration, none);
+  border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .875em); text-decoration: var(--tag-decoration, none);
   cursor: pointer; white-space: nowrap; border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp a.tag:hover, .preview a.tag:hover { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)); color: var(--tag-color-hover, var(--tag-color, var(--accent-blue))); text-decoration: var(--tag-decoration-hover, var(--tag-decoration, none)); }
 .graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: var(--bg-ribbon); position: relative; z-index: 1 }   /* above .graphgl */
@@ -1495,7 +1495,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp a.wiki { text-decoration: var(--link-decoration, none) }
 .lp a.wiki:hover { text-decoration-line: var(--link-decoration-hover, var(--link-decoration, none)) }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
-.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
              padding: 0 8px; white-space: pre; overflow-x: auto }
@@ -1681,7 +1681,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
-  --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
+  --code-size: var(--font-smaller, 0.92em); --code-radius: var(--radius-s, 4px);   /* #343: stock inline code corner 4px */
   --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
