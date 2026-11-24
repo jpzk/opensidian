@@ -29,7 +29,9 @@
 #
 # Hardening: top-level permissions {} and per-job grants; every action pinned to a full commit sha;
 #   checkout never persists the token; no caches; no continue-on-error; osv-scanner pinned by
-#   version + per-arch sha256 (osv-install.sh). The dispatch input reaches the shell only through env
+#   version + per-arch sha256 (osv-install.sh). The android checkout is data: android-sbom.sh refuses
+#   one carrying a cargo config, RUSTUP_TOOLCHAIN overrides its rust-toolchain.toml (CodeQL 968/969).
+#   The dispatch input reaches the shell only through env
 #   and is validated.
 name: SBOM scan
 
@@ -262,7 +264,12 @@ jobs:
           set -euo pipefail
           [ "$(git -C android rev-parse HEAD)" = "$SHA" ] || { echo "::error::android checkout is not $SHA"; exit 1; }
           mkdir -p sboms/android; : > sboms/manifest.tsv
-          mapfile -t tgts < <(bash scripts/supply-chain/android-sbom.sh -L -C android)
+          # -L also refuses a checkout carrying its own cargo config (CodeQL 968/969: the android tree
+          # is data, nothing from it may run in this default-branch run). Its rc is checked here,
+          # before the cargo metadata below runs in android/src-tauri.
+          tl=$(bash scripts/supply-chain/android-sbom.sh -L -C android) || { echo "::error::android-sbom.sh -L refused the android checkout"; exit 1; }
+          [ -n "$tl" ] || { echo "::error::no android target"; exit 1; }
+          mapfile -t tgts <<<"$tl"
           [ "${#tgts[@]}" -gt 0 ] || { echo "::error::no android target"; exit 1; }
           for tgt in "${tgts[@]}"; do
             echo "[$(date -u +%H:%M:%S)] $tgt"

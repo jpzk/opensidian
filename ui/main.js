@@ -8811,7 +8811,15 @@ let AREC = null;
   const IV = TAURI && TAURI.core && typeof TAURI.core.invoke === "function" ? TAURI.core.invoke : null;
   const call = (c, a) => IV ? IV(c, a) : Promise.reject(new Error("no ipc"));
   const tokP = call("audio_token").then(t => (typeof t === "string" && t ? t : null), () => null);
-  const deny = function getUserMedia() { return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError")); };
+  // devaccess (#295): a camera request — video only — goes to the NATIVE gate (devperm::decide: Settings › Security ›
+  // Device access › Camera; default off = denied there). The constraints are rebuilt here as { video } read ONCE, so
+  // no getter / Proxy can add audio after this check: a page request never carries audio, the mic stays reserved.
+  const deny = function getUserMedia(c) {
+    let v = null;
+    try { if (c && typeof c === "object" && !c.audio) v = c.video; } catch (_) { v = null; }
+    if (gum && v) { const ask = { video: (typeof v === "object" ? v : true) }; return gum(ask); }
+    return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError"));
+  };
   if (md) {
     try { Object.defineProperty(md, "getUserMedia", { value: deny, writable: false, configurable: false, enumerable: true }); } catch (_) {}
     try { if (window.MediaDevices && MediaDevices.prototype) Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: deny, writable: false, configurable: false }); } catch (_) {}
@@ -8860,7 +8868,12 @@ let AREC = null;
       catch (e) {
         const m = errStr(e), n = errName(m);
         if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") msg = "No microphone is connected.";
-        else if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; msg = "Microphone access was denied."; }
+        else if (n === "NotAllowedError" || n === "SecurityError") {
+          st.denied++;
+          // #295: Settings › Security › Microphone off (or lockdown) names the switch; a Cancel in the native consent does not
+          const off = /\((Settings › Security › [^)]*)\)/.exec(m);
+          msg = off ? "Microphone access was denied: the microphone is off (" + off[1] + ")." : "Microphone access was denied.";
+        }
         else if (n === "NotSupportedError") msg = "Audio recording is not available: " + m.slice(n.length + 2);
         else msg = "Audio recorder: " + m;
         return;
@@ -8913,8 +8926,21 @@ let AREC = null;
   const ip = PLG && PLG.app && PLG.app.internalPlugins;
   const sync = () => { if (ip) ip.config["audio-recorder"] = plugin.enabled; };
   if (ip) { ip.plugins["audio-recorder"] = plugin; sync(); }
+  /* #295 (audit F-8) hardening: `start` is NOT on this page-global object any more. The user's
+     routes reach it from this closure only: the ribbon button (above), the status item is stop
+     only, and the command "audio-recorder:start" (palette + hotkeys, CMDS) whose run is wired
+     below once CMDS exists. Whatever route a page script takes, the decision is native:
+     audio_rec_start asks the user in a native consent before EVERY recording (or refuses while
+     Settings › Security › Microphone is off / lockdown), and the native window title carries the
+     recording mark while the microphone is on. */
+  setTimeout(() => {
+    try {
+      const c = typeof CMDS !== "undefined" ? CMDS.find(x => x.id === "audio-recorder:start") : null;
+      if (c) c.run = () => { start(); };
+    } catch (e) { console.error("[audio-recorder] command:", e); }
+  }, 0);
   AREC = Object.freeze({
-    plugin, start, stop,
+    plugin, stop,
     on: () => st.on, recording: () => !!st.rec,
     // census [arec:on=|rec=|busy=|saved=|last=|denied=|tok=|mr=|err=] + [ribbon:audio@x,y] [arind@x,y]
     tok() {
@@ -10162,17 +10188,25 @@ function dropAt(at) {
    answer is: refuse, visibly. Copying the file in anyway and inserting it
    somewhere we guessed is the worse failure — it writes to the vault for an
    action the user cannot see the result of. */
-async function attachDrop(paths, at) {
+/* #280: what is attached is EITHER a real drop's one-shot ticket ({ticket, names}, from the
+   drop-files event: Rust holds the paths, the page never sees them) OR a path the user typed
+   into "Insert attachment" ({path}: Rust asks natively before it touches anything). This is
+   the one place that picks the command for each; canvas-drop.js calls it through host.call. */
+function attachCall(note, src) {
+  return src && src.ticket ? inv("attach_files", { note, ticket: src.ticket })
+    : inv("attach_typed", { note, path: String((src && src.path) || "") });
+}
+async function attachDrop(src, at) {
   // cv-drop CV-101: a board under the drop point (no point: the active leaf) takes the paths as file cards
   const cvb = window.CanvasDrop ? window.CanvasDrop.claim(at) : null;
-  if (cvb) return window.CanvasDrop.attach(cvb, paths, at, { inv, refresh: refreshTree, say: dropSay, update: updateTitle });
+  if (cvb) return window.CanvasDrop.attach(cvb, src, at, { inv, call: attachCall, refresh: refreshTree, say: dropSay, update: updateTitle });
   if (at) dropAt(at);              // osdrop: a real drop inserts at the drop point
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return dropSay("open a note first");
   if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (" + MODNAME + "+E) to attach a file"); return updateTitle(); }
   let a;
-  try { a = await inv("attach_files", { note: t.name, paths }); }
+  try { a = await attachCall(t.name, src); }
   catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
   // R29.11: both renderers resolve ![[x.png]] against the index list, and the
   // LP engine reads its own copy (imgsCache) — a file copied but not re-listed
@@ -11189,7 +11223,7 @@ const CMDS = [
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
   // #116 Audio recorder (core plugin, off by default): stock offers start only while NOT recording and stop only WHILE
   // recording; neither row exists (palette, hotkeys) while the core plugin is off
-  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
+  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => {} /* #295: wired by the Audio recorder block (no page-global start) */, () => !!(AREC && AREC.on() && !AREC.recording())],
   ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on
@@ -11579,7 +11613,7 @@ $("apath").onkeydown = async e => {
   if (e.key !== "Enter") return;
   const p = $("apath").value.trim();
   closeAttach();
-  if (p) await attachDrop([p]);
+  if (p) await attachDrop({ path: p });   // #280: a typed path is no drop: attach_typed asks natively
 };
 
 /* ---------- graph controls card (goals graphparity + graphctx; harness docs/recon-graphpanel,
@@ -13664,8 +13698,9 @@ TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // 
 TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
 TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
-// osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
-TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
+// osdrop: the payload is [offer, x, y] (xdnd.rs), x/y physical px in the webview; #280: the
+// offer is {ticket, names} — a one-shot ticket attach_files consumes, never the paths
+TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || {}, { x: p[1], y: p[2] }); });
 /* tab-dataloss: QUIT FLUSHES. The window close (button, Alt+F4, WM) and SIGTERM
    no longer destroy the page with a debounce timer still armed: the backend
    holds the quit and sends "app-quit" (main.rs QUIT_EVENT); this flushes every
@@ -14074,12 +14109,16 @@ const SACT = {
   check_updates: (r, d) => sCheckUpdates(d),
 };
 /* Check for updates (updates.rs update_check): ONE signed-release check per press,
-   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc)
-   and verifies the signature against the embedded pinned key; the page only shows
-   the verdict. The result line sits under the row description; a release link is
-   offered ONLY for status "available" (signed), and its URL is the one Rust built
-   from the validated tag, opened through open_external. [upd:<status>:<latest>]
-   is the census token a phase or a drive asserts on. */
+   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc),
+   verifies the signature against the embedded pinned key(s) AND every release asset
+   against the signed sums (#294), and hands back a verdict already worded in the UI
+   language; the page only shows it. Under the verdict: the SIGNED sha256 of this
+   platform's release file as a sha256sum line (the user checks the download against
+   it; the app downloads nothing), then one line per warning (a higher release that
+   is unsigned or whose assets do not match). A release link is offered ONLY for
+   status "available", and its URL is the one Rust built from the validated tag,
+   opened through open_external. [upd:<status>:<latest>] is the census token a
+   phase or a drive asserts on. */
 let sUpd = null, sUpdBusy = false;
 function sCheckUpdates(d) {
   if (sUpdBusy) return;
@@ -14087,7 +14126,7 @@ function sCheckUpdates(d) {
   if (!info) return;
   let out = info.querySelector(".supd");
   if (!out) { out = document.createElement("div"); out.className = "sdesc supd"; info.appendChild(out); }
-  out.textContent = "Checking GitHub for a signed release…";
+  out.textContent = I18N.tk("update-checking", "Checking GitHub for a signed release…");
   sUpdBusy = true; sUpd = { status: "checking", latest: "" }; updateTitle();
   inv("update_check").then(res => {
     sUpd = { status: String(res.status), latest: String(res.latest || "") };
@@ -14095,13 +14134,22 @@ function sCheckUpdates(d) {
     out.dataset.status = sUpd.status;
     if (res.status === "available" && res.url) {
       const a = document.createElement("span"); a.className = "slink supdlink"; a.tabIndex = 0;
-      a.textContent = " View release";
+      a.textContent = " " + I18N.tk("update-view-release", "View release");
       a.onclick = ev => { ev.stopPropagation(); sOpenExt(String(res.url)); };
       out.appendChild(a);
     }
+    if ((res.status === "available" || res.status === "current") && res.sha256 && res.file) {
+      const h = document.createElement("div"); h.className = "supdsha";
+      h.textContent = String(res.sha256) + "  " + String(res.file);
+      out.appendChild(h);
+    }
+    for (const w of Array.isArray(res.warnings) ? res.warnings : []) {
+      const l = document.createElement("div"); l.className = "supdwarn"; l.textContent = String(w);
+      out.appendChild(l);
+    }
   }).catch(err => {
     sUpd = { status: "error", latest: "" };
-    out.textContent = "Could not check for updates: " + String(err && err.message || err);
+    out.textContent = I18N.tk("update-error", "Could not check for updates: " + String(err && err.message || err), { error: String(err && err.message || err) });
     out.dataset.status = "error";
   }).finally(() => { sUpdBusy = false; updateTitle(); });
 }

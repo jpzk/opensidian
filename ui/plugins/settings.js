@@ -243,13 +243,27 @@
         g.onclick = ev => { ev.stopPropagation(); showSettingsPage("plg:" + id); };
         ctls.push(g);
       }
+      /* #251: an enabled plugin whose files are new in this vault or changed on disk since the user
+         allowed them does not run; "Review and allow" opens the native question (Rust shows what is on disk) */
+      const pin = (s.pins || {})[id] || "new";
+      const held = !restricted && on && !loaded && pin !== "ok" && pin !== "unreadable";
+      if (held) {
+        const a = el("button", "cpb-btn cpb-cta", "Review and allow");
+        a.type = "button"; a.dataset.pinallow = id;
+        a.onclick = ev => { ev.stopPropagation(); act(async () => { await host.allow([id]); if ((host.state().pins || {})[id] === "ok") await host.enable(id); }); };
+        ctls.push(a);
+      }
       const t = toggle(on, () => act(() => host.setEnabled(id, !on)));
       t.dataset.plugin = id;
       ctls.push(t);
+      const pinNote = !held ? "" : pin === "changed"
+        ? "Changed on disk since you allowed it (" + ((s.pinChanged || {})[id] || []).join(", ") + "). Not running: review and allow it."
+        : pin === "damaged" ? "Not running: the record of allowed plugins is damaged" + (s.pinError ? " (" + s.pinError + ")" : "") + ". Review and allow it again."
+        : "New in this vault, not allowed yet. Not running: review and allow it.";
       const desc = [
         "Version " + (m.version || "?") + (m.author ? " · By " + m.author : ""),
         m.description || "",
-        st && st.state === "failed" ? "Failed to load: " + String(st.error || "") : (restricted && on ? "Enabled, not running: restricted mode is on." : ""),
+        pinNote || (st && st.state === "failed" ? "Failed to load: " + String(st.error || "") : (restricted && on ? "Enabled, not running: restricted mode is on." : "")),
       ];
       const r = row(c2, String(m.name || id), desc, ctls, restricted);
       r.dataset.plugin = id;
