@@ -1,0 +1,5 @@
+{
+  "app": {
+    "security": { "csp": "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost" }
+  }
+}

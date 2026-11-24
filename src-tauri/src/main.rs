@@ -12642,6 +12642,26 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /// Windows: tauri.windows.conf.json is merged over tauri.conf.json on Windows only, and
+    /// the one thing it changes is the CSP. A boundary kept in two files drifts unless something
+    /// ties them: the Windows policy is the base policy with each custom scheme followed by the
+    /// origin WebView2 serves it from (http://<scheme>.localhost), and nothing else. So Linux and
+    /// macOS keep the exact string above, and Windows widens by those two origins only.
+    #[test]
+    fn windows_csp_is_the_base_csp_plus_the_two_webview2_origins() {
+        let csp = |c: &str| serde_json::from_str::<serde_json::Value>(c).unwrap()["app"]["security"]["csp"].as_str().unwrap().to_string();
+        let base = csp(include_str!("../tauri.conf.json"));
+        let win = csp(include_str!("../tauri.windows.conf.json"));
+        let want = base
+            .replace(&format!("{}: ", plugins::SCHEME), &format!("{s}: http://{s}.localhost ", s = plugins::SCHEME))
+            .replace(&format!("{IMG_SCHEME}:;"), &format!("{IMG_SCHEME}: http://{IMG_SCHEME}.localhost;"));
+        assert_eq!(want.matches(".localhost").count(), base.matches(".localhost").count() + 2, "the base CSP no longer names both schemes: {base}");
+        assert_eq!(win, want);
+        // and the Windows file overrides nothing else
+        let v: serde_json::Value = serde_json::from_str(include_str!("../tauri.windows.conf.json")).unwrap();
+        assert_eq!(v, serde_json::json!({ "app": { "security": { "csp": win } } }));
+    }
+
     /// R29 + S1: the CSP is a security boundary, so it is asserted as an EXACT
     /// string. A future widening (`img-src *`, an http origin, a stray
     /// 'unsafe-inline' in script-src) then fails a test instead of shipping
@@ -12655,8 +12675,8 @@ mod tests {
             .to_string();
         assert_eq!(
             csp,
-            "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; \
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
@@ -12666,20 +12686,17 @@ mod tests {
         assert!(!csp.contains("blob:"), "blob: in the config (restricted) CSP: {csp}");
         // R29: the image widening is ONE scheme token, and it is ours
         let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
-        // WebView2 requests a custom protocol as http://<scheme>.localhost (custom_scheme_url), so the
-        // origin is listed beside the scheme token: ours, never a remote host
-        assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}: http://{IMG_SCHEME}.localhost"));
+        assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
         // R29.10: remote images stay closed pending an operator decision —
         // no wildcard, no http(s) origin anywhere in the image directive
         assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
-        assert!(!img.contains("https"), "img-src names a remote origin: {img}");
-        assert!(img.split_whitespace().filter(|t| t.starts_with("http")).all(|t| t == format!("http://{IMG_SCHEME}.localhost")), "img-src names a remote origin: {img}");
+        assert!(!img.contains("http"), "img-src names a remote origin: {img}");
         // plugin-loader: script-src widens by ONE scheme token, ours, plus
         // 'wasm-unsafe-eval' (WebAssembly compile/instantiate only; Templater's
         // template parser is wasm). JS eval, new Function and string timers stay
         // blocked: no 'unsafe-eval' token, no 'unsafe-inline', no blob:/data:.
         let script = csp.split("; ").find(|d| d.starts_with("script-src ")).unwrap();
-        assert_eq!(script, format!("script-src 'self' {s}: http://{s}.localhost 'wasm-unsafe-eval'", s = plugins::SCHEME));
+        assert_eq!(script, format!("script-src 'self' {}: 'wasm-unsafe-eval'", plugins::SCHEME));
         for d in csp.split("; ") {
             for tok in d.split_whitespace() {
                 assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
@@ -12703,8 +12720,8 @@ mod tests {
         assert_eq!(r, format!("{base}; media-src 'self' blob:"));
         assert_eq!(
             r,
-            "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost; media-src 'self' blob:"
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost; media-src 'self' blob:"
         );
         // no 'unsafe-eval' anywhere; blob: ONLY in media-src (never script-src / worker-src / anything else)
         assert!(!r.split_whitespace().any(|t| t == "'unsafe-eval'"), "{r}");
@@ -12731,8 +12748,8 @@ mod tests {
         let t = csp_by_trust(&base, true);
         assert_eq!(
             t,
-            "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; \
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:; media-src 'self' blob:"
         );
         // every directive other than script-src / worker-src / connect-src / media-src is byte-identical
