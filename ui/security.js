@@ -286,6 +286,30 @@
     if (typeof updateTitle === "function") updateTitle();
     sandboxRow(pg);
   }
+  function tok() {
+    if (!R) return "";
+    let ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
+    ld += sbTok(); // #293: only while the Security pane is open
+    // [secd:<id of the focused control>] while the confirm is up (default focus = ld-no)
+    if (ldOpen) { const a = document.activeElement; ld += " [secd:" + (a && a.id ? a.id : "-") + "]"; }
+    // [secm:<marker rect>|<vault-name rect>] x,y,w,h while the marker shows: the harness intersects them
+    const m = document.getElementById("seclock"), vs = document.getElementById("vswitch");
+    if (R.lockdown && m && !m.hidden) {
+      const r = e => { if (!e) return "-"; const b = e.getBoundingClientRect(); return [b.x, b.y, b.width, b.height].map(Math.round).join(","); };
+      ld += " [secm:" + r(m) + "|" + r(vs && vs.getClientRects().length ? vs : null) + "]";
+    }
+    if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return R.lockdown || ldOpen ? ld : "";
+    const v = Object.keys(R.stored).map(f => f + "=" + (R.stored[f] ? 1 : 0) + (R.effective[f] ? 1 : 0)).join(",");
+    // [secf:<field>=<why>/<switch disabled 1|0>,...] every greyed row as drawn (pluginNet=offline/1 while
+    // Allow network is off, PR #193 review); [secn:<cx>,<cy>] the centre of the Allow network switch
+    const fr = [...document.querySelectorAll('#spage .srow.dis[data-sec]')].map(r => {
+      const t = r.querySelector(".sctl.toggle");
+      return r.dataset.sec + "=" + (R.forced[r.dataset.sec] || "-") + "/" + (t && t.getAttribute("aria-disabled") === "true" && !t.classList.contains("live") && !t.onclick ? 1 : 0);
+    }).join(",");
+    const nt = document.querySelector('#spage .srow[data-sec="offline"] .sctl.toggle'), nb = nt && nt.getBoundingClientRect();
+    const sn = nb ? " [secn:" + Math.round(nb.x + nb.width / 2) + "," + Math.round(nb.y + nb.height / 2) + "]" : "";
+    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + micTok() + devTok() + ld;
+  }
   /* #295 (audit F-8) Microphone: "ask" (default) | "always" (#295 follow-up) | "off". Not one of the
      boolean switches above (security.rs keeps it apart; [secp:]/[secv:]/[secf:] stay theirs): its
      own row (data-secmic, not data-sec), a three-way choice, its own command security_mic_set. The
@@ -415,30 +439,6 @@
     const legacy = c(M.stored === "off" ? "ask" : "off");
     return " [secmic:" + M.stored + "/" + M.effective + "/" + (M.forced ? 1 : 0) + "@" + legacy + "]" +
       " [secmicv:" + MIC_VALUES.map(([v]) => v + "@" + c(v)).join(",") + "]";
-  }
-  function tok() {
-    if (!R) return "";
-    let ld = " [secl:" + (R.lockdown ? 1 : 0) + "/" + (R.stored.lockdown ? 1 : 0) + "/" + (ldOpen ? 1 : 0) + "]";
-    ld += sbTok(); // #293: only while the Security pane is open
-    // [secd:<id of the focused control>] while the confirm is up (default focus = ld-no)
-    if (ldOpen) { const a = document.activeElement; ld += " [secd:" + (a && a.id ? a.id : "-") + "]"; }
-    // [secm:<marker rect>|<vault-name rect>] x,y,w,h while the marker shows: the harness intersects them
-    const m = document.getElementById("seclock"), vs = document.getElementById("vswitch");
-    if (R.lockdown && m && !m.hidden) {
-      const r = e => { if (!e) return "-"; const b = e.getBoundingClientRect(); return [b.x, b.y, b.width, b.height].map(Math.round).join(","); };
-      ld += " [secm:" + r(m) + "|" + r(vs && vs.getClientRects().length ? vs : null) + "]";
-    }
-    if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "security") return R.lockdown || ldOpen ? ld : "";
-    const v = Object.keys(R.stored).map(f => f + "=" + (R.stored[f] ? 1 : 0) + (R.effective[f] ? 1 : 0)).join(",");
-    // [secf:<field>=<why>/<switch disabled 1|0>,...] every greyed row as drawn (pluginNet=offline/1 while
-    // Allow network is off, PR #193 review); [secn:<cx>,<cy>] the centre of the Allow network switch
-    const fr = [...document.querySelectorAll('#spage .srow.dis[data-sec]')].map(r => {
-      const t = r.querySelector(".sctl.toggle");
-      return r.dataset.sec + "=" + (R.forced[r.dataset.sec] || "-") + "/" + (t && t.getAttribute("aria-disabled") === "true" && !t.classList.contains("live") && !t.onclick ? 1 : 0);
-    }).join(",");
-    const nt = document.querySelector('#spage .srow[data-sec="offline"] .sctl.toggle'), nb = nt && nt.getBoundingClientRect();
-    const sn = nb ? " [secn:" + Math.round(nb.x + nb.width / 2) + "," + Math.round(nb.y + nb.height / 2) + "]" : "";
-    return " [secp:" + nRows + "/" + nForced + "/" + (R.restartPending || []).length + "] [secv:" + v + "] [secf:" + fr + "]" + sn + geo() + micTok() + devTok() + ld;
   }
   /* [secg:nav=<h>/<font>/<padT>/<padL>/<radius>/<same 1|0>,row=<padT>/<padB>,lbl=<font>,desc=<font>,tg=<w>x<h>]
      the painted chrome of the Security tab, read with getComputedStyle — the T3 phase compares it to
