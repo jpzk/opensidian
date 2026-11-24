@@ -457,6 +457,53 @@ What (a) means concretely:
   in the native window title (inserted
   before the census tokens). Census `[secl:<latched>/<stored>/<dialog>]`.
 
+### 13 — Microphone (#295, audit F-8)
+
+- **Values:** `ask` (default) / `off`, stored as `security.microphone` (a string, kept out of
+  the boolean `FIELDS` and their `[secp:]`/`[secv:]` census). Written only by
+  `cfgstore::Op::SecurityMic` after `security::mic_validate`, sent by the command
+  `security_mic_set`; `off` → `ask` lowers a protection and asks the native "lower
+  protection?" confirm first. Missing / malformed = `ask`. Lockdown forces `off` (the stored
+  value is kept).
+- **Boundary:** backend, `main.rs` `audio_rec_start`. After the page token: `off` (or
+  lockdown) refuses with `NotAllowedError … (Settings › Security › Microphone)` before any
+  dialog; otherwise EVERY start asks the native consent `consent::Kind::Mic` (title
+  `opensidian: record audio?`, text from Rust constants, the vault path Debug-quoted,
+  buttons Cancel / Record, default Cancel). Only Record mints the one-shot grant
+  (`audiorec::grant`, `GRANT_TTL` 10 s); `audiorec::start_check` consumes it before the
+  recorder webview is created and refuses `NotAllowedError` without a fresh grant even
+  with a valid page token. A page (re)load voids the grant.
+- **Indicator:** while recording, the NATIVE window title starts with `● Recording — `
+  (`audiorec::REC_MARK`). Linux: a GTK `notify::title` handler re-applies it on every title
+  change, so the page's own `setTitle` cannot drop it. macOS: re-applied every 250 ms, next
+  to the system's own microphone-in-use indicator. Chosen over a tray icon / notification:
+  the app ships neither (no tray-icon feature, no notification plugin), the title needs no
+  new dependency and is shown by the window manager, taskbar and window switcher.
+- **Page hardening:** the recorder's start function is no longer on the page-global
+  `AREC`; the ribbon button and the command `audio-recorder:start` (palette, hotkeys) reach
+  it from the recorder's closure — and every route meets the same native consent.
+- **Files:** `audiorec.rs` (grant, `start_check`, `indicator_title`, tests), `security.rs`
+  (`Mic`, `mic_*`, tests), `consent.rs` (`Kind::Mic`, `mic_question`), `cfgstore.rs`
+  (`Op::SecurityMic`), `main.rs` (`audio_rec_start`, `rec_indicator`, `security_mic_set`),
+  `ui/security.js` (Privacy › Microphone row, census `[secmic:<stored>/<effective>/<forced>@x,y]`),
+  `ui/main.js` (recorder block).
+- **Always allow (#295 follow-up, operator 2026-11-23):** a third value `always`. Order of
+  strictness `off` > `ask` > `always`; any move DOWN it (`off` → `ask`, `off`/`ask` → `always`)
+  lowers a protection: `security_mic_set` asks the native "lower protection?" confirm (Rust
+  text, default Keep protection) and `security::mic_decide` writes only after Lower
+  protection. A revoke (`always` → `ask`/`off`, `ask` → `off`) is written at once, no dialog,
+  and the next start already follows it. Lockdown forces `off` over `always` too. With
+  `always`, `audio_rec_start` skips ONLY the per-start question (`security::mic_asks`): the
+  page token, the off/lockdown refusal, the grant + `start_check` (token and setting again)
+  and the native title mark all still apply — no silent recording. The value is app-wide and
+  keyed by nothing the page reports. **No "Always allow" button in the per-start dialog:** the
+  one existing Always pattern (#74, spawn) is keyed by (vault, plugin id, program), and the
+  plugin id is what the page passes to `desk_proc_spawn` — self-reported, so any page code can
+  claim it (audit/pentest H3). Copying it would key the mic grant to a forgeable identity;
+  the setting is the only always-allow. UI: three buttons Ask / Always allow / Off
+  (`data-secmicv`), strings `secmic-*` in all six `locales/*/main.ftl`, extra census
+  `[secmicv:ask@x,y,always@x,y,off@x,y]`.
+
 ## 2. Settings tab
 
 - A **Security** entry in the settings left nav, after "Community plugins" in the

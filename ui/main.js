@@ -8811,7 +8811,15 @@ let AREC = null;
   const IV = TAURI && TAURI.core && typeof TAURI.core.invoke === "function" ? TAURI.core.invoke : null;
   const call = (c, a) => IV ? IV(c, a) : Promise.reject(new Error("no ipc"));
   const tokP = call("audio_token").then(t => (typeof t === "string" && t ? t : null), () => null);
-  const deny = function getUserMedia() { return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError")); };
+  // devaccess (#295): a camera request — video only — goes to the NATIVE gate (devperm::decide: Settings › Security ›
+  // Device access › Camera; default off = denied there). The constraints are rebuilt here as { video } read ONCE, so
+  // no getter / Proxy can add audio after this check: a page request never carries audio, the mic stays reserved.
+  const deny = function getUserMedia(c) {
+    let v = null;
+    try { if (c && typeof c === "object" && !c.audio) v = c.video; } catch (_) { v = null; }
+    if (gum && v) { const ask = { video: (typeof v === "object" ? v : true) }; return gum(ask); }
+    return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError"));
+  };
   if (md) {
     try { Object.defineProperty(md, "getUserMedia", { value: deny, writable: false, configurable: false, enumerable: true }); } catch (_) {}
     try { if (window.MediaDevices && MediaDevices.prototype) Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: deny, writable: false, configurable: false }); } catch (_) {}
@@ -8860,7 +8868,12 @@ let AREC = null;
       catch (e) {
         const m = errStr(e), n = errName(m);
         if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") msg = "No microphone is connected.";
-        else if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; msg = "Microphone access was denied."; }
+        else if (n === "NotAllowedError" || n === "SecurityError") {
+          st.denied++;
+          // #295: Settings › Security › Microphone off (or lockdown) names the switch; a Cancel in the native consent does not
+          const off = /\((Settings › Security › [^)]*)\)/.exec(m);
+          msg = off ? "Microphone access was denied: the microphone is off (" + off[1] + ")." : "Microphone access was denied.";
+        }
         else if (n === "NotSupportedError") msg = "Audio recording is not available: " + m.slice(n.length + 2);
         else msg = "Audio recorder: " + m;
         return;
@@ -8913,8 +8926,21 @@ let AREC = null;
   const ip = PLG && PLG.app && PLG.app.internalPlugins;
   const sync = () => { if (ip) ip.config["audio-recorder"] = plugin.enabled; };
   if (ip) { ip.plugins["audio-recorder"] = plugin; sync(); }
+  /* #295 (audit F-8) hardening: `start` is NOT on this page-global object any more. The user's
+     routes reach it from this closure only: the ribbon button (above), the status item is stop
+     only, and the command "audio-recorder:start" (palette + hotkeys, CMDS) whose run is wired
+     below once CMDS exists. Whatever route a page script takes, the decision is native:
+     audio_rec_start asks the user in a native consent before EVERY recording (or refuses while
+     Settings › Security › Microphone is off / lockdown), and the native window title carries the
+     recording mark while the microphone is on. */
+  setTimeout(() => {
+    try {
+      const c = typeof CMDS !== "undefined" ? CMDS.find(x => x.id === "audio-recorder:start") : null;
+      if (c) c.run = () => { start(); };
+    } catch (e) { console.error("[audio-recorder] command:", e); }
+  }, 0);
   AREC = Object.freeze({
-    plugin, start, stop,
+    plugin, stop,
     on: () => st.on, recording: () => !!st.rec,
     // census [arec:on=|rec=|busy=|saved=|last=|denied=|tok=|mr=|err=] + [ribbon:audio@x,y] [arind@x,y]
     tok() {
@@ -11197,7 +11223,7 @@ const CMDS = [
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
   // #116 Audio recorder (core plugin, off by default): stock offers start only while NOT recording and stop only WHILE
   // recording; neither row exists (palette, hotkeys) while the core plugin is off
-  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
+  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => {} /* #295: wired by the Audio recorder block (no page-global start) */, () => !!(AREC && AREC.on() && !AREC.recording())],
   ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on

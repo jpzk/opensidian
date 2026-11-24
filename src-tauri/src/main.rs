@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+mod devperm; // devaccess: the ONE decision for every webview permission request (Settings › Security › Device access)
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
@@ -1237,6 +1238,14 @@ const REC_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 fn rec_close(app: &tauri::AppHandle, parent: &str) {
     use tauri::Manager;
     audiorec::sess_drop(parent);
+    if audiorec::indicator_on(parent) {
+        match app.get_webview_window(parent) {
+            Some(w) => rec_indicator(&w, false),
+            None => {
+                audiorec::indicator_set(parent, false);
+            }
+        }
+    }
     if let Some(rw) = app.get_webview_window(&audiorec::rec_label(parent)) {
         let _ = audiorec::mic_off(&rw); // reason: the webview is destroyed next either way
         audiorec::rec_offscreen_drop(&rw);
@@ -1244,6 +1253,89 @@ fn rec_close(app: &tauri::AppHandle, parent: &str) {
             eprintln!("[audiorec] recorder webview not closed: {e}");
         }
     }
+}
+
+/* #295 (audit F-8) the recording indicator the page cannot hide: while app window <label>
+   records, its NATIVE window title starts with audiorec::REC_MARK ("● Recording — "). Chosen over
+   a tray icon / desktop notification because the app has neither (no tray-icon feature, no
+   notification plugin: adding one = a new dependency), while the title is what the window manager,
+   the taskbar and the window switcher show on both platforms and is set from Rust here.
+   - Linux (GTK): a notify::title handler on the GtkWindow re-applies the mark on EVERY title change,
+     synchronously, so the page's own setTitle (pushTitle, or a plugin's) cannot drop it; removed
+     with the mark when the recording ends (rec_close).
+   - macOS / other: no title-change hook in our code, so a thread re-applies the mark every
+     audiorec::REC_MARK_TICK while the recording lasts; macOS also shows its own system
+     microphone-in-use indicator (menu bar), which no app code can hide. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static REC_TITLE_HOOK: std::cell::RefCell<std::collections::HashMap<String, gtk::glib::SignalHandlerId>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(target_os = "linux")]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    audiorec::indicator_set(win.label(), on);
+    let w2 = win.clone();
+    let r = win.run_on_main_thread(move || {
+        use gtk::glib::prelude::ObjectExt;
+        use gtk::prelude::GtkWindowExt;
+        let Ok(gw) = w2.gtk_window() else {
+            eprintln!("[audiorec] indicator: no GTK window for {}", w2.label());
+            return;
+        };
+        // devaccess: both marks in one fixed order (audiorec::title_with), so this hook and the
+        // camera hook (audiorec::cam_hook) always aim at the same title
+        let lab = w2.label().to_string();
+        let fix = move |gw: &gtk::ApplicationWindow, on: bool| {
+            let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(&lab)) {
+                gw.set_title(&t);
+            }
+        };
+        let label = w2.label().to_string();
+        REC_TITLE_HOOK.with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some(id) = h.remove(&label) {
+                gw.disconnect(id);
+            }
+            fix(&gw, on);
+            if on {
+                let id = gw.connect_notify_local(Some("title"), move |gw, _| fix(gw, true));
+                h.insert(label, id);
+            }
+        });
+        eprintln!("[audiorec] indicator {}: {}", w2.label(), if on { "on" } else { "off" });
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] indicator not applied: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    let gen = audiorec::indicator_set(win.label(), on);
+    let fix = |w: &tauri::WebviewWindow, on: bool| {
+        if let Ok(cur) = w.title() {
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(w.label())) {
+                let _ = w.set_title(&t); // reason: a window being destroyed takes its title with it
+            }
+        }
+    };
+    fix(win, on);
+    if let Some(gen) = gen {
+        let w = win.clone();
+        std::thread::spawn(move || {
+            while audiorec::indicator_live(w.label(), gen) {
+                fix(&w, true);
+                std::thread::sleep(audiorec::REC_MARK_TICK);
+            }
+            // a re-apply that raced the off: take the mark down again (unless a new recording runs)
+            if !audiorec::indicator_on(w.label()) {
+                fix(&w, false);
+            }
+        });
+    }
+    eprintln!("[audiorec] indicator {}: {}", win.label(), if on { "on" } else { "off" });
 }
 
 /// block (off the async runtime) on a hand-off from the recorder page
@@ -1255,11 +1347,36 @@ async fn rec_recv<T: Send + 'static>(rx: std::sync::mpsc::Receiver<T>, wait: std
 /// Err("<DOMException name>: <message>") when it could not (the webview is closed again)
 #[tauri::command]
 async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    use tauri::Manager;
     let parent = win.label().to_string();
     audiorec::authorized(&parent, &token)?;
     if audiorec::is_rec(&parent) {
         return Err("SecurityError: not an app window".into());
     }
+    /* #295 (audit F-8): the decision is NATIVE. Settings › Security › Microphone off (or lockdown)
+       refuses before any dialog; otherwise EVERY start asks the user in the native consent
+       (Record / Cancel, default Cancel) and only Record mints the one-shot grant that
+       audiorec::start_check consumes below. A page script driving the core recorder gets the
+       dialog, never a silent recording. */
+    security::mic_check(security::mic_effective(&cfg_value())).inspect_err(|e| eprintln!("[audiorec] start refused: {e}"))?;
+    /* #295 follow-up: Microphone = always allow (app-wide, set only through the native Security
+       confirm) skips THIS question and nothing else: the token above, the setting re-read by
+       start_check below and the native recording indicator (rec_indicator after the recorder
+       runs) apply to every start alike. Lockdown has already turned it into off above. */
+    if security::mic_asks(security::mic_effective(&cfg_value())) {
+        let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
+            eprintln!("[audiorec] start: cancelled in the native consent, nothing started");
+            return Err(audiorec::NO_GRANT.into());
+        }
+    } else {
+        eprintln!("[audiorec] start: Microphone = always allow, no per-start consent (token, setting and the recording indicator still apply)");
+    }
+    audiorec::grant(&parent, std::time::Instant::now());
+    // the setting is read AGAIN after the dialog (turned off / lockdown meanwhile = refused);
+    // the grant is consumed here, whatever the outcome
+    audiorec::start_check(&parent, &token, security::mic_check(security::mic_effective(&cfg_value())), std::time::Instant::now())?;
     rec_close(&app, &parent);
     let (gtx, grx) = std::sync::mpsc::channel();
     let (stx, srx) = std::sync::mpsc::channel();
@@ -1296,6 +1413,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     match rec_recv(srx, REC_START_WAIT).await {
         Some(Ok(())) => {
             eprintln!("[audiorec] recording in {}", rw.label());
+            rec_indicator(&win, true);
             Ok(())
         }
         r => {
@@ -5065,6 +5183,59 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
     Ok(security::report(&cfg_value()))
 }
 
+/// #295 Settings › Security › Microphone = "ask" | "always" | "off": validated; a change that lowers
+/// a protection (off -> ask, off / ask -> always) asks the native Security confirm first and is
+/// written only after Lower protection (security::mic_decide); a revoke (always -> ask / off,
+/// ask -> off) is written at once with no dialog; only Op::SecurityMic writes it
+#[tauri::command]
+async fn security_mic_set(win: tauri::Window, value: String) -> Result<serde_json::Value, String> {
+    let m = security::mic_validate(&value)?;
+    let stored = security::mic_stored(&cfg_value());
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_mic_question(m)).await?;
+    }
+    let Some(m) = security::mic_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set microphone={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityMic(m.as_str().into())]);
+    eprintln!("[sec] set microphone={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", security::MIC_FIELD);
+    }
+    Ok(security::report(&cfg_value()))
+}
+
+/// devaccess: one Settings › Security › Device access row (security::DEV_ROWS) = "ask" | "always" |
+/// "off": validated (known row, known value); a weakening change (off -> ask, off / ask -> always)
+/// asks the native Security confirm first and is written only after Lower protection
+/// (security::dev_decide); a revoke is written at once with no dialog; only Op::SecurityDev writes it.
+/// Keyed by the row alone: nothing the page reports (plugin id, vault, origin) enters the decision.
+#[tauri::command]
+async fn security_dev_set(win: tauri::Window, field: String, value: String) -> Result<serde_json::Value, String> {
+    let (f, m) = security::dev_validate(&field, &value)?;
+    let stored = security::dev_stored(&cfg_value(), f);
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_dev_question(f, m)).await?;
+    }
+    let Some(m) = security::dev_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set {f}={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityDev(f.into(), m.as_str().into())]);
+    eprintln!("[sec] set {f}={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", f);
+    }
+    Ok(security::report(&cfg_value()))
+}
+
 #[tauri::command]
 async fn desk_proc_spawn(
     win: tauri::Window,
@@ -8533,7 +8704,7 @@ fn main() {
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, security_dev_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
@@ -10058,6 +10229,114 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #295 (audit F-8): audio_rec_start decides natively before it builds the recorder webview —
+    /// token, then Microphone off refuses (before any dialog), then the native Kind::Mic consent,
+    /// then the grant (only after a yes), then start_check consumes it; the grant is minted
+    /// nowhere else; the indicator goes on with the recording and off in rec_close
+    #[test]
+    fn mic295_audio_rec_start_asks_natively_before_the_recorder_exists() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let order = [
+            "audiorec::authorized(&parent, &token)?",
+            "security::mic_check(security::mic_effective(&cfg_value())).inspect_err(",
+            "consent::admit()?",
+            concat!("consent::Kind::", "Mic, consent::mic_question(&vault)"),
+            "return Err(audiorec::NO_GRANT.into())",
+            concat!("audiorec::", "grant(&parent,"),
+            "audiorec::start_check(&parent, &token,",
+            "rec_close(&app, &parent);",
+            "tauri::WebviewWindowBuilder::new(",
+            "rec_indicator(&win, true)",
+        ];
+        for w in order.windows(2) {
+            assert!(at(w[0]) < at(w[1]), "audio_rec_start: {} must come before {}", w[0], w[1]);
+        }
+        assert_eq!(src.matches(concat!("audiorec::", "grant(")).count(), 1, "a grant is minted only after the native consent");
+        assert_eq!(src.matches(concat!("consent::Kind::", "Mic")).count(), 1, "one mic question");
+        let rc = src.find("fn rec_close(").expect("rec_close");
+        assert!(src[rc..rc + src[rc..].find("\n}\n").expect("end")].contains("rec_indicator(&w, false)"), "the indicator outlives the recording");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_mic_set,"), "not registered");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (w, c) = (mb.find("security::mic_weakens(").expect("weakens"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(w < c && mb[w..c].contains("consent::Kind::Security"), "off -> ask written without the native confirm");
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityMic(")).count(), 1, "one writer of the microphone");
+    }
+
+    /// #295 follow-up, Microphone = always allow: it skips ONLY the per-start question. The token
+    /// check and the off/lockdown refusal come before the branch, the grant / start_check (token +
+    /// setting again) / recorder / indicator after it, outside it: an always-allow start still
+    /// needs the token and still turns the native indicator on. The setting is written only by
+    /// security_mic_set, behind mic_decide (a weakening change needs the native confirm's yes).
+    #[test]
+    fn mic295_always_allow_skips_only_the_question() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let branch = at(concat!("if security::mic_", "asks(security::mic_effective(&cfg_value())) {"));
+        let other = at("} else {\n        eprintln!(\"[audiorec] start: Microphone = always allow");
+        let join = branch + b[branch..].find("\n    }\n").expect("branch end");
+        assert!(at("audiorec::authorized(&parent, &token)?") < branch, "the token check must come before the always branch");
+        assert!(at("security::mic_check(security::mic_effective(&cfg_value())).inspect_err(") < branch, "off / lockdown must refuse before the always branch");
+        assert!(branch < at(concat!("consent::Kind::", "Mic,")) && at(concat!("consent::Kind::", "Mic,")) < other, "the question sits in the ask branch");
+        assert!(other < join, "branch shape");
+        for after in [concat!("audiorec::", "grant(&parent,"), "audiorec::start_check(&parent, &token,", "tauri::WebviewWindowBuilder::new(", "rec_indicator(&win, true)"] {
+            assert!(at(after) > join, "{after} must run for EVERY start (after the always branch), not inside it");
+        }
+        assert!(!b[branch..join].contains("rec_indicator") && !b[branch..join].contains("audiorec::start_check"), "the branch must not hold the token / indicator steps");
+        assert_eq!(b.matches("rec_indicator(&win, true)").count(), 1, "one indicator-on, for every recording");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (d, c) = (mb.find("security::mic_decide(stored, m, confirmed)").expect("decide"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(d < c && mb[..d].contains("confirmed = consent::ask(") && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind mic_decide + the native confirm");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+    }
+
+    /// devaccess: the app page's getUserMedia rejector (ui/main.js) forwards ONLY a rebuilt
+    /// { video } request to the native gate (devperm::decide); anything carrying audio, or with no
+    /// video, is still refused in the page. The audio key is never copied into the forwarded object.
+    #[test]
+    fn devacc_page_forwards_only_video_to_the_native_gate() {
+        let ui = include_str!("../../ui/main.js");
+        let a = ui.find("const deny = function getUserMedia(c) {").expect("rejector");
+        let body = &ui[a..a + ui[a..].find("\n  };").expect("rejector end")];
+        assert!(body.contains("!c.audio) v = c.video;"), "audio must exclude the forward: {body}");
+        assert!(body.contains("const ask = { video: (typeof v === \"object\" ? v : true) }; return gum(ask);"), "forward must be a rebuilt video-only object");
+        assert_eq!(body.matches("gum(").count(), 1, "one forward only");
+        assert!(!body.contains("gum(c"), "the caller's constraints object must never reach WebKit");
+        assert!(!body.contains("audio:"), "no audio key in the forwarded request");
+        assert!(body.contains("reserved for the Audio recorder core plugin.\", \"NotAllowedError\""), "everything else refused");
+        // both bindings still the rejector, non-writable
+        assert!(ui.contains("Object.defineProperty(md, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+        assert!(ui.contains("Object.defineProperty(MediaDevices.prototype, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+    }
+
+    /// devaccess: a Device access row is written only by security_dev_set, behind dev_decide and
+    /// the native Security confirm (confirmed defaults to NO); the setter takes only (field, value),
+    /// nothing page-reported (no plugin id / vault / origin) enters it; one writer of Op::SecurityDev
+    #[test]
+    fn devacc_row_written_only_behind_the_native_confirm() {
+        let src = include_str!("main.rs");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_dev_set,"), "not registered");
+        let ms = src.find("async fn security_dev_set(").expect("security_dev_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        assert!(mb.starts_with("async fn security_dev_set(win: tauri::Window, field: String, value: String) ->"), "the setter must take only the row and the value");
+        let at = |s: &str| mb.find(s).unwrap_or_else(|| panic!("security_dev_set lacks {s}"));
+        assert!(at("security::dev_validate(&field, &value)?") < at("security::mic_weakens(stored, m)"));
+        assert!(at("security::mic_weakens(stored, m)") < at("consent::Kind::Security, consent::security_dev_question(f, m)"));
+        let (d, c) = (at("security::dev_decide(stored, m, confirmed)"), at(concat!("cfgstore::Op::", "SecurityDev(")));
+        assert!(d < c && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind dev_decide");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+        for page in ["plugin", "vault", "origin"] {
+            assert!(!mb.contains(page), "security_dev_set must not be keyed by page-reported {page}");
+        }
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityDev(")).count(), 1, "one writer of the Device access rows");
     }
 
     /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the

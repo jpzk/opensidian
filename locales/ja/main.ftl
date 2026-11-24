@@ -369,3 +369,24 @@ menu-zoom-to-selection = 選択範囲にズーム
 menu-as-obsidian-url = Obsidian URL として
 menu-from-system-root = システムのルートから
 menu-from-vault-folder = 保管庫のフォルダーから
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = デバイスへのアクセス
+secdev-camera = カメラ
+secdev-camera-desc = アプリとコミュニティプラグインによるカメラへのアクセス。カメラの使用中は、ウィンドウのタイトルが「● Camera」で始まります。
+secdev-location = 位置情報
+secdev-location-desc = アプリとコミュニティプラグインに提供するあなたの位置情報。
+secdev-notifications = 通知
+secdev-notifications-desc = アプリとコミュニティプラグインからのデスクトップ通知。
+secdev-pointerlock = ポインターロック
+secdev-pointerlock-desc = クリックの後、アプリまたはコミュニティプラグインがマウスポインターを隠して捕捉できます(3D 表示、ゲーム)。Esc で解除されます。
+secdev-values = 確認する: 要求のたびに別のシステムウィンドウで確認します。常に許可: そのウィンドウを出さずに許可します(この選択はシステムウィンドウで一度だけ確認します)。オフ: すべての要求を拒否し、ウィンドウも表示しません。
+secdev-na = 利用不可
+secdev-na-desc = アプリにもプラグインにも許可されず、ウィンドウも表示されません: 画面キャプチャ、デバイス名、保護されたメディア (EME)、ウェブサイトデータへのアクセス、WebXR、MIDI。
+secmic-label = マイク
+secmic-desc = 確認する: 録音を始めるたびに、録音機能が別のシステムウィンドウで確認します。常に許可: そのウィンドウを出さずに録音を始めます(この選択はシステムウィンドウで一度だけ確認します)。オフ: すべての録音を拒否し、ウィンドウも表示しません。マイクの使用中は、ウィンドウのタイトルが「● Recording」で始まります。
+secmic-ask = 確認する
+secmic-always = 常に許可
+secmic-off = オフ
+secmic-forced = { $name } により強制的にオフになっています。

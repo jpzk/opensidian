@@ -68,6 +68,16 @@ pub enum Op {
     /// security::validate (and, for a change that lowers protection, the native confirm);
     /// applied here only for a known field, so even a forged Op cannot write anything else.
     SecuritySet(String, bool),
+    /// #295: Settings › Security › Microphone ("ask" | "always" | "off"). Sent ONLY by security_mic_set
+    /// after security::mic_validate (and, for a weakening change — off -> ask, off / ask -> always —
+    /// the native confirm); applied here only for a
+    /// valid value, so even a forged Op cannot write anything else under the key.
+    SecurityMic(String),
+    /// devaccess: one Settings › Security › Device access row (security::DEV_ROWS: camera, location,
+    /// notifications, pointerLock) = "ask" | "always" | "off". Sent ONLY by security_dev_set after
+    /// security::dev_validate (and, for a weakening change, the native confirm); applied here only
+    /// for a known row and a valid value, so even a forged Op cannot write anything else.
+    SecurityDev(String, String),
 }
 
 /// MRU push: dedup, newest first, capped — pure for testability
@@ -97,6 +107,24 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
                         v[crate::security::KEY] = serde_json::json!({});
                     }
                     v[crate::security::KEY][f] = serde_json::json!(on);
+                }
+                Err(e) => eprintln!("[cfg] refused: {e}"),
+            },
+            Op::SecurityMic(m) => match crate::security::mic_validate(m) {
+                Ok(m) => {
+                    if !v[crate::security::KEY].is_object() {
+                        v[crate::security::KEY] = serde_json::json!({});
+                    }
+                    v[crate::security::KEY][crate::security::MIC_FIELD] = serde_json::json!(m.as_str());
+                }
+                Err(e) => eprintln!("[cfg] refused: {e}"),
+            },
+            Op::SecurityDev(f, m) => match crate::security::dev_validate(f, m) {
+                Ok((f, m)) => {
+                    if !v[crate::security::KEY].is_object() {
+                        v[crate::security::KEY] = serde_json::json!({});
+                    }
+                    v[crate::security::KEY][f] = serde_json::json!(m.as_str());
                 }
                 Err(e) => eprintln!("[cfg] refused: {e}"),
             },
@@ -466,5 +494,49 @@ mod tests {
         let mut w = serde_json::json!({k: 3});
         apply(&mut w, &[Op::SecuritySet("jit".into(), false)]);
         assert_eq!(w[k], serde_json::json!({"jit": false}), "a malformed key is replaced by an object");
+    }
+
+    /// #295: Microphone is written by Op::SecurityMic only, and only "ask" / "off"; merged with the
+    /// switches; a generic op or the boolean op cannot write it
+    #[test]
+    fn mic295_microphone_written_only_by_its_own_op() {
+        let k = crate::security::KEY;
+        let mut v = serde_json::json!({k: {"webgl": false}});
+        apply(&mut v, &[Op::SecurityMic("off".into())]);
+        assert_eq!(v[k], serde_json::json!({"webgl": false, "microphone": "off"}));
+        let before = v.clone();
+        apply(&mut v, &[
+            Op::SecurityMic("allow".into()),
+            Op::SecurityMic("".into()),
+            Op::SecuritySet("microphone".into(), true),
+            Op::SetIn(k.into(), "microphone".into(), serde_json::json!("ask")),
+        ]);
+        assert_eq!(v, before, "an invalid value or a foreign op changed the microphone");
+        apply(&mut v, &[Op::SecurityMic("ask".into())]);
+        assert_eq!(v[k]["microphone"], "ask");
+    }
+
+    /// devaccess: a Device access row is written by Op::SecurityDev only, only for a known row and
+    /// a valid value; a generic op, the boolean op or the microphone op cannot write a row
+    #[test]
+    fn devacc_rows_written_only_by_their_own_op() {
+        let k = crate::security::KEY;
+        let mut v = serde_json::json!({k: {"webgl": false, "microphone": "off"}});
+        apply(&mut v, &[Op::SecurityDev("camera".into(), "ask".into())]);
+        assert_eq!(v[k], serde_json::json!({"webgl": false, "microphone": "off", "camera": "ask"}));
+        let before = v.clone();
+        apply(&mut v, &[
+            Op::SecurityDev("camera".into(), "allow".into()),
+            Op::SecurityDev("camera".into(), "".into()),
+            Op::SecurityDev("screen".into(), "always".into()),
+            Op::SecurityDev("microphone".into(), "always".into()),
+            Op::SecurityDev("lockdown".into(), "off".into()),
+            Op::SecuritySet("camera".into(), true),
+            Op::SetIn(k.into(), "location".into(), serde_json::json!("always")),
+            Op::MergeIn(k.into(), "pointerLock".into(), serde_json::json!("always")),
+        ]);
+        assert_eq!(v, before, "an invalid row / value or a foreign op changed a Device access row");
+        apply(&mut v, &[Op::SecurityDev("pointerLock".into(), "off".into())]);
+        assert_eq!(v[k]["pointerLock"], "off");
     }
 }
