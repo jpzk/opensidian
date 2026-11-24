@@ -229,8 +229,8 @@ body {
   --border-focus-ring: #bdbdbd;
   --rule-faint: #31324499;
   --text-chrome-alt: #cdd6f5;
-  --text-chrome-faint: #7f849c;
-  --text-chrome-dim: #6c7086;
+  --text-chrome-faint: var(--text-faint);   /* #352: faint chrome ink (counts, hints, footer, group headings) is the theme --text-faint like stock (default L #ababab / D #666666); the built-ins that once split it are gone */
+  --text-chrome-dim: var(--text-faint);     /* #352 */
   --text-on-accent: #fff;
   --text-quiet: #bac2de;
   --link-unresolved: #7c86c8;
@@ -512,8 +512,6 @@ body:where(.theme-light) {
   --border-strong: #ababab;
   --rule-faint: #eeeeee;
   --text-chrome-alt: #222222;
-  --text-chrome-faint: #ababab;
-  --text-chrome-dim: #b6b6b6;
   --text-quiet: #5c5c5c;
   --link-unresolved: #ad8cf8;
   --accent-mauve: var(--color-accent, #8a5cf5);
@@ -1245,6 +1243,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 /* #337: a focused stock prompt input is framed in --background-modifier-border-focus (Solarized: its accent
    203,75,22); our separator under it keeps its own colour */
 #minput:focus { border-color: var(--background-modifier-border-focus); border-bottom-color: var(--border) }
+/* #352: WebKit paints its own grey placeholder (#a9a9a9 in both modes) unless told; stock = --text-faint */
+#minput::placeholder, #rninput::placeholder { color: var(--input-placeholder-color, var(--text-faint)) }
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }

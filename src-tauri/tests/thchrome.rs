@@ -287,3 +287,28 @@ fn i337_negative_live_dropdown_and_separator_unchanged() {
     // focus rings on buttons are a separate affordance: --border-focus-ring is untouched here
     assert_eq!(decl_in(&c, "\nbody {", "--border-focus-ring"), "#bdbdbd", "#337: button focus rings are out of scope");
 }
+
+// ---------------------------------------------------------------- #352
+#[test]
+fn i352_faint_chrome_ink_derives_from_text_faint_and_prompts_have_placeholders() {
+    let c = css();
+    assert_eq!(decl_in(&c, "\nbody {", "--text-chrome-faint"), "var(--text-faint)", "#352: --text-chrome-faint is a literal, not the theme --text-faint");
+    assert_eq!(decl_in(&c, "\nbody {", "--text-chrome-dim"), "var(--text-faint)", "#352: --text-chrome-dim is a literal, not the theme --text-faint");
+    let p = rule(&c, "#minput::placeholder, #rninput::placeholder");
+    assert!(p.contains("color: var(--input-placeholder-color, var(--text-faint))"), "#352: prompt placeholders fall back to WebKit grey: {p}");
+    for sel in [".tagrow .scount", ".rhead .scount", ".blnote .scount"] {
+        assert!(rule(&c, sel).contains("var(--text-chrome-dim)"), "#352: {sel} no longer reads the derived faint ink");
+    }
+}
+#[test]
+fn i352_negative_no_mode_block_reintroduces_a_faint_literal() {
+    let c = css();
+    let n_faint = c.matches("\n  --text-chrome-faint:").count();
+    let n_dim = c.matches("\n  --text-chrome-dim:").count();
+    assert_eq!((n_faint, n_dim), (1, 1), "#352: a mode block re-declares the faint chrome ink as a literal");
+    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &light[..light.find("\n}").unwrap()];
+    assert!(light.contains("--text-faint: var(--color-base-50, #ababab)"), "#352: light keeps the stock default faint #ababab via --text-faint");
+    // muted ink is NOT faint: the two must stay separate variables
+    assert_ne!(decl_in(&c, "\nbody {", "--text-chrome-muted"), "var(--text-faint)", "#352: muted chrome ink collapsed onto faint");
+}
