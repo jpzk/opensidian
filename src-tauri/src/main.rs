@@ -36,6 +36,8 @@ use opensidian_lib::outline;
 mod pdf;
 mod plugins;
 mod plugin_store;
+#[cfg(windows)]
+mod http_win; // the plugin store's HTTPS client on Windows (WinHTTP), see plugin_store::http_get
 mod pasteimg;
 mod qscreate;
 mod perf;
@@ -9866,8 +9868,9 @@ mod tests {
             let e = s[a..].find("\n}\n").map(|e| a + e).unwrap_or(s.len());
             &s[a..e]
         }
-        let net = ["soup::Session::", "TcpStream::connect", "TcpListener::bind", "UdpSocket::"];
-        let allowed = [("plugin_store.rs", "pub fn http_get("), ("desk_http.rs", "fn connect("), ("desk_net.rs", "fn listen(")];
+        // WinHttpConnect: the Windows client (http_win.rs), reached only from plugin_store::http_get
+        let net = ["soup::Session::", "TcpStream::connect", "TcpListener::bind", "UdpSocket::", "WinHttpConnect("];
+        let allowed = [("plugin_store.rs", "pub fn http_get("), ("http_win.rs", "pub fn get("), ("desk_http.rs", "fn connect("), ("desk_net.rs", "fn listen(")];
         let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
         let mut files = 0;
         for ent in fs::read_dir(dir).unwrap().flatten() {

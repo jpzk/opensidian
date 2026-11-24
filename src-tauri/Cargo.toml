@@ -120,10 +120,12 @@ libc = "=0.2.189"
 objc2 = "=0.6.4"
 block2 = "=0.6.2"
 
-# Windows plugin-store HTTPS (plugin_store.rs). reqwest 0.13.4 is ALREADY in
-# Cargo.lock (tauri transitive); rustls-tls avoids soup3/native OpenSSL. Pin `=`.
+# Windows plugin-store HTTPS (plugin_store.rs -> http_win.rs): WinHTTP, the system's own client
+# (Schannel TLS, system trust store and proxy), as libsoup is on Linux. NO NEW CRATE:
+# windows-sys 0.61.2 is ALREADY in Cargo.lock (tauri -> muda, dirs-sys); `=` pins the locked version
+# and only the WinHttp bindings are compiled in.
 [target.'cfg(windows)'.dependencies]
-reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls", "charset"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinHttp"] }
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
