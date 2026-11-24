@@ -100,8 +100,13 @@ fn only_the_boot_restore_remembers_and_the_first_write_forgets() {
     let write = flush.find("inv(\"write_workspace\"").expect("wsFlush writes");
     assert!(skip < write, "the skip must come before the write");
     assert!(flush.contains("wsLast = s; wsWrites++; wsFile = \"\";"), "a successful write must forget the file");
-    let apply = &src[src.find("async function wsApply(").expect("wsApply")..];
+    let apply = &src[src.find("async function wsApplyIn(").expect("wsApplyIn")..];
     assert!(apply[..600].contains("wsFile = boot ? wsCanon(doc) : \"\";"), "only the launch restore (boot) remembers the file");
+    // no flush while a restore is running: it would write a half-restored layout
+    let wrap = &src[src.find("async function wsApply(").expect("wsApply")..];
+    assert!(wrap[..200].contains("wsApplying++;") && wrap[..200].contains("finally { wsApplying--; }"), "wsApply counts itself");
+    let wait = flush.find("if (!force && wsApplying > 0)").expect("wsFlush waits for a restore");
+    assert!(wait < skip, "the wait must come before the skip and the write");
     let leave = &src[src.find("async function wsLeave(").expect("wsLeave")..];
     assert!(leave[..400].contains("wsFile = \"\";"), "a vault switch forgets the file");
 }

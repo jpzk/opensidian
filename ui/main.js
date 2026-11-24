@@ -3240,10 +3240,13 @@ function wsTouch() {
    still inside the 5s the wspace phase asserts. `force` (wsLeave) never yields:
    a vault switch is a hard boundary. */
 const WS_YIELD_MS = 50, WS_YIELD_MAX = 40;
+let wsApplying = 0;      // wsApply calls in progress: the flush waits for them (no cap: the restore ends or the file stays as read)
 let wsYields = 0;
 async function wsFlush(force) {
   wsT = null;
   if (!state || !vaultPath) return;
+  // a layout being restored is not a layout yet: what it serializes half-way is neither the file nor the result
+  if (!force && wsApplying > 0) { wsT = setTimeout(() => wsFlush(), WS_YIELD_MS); return; }
   if (!force && actN > 0 && wsYields < WS_YIELD_MAX) { wsYields++; wsT = setTimeout(() => wsFlush(), WS_YIELD_MS); return; }
   wsYields = 0;
   let doc, s;
@@ -3460,7 +3463,14 @@ function wsNodeIn(node, have) {
 async function wsRead() {
   try { return await inv("read_workspace"); } catch (e) { return null; }
 }
-async function wsApply(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
+/* The restore awaits note loads, and the 400 ms layout timer (armed by its own
+   renderLayout) can fall due in the middle: a slow start wrote the half-restored
+   layout, then the finished one, both times for a file that had not changed. */
+async function wsApply(doc, names, boot) {
+  wsApplying++;
+  try { return await wsApplyIn(doc, names, boot); } finally { wsApplying--; }
+}
+async function wsApplyIn(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
   if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
   // only the launch restore reads what is ON DISK; a loaded workspace or a plugin layout must be written
   try { wsFile = boot ? wsCanon(doc) : ""; } catch (e) { wsFile = ""; }
