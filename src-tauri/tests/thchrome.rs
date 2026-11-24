@@ -211,3 +211,22 @@ fn i322_negative_inactive_tabs_and_the_tab_strip_stay_unoutlined() {
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--tab-outline-color:"), "#322: light mode must inherit the same wiring (the border colour differs, not the var)");
 }
+
+// ---------------------------------------------------------------- #326
+#[test]
+fn i326_palette_and_switcher_border_reads_prompt_border_color() {
+    let c = css();
+    let r = rule(&c, "#mbox");
+    assert!(r.contains("border: 1px solid var(--prompt-border-color)"), "#326: #mbox border does not read --prompt-border-color: {r}");
+    assert!(!r.contains("var(--border)"), "#326: #mbox still draws the generic --border: {r}");
+    assert_eq!(decl_in(&c, "\nbody {", "--prompt-border-color"), "var(--background-modifier-border-focus)", "#326: no stock default for --prompt-border-color");
+}
+#[test]
+fn i326_negative_geometry_and_other_modals_are_unchanged() {
+    let c = css();
+    let r = rule(&c, "#mbox");
+    assert!(r.contains("border-radius: 8px") && r.contains("width: 520px"), "#326: prompt geometry is out of scope: {r}");
+    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &light[..light.find("\n}").unwrap()];
+    assert!(!light.contains("--prompt-border-color:") && light.contains("--background-modifier-border-focus: #bdbdbd"), "#326: light must inherit the wiring via its own focus border");
+}
