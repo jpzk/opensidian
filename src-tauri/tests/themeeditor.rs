@@ -113,3 +113,31 @@ fn i324_negative_spacing_stays_inside_the_callout() {
     assert!(ed.contains("if (mt(cp[2]) !== \"0px\") return \"colip\";"), "themeDom negative: li > p is 0");
     assert!(ed.contains("if (mt(co) !== \"0px\" || mt(lines()[0]) !== \"0px\") return \"coneg\";"), "themeDom negative: root + plain row are 0");
 }
+
+// ---------- #348: reading-view ==highlight== is a <mark> painted by --text-highlight-bg ----------
+#[test]
+fn i348_reading_mark_is_rendered_and_painted() {
+    let m = read("src-tauri/src/main.rs");
+    // the renderer pass exists and runs on the final event list, right before push_html
+    assert!(m.contains("fn mark_highlights(evs: Vec<Event<'_>>) -> Vec<Event<'_>>"), "mark_highlights pass");
+    assert!(m.contains("    let evs = mark_highlights(evs);\n    let mut out = String::new();\n    html::push_html(&mut out, evs.into_iter());"),
+        "render_with_br must run mark_highlights after linkify, before push_html");
+    // stock paints the reading <mark> with the theme's --text-highlight-bg and normal ink (same as our lp .hl)
+    let c = css_rules("ui/style.css");
+    assert!(c.contains(".preview mark { background-color: var(--text-highlight-bg); color: var(--text-normal) }"), "reading mark paint");
+}
+
+#[test]
+fn i348_negative_mark_paint_is_scoped() {
+    let c = css_rules("ui/style.css");
+    // #348 owns exactly one mark rule, scoped to the reading view; the search / backlink pane marks
+    // (.shit / .blline, issue #323) are not this rule's business
+    let rule = "mark { background-color: var(--text-highlight-bg); color: var(--text-normal) }";
+    assert_eq!(c.matches(rule).count(), 1, "one #348 mark rule");
+    let at = c.find(rule).unwrap();
+    assert!(c[..at].ends_with("\n.preview "), "the #348 mark rule must be scoped to .preview, not bare / .lp / a pane");
+    // the pass never looks inside code: it tracks code/metadata blocks and only splits Text events
+    let m = read("src-tauri/src/main.rs");
+    assert!(m.contains("Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => {\n                code = true;"), "code blocks skipped");
+    assert!(m.contains("let Event::Text(t) = ev else { unreachable!(\"cuts only index Text events\") };"), "only Text is split");
+}
