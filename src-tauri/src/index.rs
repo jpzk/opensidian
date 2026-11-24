@@ -471,7 +471,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
 /// (scriptable, no sanitizer here), `bmp`, `avif` (scope). main.rs::IMG_TYPES
 /// maps the SAME set to Content-Types and a unit test pins the two together:
 /// a name the index resolves but the byte server refuses is a broken image.
-pub const IMG_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+pub const IMG_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
 
 /// pdfembed: PDFs are embeddable vault members too (`![[f.pdf]]`). They ride
 /// the SAME list as images (one walk, one symlink policy, one resolver), and
