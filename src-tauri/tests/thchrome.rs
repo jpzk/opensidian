@@ -192,3 +192,22 @@ fn i351_negative_other_outline_rows_are_unchanged() {
     assert!(r.contains("color: var(--text-chrome-muted)") && !r.contains("--nav-item-color-active"), "#351: resting outline rows changed: {r}");
     assert!(!rule(&c, ".tocrow:hover").contains("--nav-item-background-active"), "#351: hover is not the active fill");
 }
+
+// ---------------------------------------------------------------- #322
+#[test]
+fn i322_active_tab_is_outlined_in_tab_outline_color() {
+    let c = css();
+    let r = rule(&c, ".tab.active");
+    assert!(r.contains("box-shadow: 0 0 0 var(--tab-outline-width, 1px) var(--tab-outline-color)"), "#322: the active tab does not draw --tab-outline-color: {r}");
+    assert_eq!(decl_in(&c, "\nbody {", "--tab-outline-color"), "var(--background-modifier-border)", "#322: no stock default for --tab-outline-color");
+}
+#[test]
+fn i322_negative_inactive_tabs_and_the_tab_strip_stay_unoutlined() {
+    let c = css();
+    assert!(!rule(&c, ".tab").contains("box-shadow"), "#322: inactive tabs must not be outlined");
+    let bar = rule(&c, ".tabbar");
+    assert!(bar.contains("border-bottom-width: var(--tab-outline-width, 0)"), "#322: the strip's bottom border must stay 0 by default: {bar}");
+    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &light[..light.find("\n}").unwrap()];
+    assert!(!light.contains("--tab-outline-color:"), "#322: light mode must inherit the same wiring (the border colour differs, not the var)");
+}
