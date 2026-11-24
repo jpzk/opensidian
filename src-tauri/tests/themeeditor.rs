@@ -80,3 +80,36 @@ fn i319_negative_our_css_never_styles_hypermd_or_root() {
     // the heading class is added in ONE place (no second writer drifting from the parse)
     assert_eq!(read("ui/editor.js").matches("classList.add(\"HyperMD-header\"").count(), 1, "one writer of HyperMD-header in editor.js");
 }
+
+// ---------- #324: the live-preview callout widget spaces its blocks by --p-spacing ----------
+#[test]
+fn i324_lp_callout_blocks_carry_p_spacing() {
+    let c = css_rules("ui/style.css");
+    // the reading view's block spacing, applied to the LP callout widget (div.cm-embed-block.markdown-rendered.cm-callout)
+    assert!(c.contains(".cm-callout :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }"),
+        "LP callout p/ul/ol/table/pre/blockquote must carry --p-spacing like .preview");
+    assert!(c.contains(".cm-callout :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }"), "LP callout headings: --p-spacing");
+    assert!(c.contains(".cm-callout :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }"),
+        "LP callout heading after a block: --heading-spacing");
+    // same DOM as stock's widget (the selector's anchor)
+    assert!(read("ui/editor.js").contains("Ed.el(\"div\", \"cm-embed-block markdown-rendered cm-callout\")"), "LP callout widget DOM");
+    // the in-app DOM case covers it -> [edt:]
+    let ed = read("ui/editor.js");
+    assert!(ed.contains("if (mt(cp[0]) !== ps || mb(cp[1]) !== ps) return \"cop:\""), "themeDom asserts callout p margins = --p-spacing");
+}
+
+#[test]
+fn i324_negative_spacing_stays_inside_the_callout() {
+    let c = css_rules("ui/style.css");
+    // a list item's p stays tight (as the reading view, REQ-13)
+    assert!(c.contains(".cm-callout li > p { margin-block: 0 }"), "LP callout li > p must stay 0");
+    // the widget root itself and every other LP row get no block margin: only descendants of .cm-callout are spaced,
+    // never a bare .lp / .cm-line / .markdown-rendered / .cm-embed-block selector (code-block and table widgets untouched)
+    for bad in [".lp :is(p", ".cm-line :is(p", ".markdown-rendered :is(p", ".cm-embed-block :is(p", ".lp p {", ".cm-callout { margin-block"] {
+        assert!(!c.contains(bad), "style.css must not space LP blocks outside the callout widget: `{bad}`");
+    }
+    assert!(c.contains(".cm-callout { padding: 0; margin: 0 }"), "the widget root keeps margin 0");
+    let ed = read("ui/editor.js");
+    assert!(ed.contains("if (mt(cp[2]) !== \"0px\") return \"colip\";"), "themeDom negative: li > p is 0");
+    assert!(ed.contains("if (mt(co) !== \"0px\" || mt(lines()[0]) !== \"0px\") return \"coneg\";"), "themeDom negative: root + plain row are 0");
+}

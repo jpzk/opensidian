@@ -1763,6 +1763,7 @@ const Ed = {
   // DOM carries and theme selectors key on. "" = all hold, else a short token-safe reason.
   //   #333 the caret line, and ONLY it, is .cm-line.cm-active (stock: "cm-line cm-active"); it follows the caret
   //   #319 the editor root is .cm-s-obsidian; a top-level "# " line, and only it, is .HyperMD-header + .HyperMD-header-N
+  //   #324 a live-preview callout widget's p/ul/ol/... carry --p-spacing block margins (a list item's p does not)
   themeDom() {
     if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
     const w = Ed.el("div", "lp");
@@ -1776,6 +1777,20 @@ const Ed = {
     const act = () => lines().map((e, i) => e.classList.contains("cm-active") ? i : -1).filter(i => i >= 0).join(".") || "none";
     try {
       if (lines().length !== 4) return "rows" + lines().length;
+      // #324: a live-preview callout widget (stock DOM div.cm-embed-block.markdown-rendered.cm-callout) spaces its
+      // blocks by --p-spacing like the reading view; a list item's p, a plain LP row and the widget root stay 0
+      const co = Ed.el("div", "cm-embed-block markdown-rendered cm-callout"), pr = Ed.el("div", "");
+      co.innerHTML = '<div class="callout" data-callout="note"><div class="callout-title"><div class="callout-title-inner">N</div></div>' +
+        '<div class="callout-content"><p>a</p><p>b</p><ul><li><p>c</p></li></ul></div></div>';
+      pr.style.marginTop = "var(--p-spacing)";
+      w.appendChild(co); w.appendChild(pr);
+      const mt = e => getComputedStyle(e).marginTop, mb = e => getComputedStyle(e).marginBottom;
+      const ps = mt(pr), cp = co.querySelectorAll("p");
+      if (!ps || ps === "0px") return "cosp:" + ps;
+      if (mt(cp[0]) !== ps || mb(cp[1]) !== ps) return "cop:" + mt(cp[0]) + "-" + ps;
+      if (mt(co.querySelector("ul")) !== ps) return "coul";
+      if (mt(cp[2]) !== "0px") return "colip";                       // negatives
+      if (mt(co) !== "0px" || mt(lines()[0]) !== "0px") return "coneg";
       // #319: the editor root is .cm-s-obsidian; ONLY the heading line is .HyperMD-header + .HyperMD-header-1
       if (!cm.dom.classList.contains(Ed.EDITOR_ROOT)) return "root";
       const hd = lines().map((e, i) => e.classList.contains("HyperMD-header") ? i + ":" + [...e.classList].filter(c => /^HyperMD-header-\d$/.test(c)).join("") : "").filter(Boolean).join(".");
