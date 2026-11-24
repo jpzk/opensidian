@@ -230,3 +230,28 @@ fn i326_negative_geometry_and_other_modals_are_unchanged() {
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--prompt-border-color:") && light.contains("--background-modifier-border-focus: #bdbdbd"), "#326: light must inherit the wiring via its own focus border");
 }
+
+// ---------------------------------------------------------------- #327
+#[test]
+fn i327_menus_and_graph_controls_chain_to_secondary_and_border_hover() {
+    let c = css();
+    assert_eq!(decl_in(&c, "\nbody {", "--menu-background"), "var(--background-secondary)", "#327: menus do not sit on --background-secondary");
+    assert_eq!(decl_in(&c, "\nbody {", "--menu-border-color"), "var(--background-modifier-border-hover, var(--border))", "#327: menu frame does not read --background-modifier-border-hover");
+    let m = rule(&c, ".ctxmenu");
+    assert!(m.contains("var(--menu-background") && m.contains("var(--menu-border-color"), "#327: .ctxmenu lost the --menu-* wiring: {m}");
+    let g = rule(&c, ".graph-controls");
+    assert!(g.contains("background: var(--background-secondary)"), "#327: graph controls bg is not --background-secondary: {g}");
+    assert!(g.contains("border: 1px solid var(--background-modifier-border-hover, var(--border))"), "#327: graph controls border is not --background-modifier-border-hover: {g}");
+}
+#[test]
+fn i327_negative_no_elevated_surface_and_geometry_unchanged() {
+    let c = css();
+    let g = rule(&c, ".graph-controls");
+    assert!(!g.contains("var(--bg-elevated)"), "#327: graph controls still on the primary/elevated surface: {g}");
+    assert!(g.contains("border-radius: 8px") && g.contains("width: var(--graph-controls-width, 240px)"), "#327: graph controls geometry is out of scope: {g}");
+    assert_eq!(decl_in(&c, "\nbody {", "--menu-radius"), "6px", "#327: menu radius is not this issue (AnuPpuccin 8 vs 6 left out)");
+    // light/dark differ by --background-secondary only: no mode block redefines the menu wiring
+    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &light[..light.find("\n}").unwrap()];
+    assert!(!light.contains("--menu-background:") && light.contains("--background-secondary: #f6f6f6"), "#327: light must inherit the wiring via its own secondary (stock 246)");
+}

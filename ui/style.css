@@ -357,7 +357,8 @@ body {
   --link-external-decoration: underline;
   --link-unresolved-color: var(--link-unresolved);
   --link-unresolved-decoration-color: var(--link-unresolved-underline);
-  --menu-background: var(--bg-base);
+  --menu-background: var(--background-secondary);   /* #327: stock menus sit on --background-secondary (default L 246 / D 40) */
+  --menu-border-color: var(--background-modifier-border-hover, var(--border));   /* #327: stock frame = --background-modifier-border-hover */
   --menu-border-width: 1px;
   --menu-padding: 4px 0;
   --menu-radius: 6px;
@@ -1148,7 +1149,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    wider/taller than the pane it floats in — the body scrolls instead. */
 .graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: var(--graph-controls-width, 240px);
   max-width: calc(100% - 24px); max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; box-sizing: border-box;
-  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--background-secondary); border: 1px solid var(--background-modifier-border-hover, var(--border)); border-radius: 8px;   /* #327 */
   padding: 6px 0 8px; font-size: 13px; color: var(--text-chrome) }
 .graph-controls[hidden] { display: none }
 /* The card's shadow is switched on (.gf-lit, startGraph) once the sim first comes to rest, not
