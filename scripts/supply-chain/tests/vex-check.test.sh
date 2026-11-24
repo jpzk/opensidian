@@ -22,21 +22,21 @@ if "$here/vex-check.sh" >"$t/out" 2>&1; then ok "repo: rc=0"; else cat "$t/out";
 scratch; sed -i '/id = "RUSTSEC-2025-0098"/d' "$t/r/deny.toml"
 expect_fail "id removed from deny.toml only" "only in VEX: \[RUSTSEC-2025-0098\]" "$here/vex-check.sh" "$t/r"
 
-scratch; sed -i '/"RUSTSEC-2026-0386"/d' "$t/r/src-tauri/.cargo/audit.toml"
+scratch; sed -i '/"RUSTSEC-2026-0543"/d' "$t/r/src-tauri/.cargo/audit.toml"
 expect_fail "id removed from audit.toml only" "audit ignore list differ" "$here/vex-check.sh" "$t/r"
 
 scratch; jq '.vulnerabilities += [.vulnerabilities[0] | .id="RUSTSEC-2099-0001" | ."bom-ref"="vex:x"]' \
   "$root/supply-chain/vex.cdx.json" >"$t/r/supply-chain/vex.cdx.json"
 expect_fail "extra id in VEX only" "RUSTSEC-2099-0001" "$here/vex-check.sh" "$t/r"
 
-scratch; jq '(.vulnerabilities[] | select(.id=="RUSTSEC-2026-0433") | .properties[] | select(.name=="opensidian:expires") | .value) = "2025-01-01"' \
+scratch; jq '(.vulnerabilities[] | select(.id=="RUSTSEC-2026-0543") | .properties[] | select(.name=="opensidian:expires") | .value) = "2025-01-01"' \
   "$root/supply-chain/vex.cdx.json" >"$t/r/supply-chain/vex.cdx.json"
-expect_fail "expiry in the past" "RUSTSEC-2026-0433: expired on 2025-01-01" "$here/vex-check.sh" "$t/r"
+expect_fail "expiry in the past" "RUSTSEC-2026-0543: expired on 2025-01-01" "$here/vex-check.sh" "$t/r"
 
 scratch; jq '(.vulnerabilities[1].analysis) |= del(.detail)' "$root/supply-chain/vex.cdx.json" >"$t/r/supply-chain/vex.cdx.json"
 expect_fail "entry without reason" "needs id, analysis.state, analysis.detail" "$here/vex-check.sh" "$t/r"
 
-expect_fail "today past real expiry" "expired on 2027-01-15" env VEX_TODAY=2027-02-01 "$here/vex-check.sh"
+expect_fail "today past real expiry" "expired on 2027-05-15" env VEX_TODAY=2027-06-01 "$here/vex-check.sh"
 
 scratch; sed -i 's/^ignore = \[/ignore = [\n  "RUSTSEC-2024-0429",/' "$t/r/src-tauri/.cargo/audit.toml"
 expect_fail "resolved id also ignored in audit.toml" "resolved' in the VEX but ignored in audit" "$here/vex-check.sh" "$t/r"
