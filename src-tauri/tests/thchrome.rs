@@ -421,8 +421,19 @@ fn i328_settings_nav_carries_stock_classes_and_active_vars() {
     assert!(s.contains("d.classList.toggle(\"sel\", on); d.classList.toggle(\"is-active\", on);"), "#328: selNav does not set .is-active");
     let c = css();
     let a = rule(&c, ".snavi:where(.sel)");
-    assert!(a.contains("background: var(--nav-item-background-active)") && a.contains("color: var(--nav-item-color-active)"),
-        "#328: active nav item not on the stock nav-item active vars: {a}");
+    // stock 1.13.7 paints the active settings nav item with --background-modifier-hover (Solarized light
+    // sets --nav-item-background-active = accent/.1, yet stock computes 0,0,0/.07 there); ink = the active nav var
+    assert!(a.contains("background: var(--background-modifier-hover)") && a.contains("color: var(--nav-item-color-active)"),
+        "#328: active nav item not on the stock fill/ink vars: {a}");
+}
+#[test]
+fn i328_negative_active_fill_is_not_the_theme_nav_item_active_var() {
+    let c = css();
+    let a = rule(&c, ".snavi:where(.sel)");
+    assert!(!a.contains("--nav-item-background-active"), "#328: settings nav fill reads --nav-item-background-active (Solarized L would paint accent/.1, stock does not): {a}");
+    // our default hover tint is the stock one in both modes, so default/Gruvbox/AnuPpuccin are unchanged
+    assert_eq!(decl_in(&c, "\nbody {", "--background-modifier-hover"), "rgba(255, 255, 255, .067)", "#328: dark hover tint changed");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--background-modifier-hover"), "rgba(0, 0, 0, .067)", "#328: light hover tint changed");
 }
 #[test]
 fn i328_negative_ours_does_not_outrank_theme_nav_rules() {
