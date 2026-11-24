@@ -166,6 +166,17 @@ set-fileslinks-allow-uri-callbacks-desc = Разрешить x-callback-url че
 set-fileslinks-rebuild-vault-cache = Перестроить кэш хранилища
 set-fileslinks-rebuild-vault-cache-desc = В зависимости от размера хранилища перестройка кэша может занять от нескольких секунд до нескольких минут. | Подробнее
 
+## Settings > Security > Sandbox (#293)
+
+secsb-section = Песочница
+secsb-label = Песочница Landlock
+secsb-enforced = Действует
+secsb-not-enforced = Не действует
+secsb-off = Выключена
+secsb-desc-enforced = Это окно может писать только в своё хранилище и в папки, нужные приложению. Включается при запуске с OPENSIDIAN_LANDLOCK=1.
+secsb-desc-not-enforced = Песочница включена, но в этом окне не действует, поэтому хранилище здесь не открывается.
+secsb-desc-off = Не включена. Запустите Opensidian с OPENSIDIAN_LANDLOCK=1, чтобы ограничить его хранилищем (только Linux).
+
 ## Command palette and Settings > Hotkeys
 
 cmd-app-open-settings = Открыть настройки
@@ -373,3 +384,24 @@ menu-zoom-to-selection = Масштаб по выделению
 menu-as-obsidian-url = как URL Obsidian
 menu-from-system-root = от корня системы
 menu-from-vault-folder = от папки хранилища
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = Доступ к устройствам
+secdev-camera = Камера
+secdev-camera-desc = Доступ к камере для приложения и плагинов сообщества. Пока камера включена, заголовок окна начинается с «● Camera».
+secdev-location = Местоположение
+secdev-location-desc = Ваше местоположение для приложения и плагинов сообщества.
+secdev-notifications = Уведомления
+secdev-notifications-desc = Уведомления на рабочем столе от приложения и плагинов сообщества.
+secdev-pointerlock = Захват указателя
+secdev-pointerlock-desc = После вашего щелчка приложение или плагин сообщества может скрыть и захватить указатель мыши (3D-виды, игры); Esc освобождает его.
+secdev-values = Спрашивать: каждый запрос подтверждается в отдельном системном окне. Всегда разрешать: разрешается без этого окна (этот выбор вы подтверждаете один раз в системном окне). Выкл.: каждый запрос отклоняется, окно не показывается.
+secdev-na = Недоступно
+secdev-na-desc = Никогда не разрешается ни приложению, ни плагинам, окно не показывается: захват экрана, имена устройств, защищённое содержимое (EME), доступ к данным сайтов, WebXR, MIDI.
+secmic-label = Микрофон
+secmic-desc = Спрашивать: перед каждой записью диктофон спрашивает разрешение в отдельном системном окне. Всегда разрешать: запись начинается без этого окна (этот выбор вы один раз подтверждаете в системном окне). Выкл.: любая запись отклоняется, окно не показывается. Пока микрофон включён, заголовок окна начинается с «● Recording».
+secmic-ask = Спрашивать
+secmic-always = Всегда разрешать
+secmic-off = Выкл.
+secmic-forced = Принудительно выключено: { $name }.
