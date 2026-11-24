@@ -51,11 +51,11 @@ libc = "=0.2.189"
 
 # cp-browser — the plugin store (plugin_store.rs). NO NEW CRATE: both are
 # ALREADY in Cargo.lock as tauri/webkit dependencies, `=` pins the locked version.
-#   url  2.5.8  (2026-01-05, MIT OR Apache-2.0)  allowlist / redirect parsing
+#   url  2.5.9  (2026-11-20, MIT OR Apache-2.0)  allowlist / redirect parsing; security fix RUSTSEC-2026-0592 (was 2.5.8), six-week rule waived by the operator CVE rule
 #   sha2 0.10.9 (2025-04-30, MIT OR Apache-2.0)  sha256 of every installed file
 #        (was dev-only for builtins.rs; now also shipped). soup3: linux block below
 sha2 = "=0.10.9"
-url = "=2.5.8"
+url = "=2.5.9"
 
 # goal settings-general — the signed update check (updates.rs) verifies the release
 # SHA256SUMS.asc (OpenPGP, EdDSA) against the embedded pinned key. ONE NEW CRATE:
