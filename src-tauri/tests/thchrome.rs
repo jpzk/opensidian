@@ -159,3 +159,20 @@ fn i329_negative_count_and_tree_rows_keep_their_own_ink() {
     assert!(rule(&c, ".trow").contains("color: var(--nav-item-color)"), "#329: the file tree must keep --nav-item-color");
     assert!(!rule(&c, ".tagrow:hover").contains("--nav-item-color"), "#329: hover changes the fill only");
 }
+
+// ---------------------------------------------------------------- #349
+#[test]
+fn i349_hovered_tree_row_defaults_to_body_ink() {
+    let c = css();
+    assert_eq!(decl_in(&c, "\nbody {", "--nav-item-color-hover"), "var(--text-normal)", "#349: no stock default for --nav-item-color-hover");
+    assert!(rule(&c, ".trow:hover").contains("color: var(--nav-item-color-hover"), "#349: .trow:hover does not read --nav-item-color-hover");
+}
+#[test]
+fn i349_negative_resting_row_stays_muted_and_light_mode_does_not_override() {
+    let c = css();
+    let r = rule(&c, ".trow");
+    assert!(r.contains("color: var(--nav-item-color)") && !r.contains("--nav-item-color-hover"), "#349: the RESTING row must keep the muted nav ink: {r}");
+    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &light[..light.find("\n}").unwrap()];
+    assert!(!light.contains("--nav-item-color-hover:"), "#349: light mode must inherit the same hover default");
+}

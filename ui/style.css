@@ -130,6 +130,7 @@ body {
   --background-modifier-border-focus: #555555;
   --nav-item-color: var(--text-muted);
   --nav-item-color-active: var(--text-normal);
+  --nav-item-color-hover: var(--text-normal);   /* #349: stock's hovered tree row = body ink (not the muted resting ink) */
   --nav-item-background-active: var(--background-modifier-hover);
   --tab-container-background: #333333;
   --tab-background-active: var(--background-primary);
