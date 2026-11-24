@@ -145,3 +145,22 @@ fn i331_lp_code_rows_use_code_background() {
     assert!(!fence[0].1.contains("--bg-surface"), "#331: .lp .fence still paints --bg-surface");
     assert_eq!(val(&css, ".lp pre, .preview pre", "background-color"), "var(--code-background)");
 }
+
+/// #332: stock resolved + external links follow --text-accent when a theme sets no
+/// --link-color (Gruvbox: rgb(231,138,78) = its accent, L+D; ours painted the graph-node grey
+/// through --accent-blue). Default theme unchanged: --accent-blue falls back to --text-accent.
+#[test]
+fn i332_link_colors_follow_text_accent() {
+    let css = style_css();
+    assert_eq!(all(&css, "--link-color"), vec![(DARK.to_string(), "var(--text-accent)".to_string())]);
+    assert_eq!(all(&css, "--link-external-color"), vec![(DARK.to_string(), "var(--text-accent)".to_string())]);
+    // negative: neither default chains to --accent-blue (= --graph-node first) any more
+    for p in ["--link-color", "--link-external-color"] {
+        assert!(!all(&css, p).iter().any(|(_, v)| v.contains("--accent-blue")), "#332: {p} still chains to --accent-blue");
+    }
+    // the default theme look is kept: --accent-blue itself still resolves to --text-accent without a graph-node
+    assert_eq!(val(&css, DARK, "--accent-blue"), "var(--graph-node, var(--text-accent))");
+    // consumers read the variables
+    assert!(val(&css, ".lp a.wiki", "color").starts_with("var(--link-color"));
+    assert!(val(&css, ".lp a.ext, .preview a.ext", "color").starts_with("var(--link-external-color"));
+}

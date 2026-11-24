@@ -347,10 +347,10 @@ body {
   --input-padding: 4px 6px;
   --input-radius: 4px;
   --interactive-normal: var(--border);
-  --link-color: var(--accent-blue);
+  --link-color: var(--text-accent);   /* #332: stock links follow the theme accent */
   --link-color-hover: var(--text-accent-hover);
   --link-decoration: none;
-  --link-external-color: var(--accent-blue);
+  --link-external-color: var(--text-accent);   /* #332 */
   --link-external-decoration: underline;
   --link-unresolved-color: var(--link-unresolved);
   --link-unresolved-decoration-color: var(--link-unresolved-underline);
