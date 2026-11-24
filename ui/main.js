@@ -3400,6 +3400,16 @@ function wsEmptyLeaves(node, out = []) {
   }
   return out;
 }
+/* R28.4 for the MAIN split. wsNodeIn returns a one-child split as that child, and
+   state.root must be a split, so wsApply wraps it again. The wrapper is the file's
+   main split: it keeps that split's id and direction, or every launch would draw a
+   new id and rewrite workspace.json for it. */
+function wsMainWrap(main, root) {
+  if (root.children) return root;
+  const w = { dir: main && main.direction === "horizontal" ? "col" : "row", children: [root], fractions: [1] };
+  if (main && typeof main.id === "string" && main.id) w.wid = main.id;
+  return w;
+}
 function wsNodeIn(node, have) {
   if (!node || typeof node !== "object") return null;
   if (node.type === "split" && Array.isArray(node.children)) {
@@ -3481,7 +3491,7 @@ async function wsApply(doc, names, boot) {   // #242: boot = the launch restore 
     }
     return false;
   }
-  if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
+  root = wsMainWrap(doc.main, root);
   state.root = root;
   state.focused = null;
   renderLayout();

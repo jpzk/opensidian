@@ -73,6 +73,24 @@ fn the_restored_layout_is_unchanged_until_something_is_written() {
     assert_eq!(ev(&c, "wsUnchanged(SAME)"), "false");
 }
 
+/// A main split with one child comes back as that child; wrapped again it must keep
+/// the file's id (R28.4) and direction, or wsNode writes a fresh id every launch.
+#[test]
+fn a_one_child_main_split_keeps_its_id_and_direction() {
+    let src = main_js();
+    let c = javascriptcore::Context::new();
+    ev(&c, &func(&src, "wsMainWrap"));
+    ev(&c, "var LEAF = { tabs: [], active: 0 };");
+    assert_eq!(ev(&c, "(function(){ var w = wsMainWrap({id:'eb3c8a0239e5357f', type:'split', direction:'vertical'}, LEAF); return w.wid + ' ' + w.dir + ' ' + (w.children[0] === LEAF); })()"),
+               "eb3c8a0239e5357f row true");
+    assert_eq!(ev(&c, "wsMainWrap({id:'h1', direction:'horizontal'}, LEAF).dir"), "col");
+    // no id on file: none invented here (wsIdOf draws one at the write, as before)
+    assert_eq!(ev(&c, "String(wsMainWrap({type:'split'}, LEAF).wid)"), "undefined");
+    // a real split is the file's own node already: returned as is
+    assert_eq!(ev(&c, "(function(){ var r = {children:[1,2], wid:'x'}; return wsMainWrap({id:'y'}, r) === r; })()"), "true");
+    assert!(src.contains("root = wsMainWrap(doc.main, root);"), "wsApply must wrap through wsMainWrap");
+}
+
 #[test]
 fn only_the_boot_restore_remembers_and_the_first_write_forgets() {
     let src = main_js();
