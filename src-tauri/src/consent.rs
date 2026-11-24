@@ -53,6 +53,8 @@ pub const SPAWN_TITLE: &str = "opensidian: run program?";
 pub const SECURITY_TITLE: &str = "opensidian: lower protection?";
 /// #144 toggle 3: the confirm before a link opens in the browser while offline
 pub const OFFLINE_OPEN_TITLE: &str = "opensidian: open in browser while offline?";
+/// #280: the confirm before "Insert attachment" imports a path the page typed
+pub const ATTACH_TITLE: &str = "opensidian: attach file?";
 /// #74: the third button of a plugin's spawn question (never on Trust / open)
 pub const ALWAYS_LABEL: &str = "Al_ways allow this program";
 
@@ -64,6 +66,8 @@ pub enum Kind {
     Security,
     /// #144 toggle 3: open_external while offline mode is on
     OfflineOpen,
+    /// #280: attach_typed (R31.7 "Insert attachment": a path named by the page, not a drop)
+    Attach,
 }
 
 /// F6: the most variables, and bytes (key + value + 2 each), a plugin may lay
@@ -317,6 +321,7 @@ const SPAWN_HEAD: &str = "A plugin wants to run a program. Read all of it (scrol
 const OPEN_HEAD: &str = "Open this with the default application? It may run it. Read all of it (scroll) before you answer.";
 const SECURITY_HEAD: &str = "Lower a protection in Settings › Security?";
 const OFFLINE_OPEN_HEAD: &str = "Offline mode is on. Open this link in your browser?";
+const ATTACH_HEAD: &str = "Attach this file from outside the vault?";
 
 pub fn trust_question(canon: &str) -> Question {
     let text = trust_text(canon);
@@ -358,6 +363,20 @@ pub fn security_question(field: &str, on: bool) -> Question {
 pub fn offline_open_question(url: &str) -> Question {
     let text = crate::security::offline_open_text(url);
     Question { head: OFFLINE_OPEN_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
+/// #280: the confirm before "Insert attachment" imports a path typed in the page. `path` and
+/// `note` are page text: Debug-quoted in a read-only body, never markup, never cut.
+pub fn attach_text(path: &str, note: &str) -> String {
+    format!(
+        "File: {:?}\nInto the vault, for note: {:?}\n\nAn image is MOVED into the attachment folder (it is removed from where it is now); a PDF is copied.\nOnly answer Attach if you typed this path yourself.",
+        path, note
+    )
+}
+
+pub fn attach_question(path: &str, note: &str) -> Question {
+    let text = attach_text(path, note);
+    Question { head: ATTACH_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
 /// R5: an open through the default opener. `sp` = the resolved opener Spec (no env)
@@ -470,6 +489,7 @@ pub async fn ask(slot: Slot, win: tauri::Window, kind: Kind, q: Question) -> Res
         Kind::Spawn => "spawn",
         Kind::Security => "security",
         Kind::OfflineOpen => "offline-open",
+        Kind::Attach => "attach",
     };
     eprintln!("[consent] {what}: asking");
     let yes = tauri::async_runtime::spawn_blocking(move || {
@@ -497,6 +517,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+        Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
     };
     let head = q.head.as_str();
     // the head is ours; the body (page values) goes into a read-only TextView
@@ -572,6 +593,7 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+        Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
     };
     // GTK mnemonics ("_Trust") have no meaning in AppKit
     let plain = |s: &str| s.replace('_', "");
