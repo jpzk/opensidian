@@ -164,3 +164,26 @@ fn i332_link_colors_follow_text_accent() {
     assert!(val(&css, ".lp a.wiki", "color").starts_with("var(--link-color"));
     assert!(val(&css, ".lp a.ext, .preview a.ext", "color").starts_with("var(--link-external-color"));
 }
+
+/// #321: stock unresolved links take the link colour (default L rgb(138,92,245) / D
+/// rgb(166,138,249) = accent; Minimal rgb(106,134,149); Gruvbox rgb(231,138,78)), are dimmed
+/// to opacity .7 and upright, in every view. Themes that set --link-unresolved-color /
+/// --link-unresolved-opacity (Solarized: red, `unset` -> 1) still win.
+#[test]
+fn i321_unresolved_links_derive_from_link_color() {
+    let css = style_css();
+    assert_eq!(all(&css, "--link-unresolved-color"), vec![(DARK.to_string(), "var(--link-color)".to_string())]);
+    assert_eq!(all(&css, "--link-unresolved-opacity"), vec![(DARK.to_string(), "0.7".to_string())]);
+    for sel in [".lp a.wiki-unresolved", ".preview a.wiki-unresolved"] {
+        assert!(vals(&css, sel, "color").iter().all(|v| v.starts_with("var(--link-unresolved-color")), "#321: {sel} colour");
+        let fs = vals(&css, sel, "font-style");
+        assert!(!fs.is_empty() && fs.iter().all(|v| v == "normal"), "#321: {sel} font-style must be normal, got {fs:?}");
+        assert!(vals(&css, sel, "opacity").iter().any(|v| v == "var(--link-unresolved-opacity, 1)"), "#321: {sel} opacity");
+    }
+    // negative: no unresolved-link rule is italic any more, and the colour no longer chains to our own purple
+    let italic: Vec<_> = rules(&css).into_iter().filter(|(p, b)| p.contains("wiki-unresolved") && b.contains("italic")).collect();
+    assert!(italic.is_empty(), "#321: italic unresolved rules remain: {italic:?}");
+    assert!(!all(&css, "--link-unresolved-color").iter().any(|(_, v)| v.contains("var(--link-unresolved)")));
+    // resolved links did not move
+    assert!(val(&css, ".lp a.wiki", "color").starts_with("var(--link-color"));
+}

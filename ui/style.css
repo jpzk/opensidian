@@ -352,7 +352,8 @@ body {
   --link-decoration: none;
   --link-external-color: var(--text-accent);   /* #332 */
   --link-external-decoration: underline;
-  --link-unresolved-color: var(--link-unresolved);
+  --link-unresolved-color: var(--link-color);   /* #321: stock derives the unresolved ink from the link colour */
+  --link-unresolved-opacity: 0.7;   /* #321: stock dims unresolved links (default, Minimal, AnuPpuccin, Gruvbox) */
   --link-unresolved-decoration-color: var(--link-unresolved-underline);
   --menu-background: var(--bg-base);
   --menu-border-width: 1px;
@@ -950,7 +951,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
   border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
 .lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 .lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
-.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
+.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
@@ -990,7 +991,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
 .preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
-.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
+.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal }   /* #321: upright like stock */
 .lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none); }   /* #59: thickness rides in the shorthand (a longhand after it would drop the shorthand from CSSOM) */
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
