@@ -820,7 +820,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tockids[hidden] { display: none }
 /* tags pane: rows share the outline tree look; #name left, count right */
 .tagrow { display: flex; align-items: center; gap: 2px; padding: 3px 8px 3px 0;
-          color: var(--text-chrome); cursor: pointer; white-space: nowrap; overflow: hidden }
+          color: var(--nav-item-color); cursor: pointer; white-space: nowrap; overflow: hidden }   /* #329: tag rows = tree ink (--nav-item-color), as stock .tag-pane-tag */
 .tagrow:hover { background: var(--bg-surface) }
 .tagrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--text-chrome-dim) }
 .tagrow .tc svg { width: 10px; height: 10px; transition: transform .1s }

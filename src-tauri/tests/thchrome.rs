@@ -141,3 +141,21 @@ fn i346_negative_no_match_or_empty_query_marks_nothing_and_text_is_unchanged() {
     // the highlight is a single-class rule: a theme's .suggestion-highlight can override it
     assert!(!css().contains("#mlist .mrow .suggestion-highlight"), "#346: highlight rule must stay single-class");
 }
+
+// ---------------------------------------------------------------- #329
+#[test]
+fn i329_tag_rows_read_nav_item_color() {
+    let c = css();
+    let r = rule(&c, ".tagrow");
+    assert!(r.contains("color: var(--nav-item-color)"), "#329: .tagrow ink is not --nav-item-color: {r}");
+    assert!(!r.contains("--text-chrome)"), "#329: .tagrow still paints body ink: {r}");
+    // the default is unchanged: --nav-item-color = --text-muted (stock default tag ink = muted)
+    assert_eq!(decl_in(&c, "\nbody {", "--nav-item-color"), "var(--text-muted)");
+}
+#[test]
+fn i329_negative_count_and_tree_rows_keep_their_own_ink() {
+    let c = css();
+    assert!(!rule(&c, ".tagrow .scount").contains("--nav-item-color"), "#329: the tag COUNT is faint ink (#352), not nav ink");
+    assert!(rule(&c, ".trow").contains("color: var(--nav-item-color)"), "#329: the file tree must keep --nav-item-color");
+    assert!(!rule(&c, ".tagrow:hover").contains("--nav-item-color"), "#329: hover changes the fill only");
+}
