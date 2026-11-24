@@ -2964,6 +2964,7 @@ Ed.lpExt = function (v, G) {
     let tcrNext = -1;
     // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
     const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
+    const frs = Ed.lpFenceRows(doc);   // #331: fence rows take the stock line class HyperMD-codeblock
     const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
     let last = -1;
     for (const { from, to } of view.visibleRanges) {
@@ -2996,7 +2997,7 @@ Ed.lpExt = function (v, G) {
         const car = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar"));
         if (car) tcrNext = cur;
         const tcr = car || ln.number === tcrLeft ? tp : "";
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (frs.has(ln.number) ? " HyperMD-codeblock" : "") + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
@@ -3131,6 +3132,25 @@ Ed.cbFences = function (doc) {
     }
   }
   Ed._cbDoc = doc; Ed._cbOut = out;
+  return out;
+};
+/* #331: the line numbers (1-based) of every row of every closed fence of doc, delimiters included
+   (with or without a language). Live preview gives those rows the line class HyperMD-codeblock, which
+   style.css paints with --code-background as stock does: Ed.block marks only the ``` delimiter rows
+   (span.fence), the body rows were plain .lprow on the page background. Cached on the doc. */
+Ed.lpFenceRows = function (doc) {
+  if (Ed._frDoc === doc) return Ed._frOut;
+  const out = new Set();
+  let open = null;
+  for (let i = 1; i <= doc.lines; i++) {
+    const m = Ed.CB_FENCE.exec(doc.line(i).text);
+    if (!open) { if (m && !(m[1][0] === "`" && m[3].includes("`"))) open = { ch: m[1][0], n: m[1].length, l0: i }; continue; }
+    if (m && m[1][0] === open.ch && m[1].length >= open.n && !m[2] && !m[3].trim()) {
+      for (let k = open.l0; k <= i; k++) out.add(k);
+      open = null;
+    }
+  }
+  Ed._frDoc = doc; Ed._frOut = out;
   return out;
 };
 // a processor was (un)registered: every editor rebuilds its code-block widgets

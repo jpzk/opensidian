@@ -144,6 +144,16 @@ fn i331_lp_code_rows_use_code_background() {
     assert_eq!(fence.len(), 1, "#331: expected one .fence rule, got {fence:?}");
     assert!(!fence[0].1.contains("--bg-surface"), "#331: .lp .fence still paints --bg-surface");
     assert_eq!(val(&css, ".lp pre, .preview pre", "background-color"), "var(--code-background)");
+    // the fence BODY rows too (stock: the painted ancestor of span.cm-hmd-codeblock is the
+    // HyperMD-codeblock line, default L 250,250,250 / D 35,35,35; ours painted only the ``` rows)
+    assert_eq!(val(&css, ".lp .lprow.HyperMD-codeblock", "background-color"), "var(--code-background)");
+    let js = editor_js();
+    assert!(js.contains("Ed.lpFenceRows = function (doc)"), "#331: fence row scan gone");
+    assert!(js.contains("(frs.has(ln.number) ? \" HyperMD-codeblock\" : \"\")"), "#331: LP rows no longer carry HyperMD-codeblock");
+    // negative: an unclosed fence marks no rows (rows are added only when the closing fence is found)
+    let scan = &js[js.find("Ed.lpFenceRows = function").unwrap()..];
+    let scan = &scan[..scan.find("\n};").unwrap()];
+    assert!(scan.contains("for (let k = open.l0; k <= i; k++) out.add(k)") && !scan.contains("out.add(i)"), "#331: rows added before the fence closes");
 }
 
 /// #332: stock resolved + external links follow --text-accent when a theme sets no

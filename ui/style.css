@@ -1510,6 +1510,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--code-background);   /* #331: stock paints LP code rows with --code-background */
              padding: 0 8px; white-space: pre; overflow-x: auto }
+.lp .lprow.HyperMD-codeblock { background-color: var(--code-background) }   /* #331: every fence row (body + delimiters, Ed.lpFenceRows), not only the ``` rows */
 .lp .bq { color: var(--blockquote-color, inherit) }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,
    sized by the viewport-relative rule below; recentres on resize with no JS.
