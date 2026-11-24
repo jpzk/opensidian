@@ -206,6 +206,14 @@ libsoup3 alerts (server paths are not claimed: webkit imports `soup_server_new`,
 automation API), harfbuzz/cairo/pixman/glib/gdk-pixbuf, and the rest of the gst/jxl/libxml2/libxslt/systemd alerts,
 because their code is present and reachable or the evidence is not conclusive.
 
+**CVE-2024-43091 decision (operator 2026-11-24):** "dont handroll webkitgtk yourself, note it to vex". The VEX now
+carries `UBUNTU-CVE-2024-43091` with VEX status **affected** (CycloneDX 1.6 state `exploitable`,
+`opensidian:vex-status = affected`) and an `opensidian:action_statement`: no self-built WebKitGTK; we adopt the first
+distro/runtime webkit2gtk >= 2.54.0 that becomes available. It is NOT an ignore: `vex-osv-config.sh` skips
+`exploitable` entries, so the bundle osv gate keeps listing it (no-fix-yet, non-fatal while Ubuntu has no fix), and
+the #306 cross-check scans without the VEX at all. `vex-check.sh` fails if the entry is removed, relabelled
+not_affected/resolved, or loses its action_statement (`tests/vex-check.test.sh`, `tests/sbom-merge.test.sh`).
+
 Effect per arch on the bundle osv gate: 55 after slimming → 47 after VEX
 (removed 1 critical, 4 high, 2 medium, 1 low → 1c / 21h / 25m / 0l).
 Verified locally: `vex-check.sh` PASS (19 entries), `vex-check.test.sh` ALL PASS, `vex-osv-config.sh` emits the

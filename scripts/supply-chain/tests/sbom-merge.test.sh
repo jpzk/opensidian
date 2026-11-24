@@ -127,7 +127,12 @@ expect_fail "merge: tag without v" "bad tag" "$here/sbom-merge.sh" -o "$t/x" -t 
 expect_fail "merge: tag with junk" "bad tag" "$here/sbom-merge.sh" -o "$t/x" -t 'v1.2.3;rm' "$t/rust.json"
 
 "$here/vex-osv-config.sh" >"$t/osv.toml"
-n_vex=$(jq '[.vulnerabilities[] | [.id] + [.references[]?.id] | unique[]] | length' "$root/supply-chain/vex.cdx.json")
+n_vex=$(jq '[.vulnerabilities[] | select(.analysis.state != "exploitable") | [.id] + [.references[]?.id] | unique[]] | length' "$root/supply-chain/vex.cdx.json")
+# exploitable (= VEX status affected, e.g. CVE-2024-43091) must stay a visible finding, never an ignore
+! grep -q '43091' "$t/osv.toml" && ok "osv config: affected UBUNTU-CVE-2024-43091 / CVE-2024-43091 not ignored" || bad "osv config ignores an affected entry"
+jq '(.vulnerabilities[] | select(.id=="UBUNTU-CVE-2024-43091") | .analysis.state) = "not_affected"' "$root/supply-chain/vex.cdx.json" >"$t/vex-na.json"
+"$here/vex-osv-config.sh" "$t/vex-na.json" | grep -q '^id = "UBUNTU-CVE-2024-43091"$' \
+  && ok "osv config: the same entry as not_affected WOULD be ignored (filter is on the state)" || bad "osv config: state filter"
 [ "$(grep -c '^\[\[IgnoredVulns\]\]$' "$t/osv.toml")" -eq "$n_vex" ] && ok "osv config: $n_vex IgnoredVulns (ids + aliases)" || bad "osv config count"
 grep -q '^id = "RUSTSEC-2026-0433"$' "$t/osv.toml" && grep -q '^effectiveUntil = 2027-01-15T23:59:59Z$' "$t/osv.toml" \
   && ok "osv config: effectiveUntil = VEX expiry" || bad "osv config ignoreUntil"

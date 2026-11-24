@@ -453,6 +453,53 @@
       ]
     },
     {
+      "bom-ref": "vex:UBUNTU-CVE-2024-43091",
+      "id": "UBUNTU-CVE-2024-43091",
+      "source": {
+        "name": "Ubuntu",
+        "url": "https://ubuntu.com/security/CVE-2024-43091"
+      },
+      "references": [
+        {
+          "id": "CVE-2024-43091",
+          "source": {
+            "name": "NVD",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2024-43091"
+          }
+        }
+      ],
+      "affects": [
+        {
+          "ref": "pkg:deb/ubuntu/webkit2gtk@2.52.6-0ubuntu0.26.04.2?arch=source&distro=ubuntu-26.04"
+        }
+      ],
+      "analysis": {
+        "state": "exploitable",
+        "detail": "VEX status: AFFECTED (CycloneDX 1.6 has no \"affected\" state; \"exploitable\" is its encoding of affected/known_affected). Portable AppImage (#298). Impact (WSA-2026-0006, packaging/appimage/inventory/wsa/0006.txt): out-of-bounds write from an integer overflow in filterMask of Skia SkEmbossMaskFilter.cpp; may lead to remote code execution, no extra privileges, no user interaction; critical. Present: src/effects/SkEmbossMaskFilter.cpp is in the Skia CMake source list of webkitgtk-2.52.6 (l.544) and the SkEmbossMaskFilter symbol string is in the bundled libwebkit2gtk-4.1.so.0 (reach.out, reach2.out). Reachable surface: WebKitGTK 2.52 renders with Skia (USE_SKIA ON), so any content the opensidian webview renders reaches the Skia mask-filter code: vault notes (markdown with inline HTML/SVG, images, CSS), canvas/SVG filter effects, plugin and theme CSS/JS, and any remote page or embed loaded in the webview. We have NOT shown that WebKit calls SkEmbossMaskFilter for a given input, nor that it never does; fail closed: treated as reachable. Fixed upstream only in WebKitGTK 2.54.0 (packaging/appimage/inventory/wsa/delta.tsv); Ubuntu 26.04 ships 2.52.6 with no fix. Host-webkit formats (flatpak/deb/rpm) use the runtime/distro webkit2gtk and are not covered by this entry.",
+        "response": [
+          "update"
+        ]
+      },
+      "properties": [
+        {
+          "name": "opensidian:vex-status",
+          "value": "affected"
+        },
+        {
+          "name": "opensidian:action_statement",
+          "value": "Decision 2026-11-24 (operator): no self-built WebKitGTK. We adopt the first distro/runtime webkit2gtk >= 2.54.0 that becomes available for the AppImage build base and bump the bundle then. Until then the portable AppImage ships the affected webkit2gtk 2.52.6; this finding stays visible in every osv scan (vex-osv-config.sh does not ignore exploitable entries)."
+        },
+        {
+          "name": "opensidian:decision-date",
+          "value": "2026-11-24"
+        },
+        {
+          "name": "opensidian:expires",
+          "value": "2027-02-23"
+        }
+      ]
+    },
+    {
       "bom-ref": "vex:UBUNTU-CVE-2025-48622",
       "id": "UBUNTU-CVE-2025-48622",
       "source": {

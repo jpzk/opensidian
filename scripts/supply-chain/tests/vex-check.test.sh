@@ -45,4 +45,26 @@ scratch; jq '(.vulnerabilities[] | select(.id=="RUSTSEC-2024-0429") | .analysis.
   "$root/supply-chain/vex.cdx.json" >"$t/r/supply-chain/vex.cdx.json"
 expect_fail "resolved without a proving script" "names no scripts/supply-chain" "$here/vex-check.sh" "$t/r"
 
+# CVE-2024-43091: affected by operator decision 2026-11-24 (no self-built WebKitGTK, adopt >= 2.54.0)
+A=UBUNTU-CVE-2024-43091
+if "$here/vex-check.sh" 2>&1 | grep -qx "  $A  exploitable  expires 2027-02-23" \
+  && jq -e --arg i "$A" '[.vulnerabilities[] | select(.id==$i)] | length == 1 and (.[0].properties | any(.name=="opensidian:vex-status" and .value=="affected"))
+      and (.[0].affects[0].ref | startswith("pkg:deb/ubuntu/webkit2gtk@"))' "$root/supply-chain/vex.cdx.json" >/dev/null
+then ok "repo: $A present, exploitable (= affected), on webkit2gtk"; else bad "repo: $A entry missing or wrong"; fi
+mut() { scratch; jq --arg i "$A" "$1" "$root/supply-chain/vex.cdx.json" >"$t/r/supply-chain/vex.cdx.json"; }
+mut '(.vulnerabilities[] | select(.id==$i) | .analysis) |= (.state="not_affected" | .justification="code_not_reachable")'
+expect_fail "$A relabelled not_affected" "decided-affected $A: analysis.state is 'not_affected'" "$here/vex-check.sh" "$t/r"
+mut '(.vulnerabilities[] | select(.id==$i) | .analysis.state) = "resolved"'
+expect_fail "$A relabelled resolved" "decided-affected $A: analysis.state is 'resolved'" "$here/vex-check.sh" "$t/r"
+mut 'del(.vulnerabilities[] | select(.id==$i))'
+expect_fail "$A entry deleted" "decided-affected $A: want exactly 1 VEX entry, found 0" "$here/vex-check.sh" "$t/r"
+mut '(.vulnerabilities[] | select(.id==$i) | .properties) |= map(select(.name!="opensidian:action_statement"))'
+expect_fail "$A without action_statement" "needs an opensidian:action_statement" "$here/vex-check.sh" "$t/r"
+mut '(.vulnerabilities[] | select(.id==$i) | .properties) |= map(select(.name!="opensidian:vex-status"))'
+expect_fail "$A without vex-status" "needs opensidian:vex-status = affected" "$here/vex-check.sh" "$t/r"
+mut '(.vulnerabilities[] | select(.id==$i) | .properties[] | select(.name=="opensidian:action_statement") | .value) |= gsub("2\\.54\\.0"; "2.52.7")'
+expect_fail "$A action_statement without 2.54.0" "action_statement lacks '2.54.0'" "$here/vex-check.sh" "$t/r"
+mut '(.vulnerabilities[] | select(.id==$i) | .properties[] | select(.name=="opensidian:vex-status") | .value) = "affected" | (.vulnerabilities[] | select(.id=="UBUNTU-CVE-2025-26416") | .properties) += [{name:"opensidian:vex-status",value:"affected"}]'
+expect_fail "vex-status affected on a not_affected entry" "UBUNTU-CVE-2025-26416: opensidian:vex-status affected but analysis.state is not_affected" "$here/vex-check.sh" "$t/r"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }
