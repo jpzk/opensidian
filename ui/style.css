@@ -1532,8 +1532,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
         padding: 8px 0; overflow-y: auto }
 .snavh { padding: 4px 14px; color: var(--text-chrome-faint); font-size: 11px; font-weight: 600; text-transform: uppercase }   /* #350: stock nav group heading weight 600, faint ink (#352) */
 .snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
-.snavi:hover { background: var(--bg-surface) }
-.snavi.sel { background: var(--border) }
+.snavi:where(:hover) { background: var(--bg-surface) }   /* #328: one class so theme .vertical-tab-nav-item:hover rules win; .sel below still beats it */
+.snavi:where(.sel) { background: var(--nav-item-background-active); color: var(--nav-item-color-active) }   /* #328: stock active nav item = the theme nav-item active vars; one class (0,1,0 + :where) so theme .vertical-tab-nav-item.is-active rules win */
 #spage { flex: 1; min-width: 0; padding: var(--size-4-4, 16px); box-sizing: border-box; display: flex; flex-direction: column }
 /* R30 row panes: card inset, a fixed row height for a one-line description
    growing per extra line, a separator inset to the card, controls flush right

@@ -14034,7 +14034,8 @@ function buildSettingsNav() {
       nav.appendChild(h);
     }
     const d = document.createElement("div");
-    d.className = "snavi"; d.textContent = I18N.tk("snav-" + e.id, e.entry);
+    d.className = "snavi vertical-tab-nav-item";   /* #328: stock nav item classes, so theme .vertical-tab-nav-item(.is-active) rules match */
+    d.textContent = I18N.tk("snav-" + e.id, e.entry);
     d.dataset.pane = e.id; d.tabIndex = 0;
     d.onclick = () => showSettingsPage(e.id);
     d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
@@ -14052,7 +14053,7 @@ function showSettingsPage(id) {
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
   const pane = e ? e.id : "hotkeys";
   sPane = pane;
-  for (const d of $("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === pane);
+  for (const d of $("snav").querySelectorAll(".snavi")) { const on = d.dataset.pane === pane; d.classList.toggle("sel", on); d.classList.toggle("is-active", on); }   /* #328: stock active class */
   const pg = $("spage"); pg.innerHTML = ""; pg.className = "";
   const rows = SMODEL.rows.filter(r => r.tab === pane);   // what this pane owes the census
   sRowsShown = rows.length;

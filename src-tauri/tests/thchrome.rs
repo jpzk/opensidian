@@ -390,3 +390,28 @@ fn i344_negative_surface_card_gone_and_theme_notice_rule_still_wins() {
     // tooltips keep reading the same variable (no second message colour)
     assert!(ui("plugins/api-functions.js").contains("st.background = \"var(--background-modifier-message, rgba(30,30,30,0.95))\""), "#344: tooltip background source changed");
 }
+#[test]
+fn i328_settings_nav_carries_stock_classes_and_active_vars() {
+    let m = ui("main.js");
+    assert!(m.contains("d.className = \"snavi vertical-tab-nav-item\";"), "#328: built-in nav items lack the stock .vertical-tab-nav-item class");
+    assert!(m.contains("d.classList.toggle(\"sel\", on); d.classList.toggle(\"is-active\", on);"), "#328: showSettingsPage does not set stock .is-active");
+    let s = ui("plugins/settings.js");
+    assert!(s.contains("el(\"div\", \"snavi vertical-tab-nav-item\", text)"), "#328: plugin nav entries lack .vertical-tab-nav-item");
+    assert!(s.contains("d.classList.add(\"sel\", \"is-active\")"), "#328: a pre-selected plugin entry lacks .is-active");
+    assert!(s.contains("d.classList.toggle(\"sel\", on); d.classList.toggle(\"is-active\", on);"), "#328: selNav does not set .is-active");
+    let c = css();
+    let a = rule(&c, ".snavi:where(.sel)");
+    assert!(a.contains("background: var(--nav-item-background-active)") && a.contains("color: var(--nav-item-color-active)"),
+        "#328: active nav item not on the stock nav-item active vars: {a}");
+}
+#[test]
+fn i328_negative_ours_does_not_outrank_theme_nav_rules() {
+    let c = css();
+    // two-class selectors (0,2,0) would tie/beat a theme `.vertical-tab-nav-item.is-active` / `:hover` rule
+    assert!(!has_rule(&c, ".snavi.sel"), "#328: two-class .snavi.sel is back (outranks theme is-active rules)");
+    assert!(!has_rule(&c, ".snavi:hover"), "#328: two-class .snavi:hover is back (outranks theme hover rules)");
+    assert!(!rule(&c, ".snavi:where(.sel)").contains("var(--border)"), "#328: active nav item back on --border");
+    // the legacy .sel class stays (harness/probes read it) and inactive items keep the chrome ink
+    assert!(rule(&c, ".snavi").contains("color: var(--text-chrome)"), "#328: resting nav ink changed");
+    assert!(ui("main.js").contains("querySelectorAll(\".snavi\")"), "#328: nav lookups by .snavi removed");
+}
