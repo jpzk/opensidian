@@ -102,3 +102,54 @@ fn h342_negative_reading_view_and_tokens_keep_graded_weights() {
     assert!(token_values(&c, "--h3-weight").iter().any(|v| v == "660"));
 }
 
+// ---------------- #343 folder weight, tag pill, inline code radius ----------------
+
+#[test]
+fn h343_folder_rows_take_nav_item_weight_not_500() {
+    let c = style();
+    let f = rule(&c, ".trow.folder");
+    assert_eq!(decl(&f, "font-weight"), None, ".trow.folder must not pin a weight (stock folder rows 400 = --nav-item-weight) (#343)");
+    let t = rule(&c, ".trow");
+    assert_eq!(decl(&t, "font-weight").as_deref(), Some("var(--nav-item-weight, inherit)"), "rows keep the theme's --nav-item-weight");
+}
+
+#[test]
+fn h343_tag_pill_and_inline_code_radius_are_stock() {
+    let c = style();
+    assert_eq!(token_values(&c, "--tag-radius"), vec!["2em".to_string()], "stock tag corner 28px on a 14px tag (#343)");
+    assert_eq!(token_values(&c, "--tag-size"), vec![".875em".to_string()], "stock tag font 14px at 16px");
+    assert_eq!(token_values(&c, "--code-radius"), vec!["var(--radius-s, 4px)".to_string()], "stock inline code corner 4px (#343)");
+    assert!(token_values(&c, "--radius-s").iter().any(|v| v == "4px"));
+}
+
+#[test]
+fn h343_negative_rules_read_the_tokens_so_themes_still_win() {
+    let c = style();
+    assert!(!c.contains("var(--tag-radius, 999px)"), "a 999px tag pill fallback is back (#343)");
+    let lt = rule(&c, ".lp .tag");
+    assert_eq!(decl(&lt, "border-radius").as_deref(), Some("var(--tag-radius, 2em)"));
+    let lc = rule(&c, ".lp .code");
+    assert_eq!(decl(&lc, "border-radius").as_deref(), Some("var(--code-radius)"));
+}
+
+fn plugins_css() -> String { css("../ui/plugins/plugins.css") }
+
+#[test]
+fn h343_coloured_canvas_card_tint_is_stock_7pct() {
+    // stock 1.13.7 colour-4 text card, painted: light 238,250,243 = 7% #08b94e over #fff
+    // (docs/thdefault/stock-default-light.vals cv.card.ppbg in the harness)
+    let p = plugins_css();
+    let b = rule(&p, ".canvas-node.is-themed > .canvas-node-container");
+    assert_eq!(decl(&b, "background").as_deref(),
+        Some("color-mix(in srgb, var(--canvas-color) 7%, var(--background-primary, #1e1e1e))"),
+        "coloured canvas card tint must be the stock 7% mix onto --background-primary (#343)");
+}
+
+#[test]
+fn h343_negative_canvas_tint_not_12pct_and_uncoloured_card_untinted() {
+    let p = plugins_css();
+    assert!(!p.contains("var(--canvas-color) 12%"), "the 12% canvas card tint (2x too saturated vs stock) is back (#343)");
+    let b = rule(&p, ".canvas-node > .canvas-node-container");
+    assert_eq!(decl(&b, "background").as_deref(), Some("var(--background-primary, #1e1e1e)"),
+        "an uncoloured card stays on the plain surface");
+}

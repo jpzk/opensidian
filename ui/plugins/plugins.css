@@ -190,7 +190,7 @@ body.os-has-plugin-status #main .status { bottom: 30px }
   --canvas-color: var(--background-modifier-border, #555) }
 .canvas-node > .canvas-node-container { flex: 1 1 auto; min-height: 0; overflow: auto; border: 2px solid var(--canvas-color);
   border-radius: 8px; background: var(--background-primary, #1e1e1e); color: var(--text-normal, #ddd) }
-.canvas-node.is-themed > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 12%, var(--background-primary, #1e1e1e)) }
+.canvas-node.is-themed > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 7%, var(--background-primary, #1e1e1e)) }
 .canvas-node[style*="--color-red"] > * { --canvas-color: var(--canvas-color-1, var(--color-red, #e93147)) }
 .canvas-node[style*="--color-orange"] > * { --canvas-color: var(--canvas-color-2, var(--color-orange, #ec7500)) }
 .canvas-node[style*="--color-yellow"] > * { --canvas-color: var(--canvas-color-3, var(--color-yellow, #e0ac00)) }
