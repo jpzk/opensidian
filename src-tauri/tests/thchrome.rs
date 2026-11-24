@@ -107,3 +107,37 @@ fn i345_negative_only_delete_warns_and_plain_rows_keep_their_ink() {
     assert!(!base.contains("--text-error"), "#345: the plain menu row must not be warning ink: {base}");
 }
 
+// ---------------------------------------------------------------- #346
+const DOC_STUB: &str = "var document = { createTextNode: function(t){ return { t: t }; },\
+    createElement: function(){ return { className: '', textContent: '' }; } };\
+    function El(){ this.k = []; } El.prototype.appendChild = function(n){ this.k.push(n); return n; };\
+    function dump(e){ return e.k.map(function(n){ return n.className === 'suggestion-highlight' ? '[' + n.textContent + ']' : n.t; }).join(''); }\
+    function lab(q, s){ var e = new El(); fuzzyLabel(e, q, s); return dump(e); }";
+
+#[test]
+fn i346_matched_characters_are_suggestion_highlight_spans() {
+    let c = jsc(&["fuzzy", "fuzzySpans", "fuzzyLabel"], DOC_STUB);
+    assert_eq!(ev(&c, "lab('toggle', 'Toggle ribbon')"), "[Toggle] ribbon");          // substring: one run
+    assert_eq!(ev(&c, "lab('rib', 'Toggle ribbon')"), "Toggle [rib]bon");
+    assert_eq!(ev(&c, "lab('tgr', 'Toggle ribbon')"), "[T]o[g]gle [r]ibbon");         // subsequence: per char
+    assert_eq!(ev(&c, "lab('tog', 'Outgoing links')"), "Ou[t]g[o]in[g] links");       // greedy subsequence, like fuzzy()
+    assert_eq!(ev(&c, "lab('ou', 'Outgoing links')"), "[Ou]tgoing links");
+    // the run set agrees with fuzzy(): a match <=> at least one run
+    assert_eq!(ev(&c, "fuzzy('tgr','Toggle ribbon') >= 0 && fuzzySpans('tgr','Toggle ribbon').length > 0"), "true");
+    let r = rule(&css(), ".suggestion-highlight");
+    assert!(r.contains("font-weight: 700"), "#346: .suggestion-highlight is not bold: {r}");
+    let rm = func(&ui("main.js"), "renderModal");
+    assert!(rm.contains("fuzzyLabel(l, $(\"minput\").value.trim(), it.label)"), "#346: renderModal rows are not highlighted");
+}
+#[test]
+fn i346_negative_no_match_or_empty_query_marks_nothing_and_text_is_unchanged() {
+    let c = jsc(&["fuzzy", "fuzzySpans", "fuzzyLabel"], DOC_STUB);
+    assert_eq!(ev(&c, "lab('', 'Toggle ribbon')"), "Toggle ribbon");
+    assert_eq!(ev(&c, "lab('zzz', 'Toggle ribbon')"), "Toggle ribbon");
+    assert_eq!(ev(&c, "JSON.stringify(fuzzySpans('zzz', 'Toggle ribbon'))"), "[]");
+    assert_eq!(ev(&c, "fuzzy('zzz', 'Toggle ribbon')"), "-1");
+    // the label text survives intact (the census reads textContent)
+    assert_eq!(ev(&c, "lab('tgr', 'Toggle ribbon').replace(/[\\[\\]]/g, '')"), "Toggle ribbon");
+    // the highlight is a single-class rule: a theme's .suggestion-highlight can override it
+    assert!(!css().contains("#mlist .mrow .suggestion-highlight"), "#346: highlight rule must stay single-class");
+}

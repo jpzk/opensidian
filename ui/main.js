@@ -8176,6 +8176,39 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
   }
   return 1000;
 }
+/* #346: the characters fuzzy() matched, as [start, end) ranges over s (adjacent
+   characters merged) — the SAME rule as fuzzy(): the first substring hit, else the
+   greedy subsequence. [] = nothing to mark (empty query or no match). */
+function fuzzySpans(q, s) {
+  q = q.toLowerCase();
+  const l = s.toLowerCase();
+  if (!q) return [];
+  const i = l.indexOf(q);
+  if (i >= 0) return [[i, i + q.length]];
+  const out = [];
+  let pos = 0;
+  for (const c of q) {
+    pos = l.indexOf(c, pos);
+    if (pos < 0) return [];
+    const last = out[out.length - 1];
+    if (last && last[1] === pos) last[1] = pos + 1; else out.push([pos, pos + 1]);
+    pos++;
+  }
+  return out;
+}
+/* #346: a suggestion title with stock's match markup — the matched runs are
+   <span class="suggestion-highlight"> (bold), the rest plain text nodes, so
+   textContent (what the census reads) stays the bare label. */
+function fuzzyLabel(el, q, s) {
+  let at = 0;
+  for (const [a, b] of fuzzySpans(q, s)) {
+    if (a > at) el.appendChild(document.createTextNode(s.slice(at, a)));
+    const m = document.createElement("span"); m.className = "suggestion-highlight"; m.textContent = s.slice(a, b);
+    el.appendChild(m);
+    at = b;
+  }
+  if (at < s.length) el.appendChild(document.createTextNode(s.slice(at)));
+}
 
 // R12: the field being typed in — the lp raw row when one is open (source +
 // live preview both edit there now), else the hidden model textarea
@@ -8586,7 +8619,7 @@ function renderModal() {
   mdItems.forEach((it, i) => {
     const d = document.createElement("div");
     d.className = "mrow" + (i === mdSel ? " sel" : "");
-    const l = document.createElement("span"); l.textContent = it.label;
+    const l = document.createElement("span"); fuzzyLabel(l, $("minput").value.trim(), it.label);   // #346: matched runs bold
     const h = document.createElement("span"); h.className = "mhint";
     h.textContent = it.hint || "";
     d.append(l, h);

@@ -1242,6 +1242,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }
 #mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: selected suggestion */
+/* #346: the matched characters of a suggestion (main.js fuzzyLabel) — stock bolds them (computed 700) */
+.suggestion-highlight { font-weight: 700 }   /* single class: a theme's .suggestion-highlight rule wins, as in stock */
 #mlist .mhint { color: var(--text-chrome-faint); font-size: 11px; margin-left: 12px; white-space: nowrap }
 #mlist .mempty { padding: 8px 14px; color: var(--text-chrome-faint); font-size: 12px }
 /* goal qscreate: stock's create hint is accent-coloured, and its static instructions
