@@ -258,3 +258,32 @@ fn i323_search_matches_use_text_highlight_bg() {
     assert_eq!(marks, 5, "#323: mark builders in ui/main.js changed ({marks}); re-check each carries the class");
     assert_eq!(classed, marks, "#323: {classed}/{marks} search/backlink marks carry .search-result-file-matched-text");
 }
+
+fn editor_js() -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/editor.js");
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+/// #335: stock's live-preview ==highlight== is `span.cm-highlight` (--text-highlight-bg behind
+/// --text-normal); themes restyle it by that class (Solarized `.cm-s-obsidian span.cm-highlight`
+/// ink --text-on-accent L rgb(253,246,227) / D rgb(0,43,54) + padding 2px 0; Gruvbox `.cm-highlight`
+/// --text-highlight-fg). Ours was `<mark class="hl">` with `.lp .hl` hard-coding the ink.
+#[test]
+fn i335_lp_highlight_is_span_cm_highlight() {
+    let css = style_css();
+    assert_eq!(val(&css, ".cm-highlight", "background-color"), "var(--text-highlight-bg)");
+    assert_eq!(val(&css, ".cm-highlight", "color"), "var(--text-normal)");
+    // negative: no rule more specific than the bare class sets the highlight ink or padding
+    assert!(rules(&css).iter().all(|(p, _)| p != ".lp .hl"), "#335: `.lp .hl` still hard-codes the ink");
+    let over: Vec<_> = rules(&css).into_iter().map(|(p, _)| p).filter(|p| p != ".cm-highlight" && p.contains("cm-highlight")).collect();
+    assert!(over.is_empty(), "#335: rules outrank the stock highlight class: {over:?}");
+    // the inline renderer emits a span carrying both our token class and the stock class
+    let js = editor_js();
+    assert!(js.contains("[\"==\", \"hl\", \"span\"]"), "#335: == must render as a span (stock span.cm-highlight)");
+    assert!(!js.contains("[\"==\", \"hl\", \"mark\"]"), "#335: == still renders as <mark>");
+    assert!(js.contains("if (cls === \"hl\") e.classList.add(\"cm-highlight\")"), "#335: highlight span lacks .cm-highlight");
+    // negative: the other inline tokens did not move
+    for t in ["[\"**\", \"b\", \"strong\"]", "[\"~~\", \"s\", \"span\"]", "[\"*\", \"i\", \"em\"]"] {
+        assert!(js.contains(t), "#335: inline token table changed: {t}");
+    }
+}

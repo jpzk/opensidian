@@ -391,7 +391,7 @@ const Ed = {
       }
       let done = false;
       for (const [open, cls, tag] of [["***", "bi", "strong"], ["**", "b", "strong"],
-                                      ["~~", "s", "span"], ["==", "hl", "mark"],
+                                      ["~~", "s", "span"], ["==", "hl", "span"],
                                       ["*", "i", "em"], ["_", "i", "em"]]) {
         if (!rest.startsWith(open)) continue;
         if (open === "_" && i > 0 && !/\s/.test(s[i - 1])) break;  // intraword _ is plain
@@ -403,6 +403,7 @@ const Ed = {
           const m0 = Ed.mk(open);
           box.appendChild(m0);
           const e = Ed.el(tag, cls);
+          if (cls === "hl") e.classList.add("cm-highlight");   // #335: stock LP highlight is span.cm-highlight, so theme rules for it (Solarized .cm-s-obsidian span.cm-highlight, Gruvbox .cm-highlight) reach it
           Ed.inline(g, e, s.slice(a0, j));
           box.appendChild(e);
           const m1 = Ed.mk(open);

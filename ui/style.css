@@ -1492,7 +1492,11 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .i { font-style: italic; color: var(--italic-color, inherit); font-weight: var(--italic-weight, inherit); }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
 .lp .s { text-decoration: line-through }
-.lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
+/* #335: the LP ==marker== is stock's span.cm-highlight: --text-highlight-bg behind --text-normal ink (issue #47),
+   under ONE bare class selector (0,1,0) so the theme's own highlight rules (Solarized .cm-s-obsidian
+   span.cm-highlight ink --text-on-accent + 2px padding, Gruvbox .cm-highlight --text-highlight-fg) win as in
+   stock. Before, the element was a bare <mark class="hl">: no theme rule named it, and .lp .hl hard-coded the ink. */
+.cm-highlight { background-color: var(--text-highlight-bg); color: var(--text-normal) }
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--link-color, var(--accent-blue)) }
 .lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--link-color-hover, var(--text-accent-hover)) }   /* themematch: link hover ink */
