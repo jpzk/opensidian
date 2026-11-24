@@ -61,12 +61,8 @@ pub fn parse_path(path: &str) -> Option<&str> {
 /// the vault's enabled list: .obsidian/community-plugins.json, a JSON array of ids
 /// (Obsidian's format). Unreadable / malformed = nothing enabled.
 pub fn enabled_ids(root: &Path) -> Vec<String> {
-    let p = root.join(".obsidian").join("community-plugins.json");
-    let Ok(m) = fs::symlink_metadata(&p) else { return Vec::new() };
-    if !m.is_file() || m.len() > 1024 * 1024 {
-        return Vec::new();
-    }
-    fs::read_to_string(&p)
+    // #250: the vaultfs fd read (no symlink at any component, regular file by fstat, 1 MiB on the fd)
+    crate::vaultfs::read_string(root, Path::new(ENABLED_FILE), 1024 * 1024)
         .ok()
         .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s).ok())
         .map(|v| v.iter().filter_map(|x| x.as_str()).filter(|s| valid_id(s)).map(str::to_string).collect())
@@ -89,27 +85,21 @@ pub fn plugin_dir_in(root: &Path, id: &str) -> Option<PathBuf> {
 /// (regular file, <= cap) and a read bounded by cap. A file replaced or grown
 /// between plugin_file_in's stat and this read can never make it allocate more
 /// than cap + 1 bytes, nor block on a FIFO / device.
-pub fn read_checked(p: &Path, cap: u64) -> Result<Vec<u8>, &'static str> {
-    use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    let f = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(p)
-        .map_err(|e| if e.raw_os_error() == Some(libc::ELOOP) { "symlinked file" } else { "unreadable" })?;
-    let m = f.metadata().map_err(|_| "unreadable")?;
-    if !m.is_file() {
-        return Err("not a file");
-    }
-    if m.len() > cap {
-        return Err("too big");
-    }
-    let mut b = Vec::with_capacity(m.len() as usize);
-    f.take(cap.saturating_add(1)).read_to_end(&mut b).map_err(|_| "unreadable")?;
-    if b.len() as u64 > cap {
-        return Err("too big");
-    }
-    Ok(b)
+/// #250 (merged with #251): the open and the read go through the vaultfs fd walk from the vault
+/// root (O_NOFOLLOW on every component, not just the leaf; regular file by fstat; cap on the fd),
+/// so a plugin folder swapped for a symlink after the check is refused as well.
+pub fn read_checked(root: &Path, p: &Path, cap: u64) -> Result<Vec<u8>, &'static str> {
+    let rel = crate::vaultfs::rel_of(root, p).map_err(|_| "unreadable")?;
+    crate::vaultfs::read(root, &rel, cap).map_err(|e| {
+        // the walk refuses a symlinked component itself (PermissionDenied "refused: symlink in vault path") or the kernel does (ELOOP)
+        if e.raw_os_error() == Some(libc::ELOOP) || e.to_string().contains("symlink") {
+            "symlinked file"
+        } else if e.kind() == std::io::ErrorKind::FileTooLarge {
+            "too big"
+        } else {
+            "unreadable"
+        }
+    })
 }
 
 /// rule 5: a file inside a confined plugin dir. Ok(None) = absent, Err = refuse
@@ -125,6 +115,25 @@ pub fn plugin_file_in(root: &Path, id: &str, file: &str, cap: u64) -> Result<Opt
         Ok(m) if !m.is_file() => Err("not a file"),
         Ok(m) if m.len() > cap => Err("too big"),
         Ok(_) => Ok(Some(p)),
+    }
+}
+
+/// #250 (audit F-47): rule 5 AND the read. `plugin_file_in` decides (same
+/// refusals as ever), then the bytes come from `vaultfs::read`: the openat
+/// walk from the vault fd (O_NOFOLLOW per component and on the leaf,
+/// O_NONBLOCK, regular file by fstat, `cap` on the fd). A file or folder
+/// swapped for a symlink after the check is refused, never followed.
+/// Ok(None) = absent.
+pub fn plugin_read_in(root: &Path, id: &str, file: &str, cap: u64) -> Result<Option<Vec<u8>>, &'static str> {
+    if plugin_file_in(root, id, file, cap)?.is_none() {
+        return Ok(None);
+    }
+    let rel = Path::new(".obsidian").join("plugins").join(id).join(file);
+    match crate::vaultfs::read(root, &rel, cap) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => Err("too big"),
+        Err(_) => Err("not a regular file in the vault"),
     }
 }
 
@@ -189,7 +198,7 @@ pub fn read_styles_pinned(root: &Path, id: &str, cfg: &serde_json::Value, vault:
 pub fn serve(root: Option<&Path>, path: &str, trusted: bool) -> Served {
     match gate(root, path, trusted) {
         Err(s) => s,
-        Ok((_, id, p)) => match read_checked(&p, MAX_MAIN_JS) {
+        Ok((root, id, p)) => match read_checked(root, &p, MAX_MAIN_JS) {
             Ok(b) => Served::Js(wrap_cjs(id, &String::from_utf8_lossy(&b)).into_bytes()),
             Err("unreadable") => Served::Missing,
             Err(why) => Served::Refused(why),
@@ -345,13 +354,14 @@ const MAX_MANIFEST: u64 = 256 * 1024;
 /// own "id" rides along in `manifest` and a mismatch is reported, not fatal.
 pub fn installed(root: &Path) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
-    let Ok(rd) = fs::read_dir(root.join(".obsidian").join("plugins")) else { return out };
-    let mut names: Vec<String> =
-        rd.filter_map(|e| e.ok()).filter_map(|e| e.file_name().into_string().ok()).filter(|n| valid_id(n)).collect();
+    // #250: listed from the fd the no-follow walk opened (a symlinked
+    // .obsidian or plugins dir lists nothing; symlinked entries are not listed)
+    let Ok(rd) = crate::vaultfs::Vault::open(root).and_then(|v| v.p_list(Path::new(".obsidian/plugins"))) else { return out };
+    let mut names: Vec<String> = rd.into_iter().filter(|(n, k)| *k == "folder" && valid_id(n)).map(|(n, _)| n).collect();
     names.sort();
     for id in names {
-        let Ok(Some(mp)) = plugin_file_in(root, &id, "manifest.json", MAX_MANIFEST) else { continue };
-        let Some(manifest) = fs::read_to_string(&mp)
+        let Ok(Some(mb)) = plugin_read_in(root, &id, "manifest.json", MAX_MANIFEST) else { continue };
+        let Some(manifest) = String::from_utf8(mb)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .filter(|v| v.is_object())
@@ -376,14 +386,13 @@ pub fn set_enabled(root: &Path, id: &str, on: bool) -> Result<Vec<String>, Strin
     if !valid_id(id) {
         return Err("bad plugin id".into());
     }
-    let p = root.join(ENABLED_FILE);
-    let mut list: Vec<serde_json::Value> = match fs::symlink_metadata(&p) {
-        Err(_) => Vec::new(),
-        Ok(m) if !m.is_file() || m.len() > 1024 * 1024 => return Err(format!("{ENABLED_FILE}: not a plain file")),
-        Ok(_) => {
-            let s = fs::read_to_string(&p).map_err(|e| format!("{ENABLED_FILE}: {e}"))?;
-            serde_json::from_str(&s).map_err(|_| format!("{ENABLED_FILE}: not a JSON array, left untouched"))?
-        }
+    // #250: read by the vaultfs fd walk; absent = empty, anything not a plain
+    // in-vault file (symlink at any component, FIFO, over 1 MiB) is refused
+    let mut list: Vec<serde_json::Value> = match crate::vaultfs::read_string(root, Path::new(ENABLED_FILE), 1024 * 1024) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(format!("{ENABLED_FILE}: {e}")),
+        Err(_) => return Err(format!("{ENABLED_FILE}: not a plain file")),
+        Ok(s) => serde_json::from_str(&s).map_err(|_| format!("{ENABLED_FILE}: not a JSON array, left untouched"))?,
     };
     let present = list.iter().any(|v| v.as_str() == Some(id));
     if on && !present {
@@ -408,13 +417,10 @@ fn rel_in(root: &Path, id: &str, file: &str) -> Result<PathBuf, String> {
 /// Plugin.loadData(): data.json parsed, or Null when absent or not valid JSON (Obsidian resolves null for both, so a
 /// plugin falls back to its defaults; the file is left as is)
 pub fn read_data(root: &Path, id: &str) -> Result<serde_json::Value, String> {
-    match plugin_file_in(root, id, "data.json", MAX_DATA_JSON)? {
+    match plugin_read_in(root, id, "data.json", MAX_DATA_JSON)? {
         None => Ok(serde_json::Value::Null),
-        Some(p) => {
-            // bytes, not a String: a file cut inside a multi-byte character is invalid JSON (null), not a read error
-            let b = fs::read(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
-            Ok(serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null))
-        }
+        // bytes, not a String: a file cut inside a multi-byte character is invalid JSON (null), not a read error
+        Some(b) => Ok(serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null)),
     }
 }
 
@@ -423,8 +429,7 @@ pub fn read_data(root: &Path, id: &str) -> Result<serde_json::Value, String> {
 /// does not destroy the settings the user's broken edit still holds
 pub fn write_data(root: &Path, id: &str, data: &serde_json::Value) -> Result<(), String> {
     // a symlinked data.json refuses
-    if let Some(p) = plugin_file_in(root, id, "data.json", MAX_DATA_JSON)? {
-        let old = fs::read(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
+    if let Some(old) = plugin_read_in(root, id, "data.json", MAX_DATA_JSON)? {
         if serde_json::from_slice::<serde_json::Value>(&old).is_err() {
             crate::vaultfs::write_atomic(root, &rel_in(root, id, "data.json.invalid")?, &old)
                 .map_err(|e| format!("{id}/data.json.invalid: {e}"))?;
@@ -441,10 +446,10 @@ pub fn write_data(root: &Path, id: &str, data: &serde_json::Value) -> Result<(),
 
 /// a plugin's styles.css through the snippet sanitizer; None = no styles.css
 pub fn read_styles(root: &Path, id: &str) -> Result<Option<String>, String> {
-    match plugin_file_in(root, id, "styles.css", MAX_STYLES)? {
+    match plugin_read_in(root, id, "styles.css", MAX_STYLES)? {
         None => Ok(None),
-        Some(p) => {
-            let src = fs::read_to_string(&p).map_err(|e| format!("{id}/styles.css: {e}"))?;
+        Some(b) => {
+            let src = String::from_utf8(b).map_err(|e| format!("{id}/styles.css: {e}"))?;
             crate::themefs::sanitize_css(&src).map(|s| Some(s.css)).map_err(|e| format!("{id}/styles.css: {e}"))
         }
     }

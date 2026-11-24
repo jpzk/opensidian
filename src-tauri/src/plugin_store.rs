@@ -532,24 +532,21 @@ fn sha256_hex(b: &[u8]) -> String {
 /* ------------------------------------------------- install / uninstall */
 
 fn installed_manifest(root: &Path, id: &str) -> Option<Value> {
-    let p = plugins::plugin_file_in(root, id, "manifest.json", MAX_MANIFEST).ok().flatten()?;
-    serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok().filter(Value::is_object)
+    // #250: rule 5 + the fd read (plugins::plugin_read_in)
+    let b = plugins::plugin_read_in(root, id, "manifest.json", MAX_MANIFEST).ok().flatten()?;
+    serde_json::from_slice::<Value>(&b).ok().filter(Value::is_object)
 }
 
 /// the sidecar, plus whether each recorded file still hashes to its record
 fn audit(root: &Path, id: &str) -> Value {
-    let Some(dir) = plugins::plugin_dir_in(root, id) else { return Value::Null };
-    let p = dir.join(SIDECAR);
-    match fs::symlink_metadata(&p) {
-        Ok(m) if m.is_file() && m.len() <= MAX_MANIFEST => {}
-        _ => return Value::Null,
-    }
-    let Some(mut rec) = fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { return Value::Null };
+    // #250: every file is read by plugins::plugin_read_in (fd walk, cap on the fd)
+    let Ok(Some(b)) = plugins::plugin_read_in(root, id, SIDECAR, MAX_MANIFEST) else { return Value::Null };
+    let Some(mut rec) = serde_json::from_slice::<Value>(&b).ok() else { return Value::Null };
     let mut intact = true;
     if let Some(files) = rec["files"].as_object() {
         for (name, f) in files {
             let cap = if name == "main.js" { plugins::MAX_MAIN_JS } else { plugins::MAX_STYLES.max(MAX_MANIFEST) };
-            let now = plugins::plugin_file_in(root, id, name, cap).ok().flatten().and_then(|p| fs::read(p).ok()).map(|b| sha256_hex(&b));
+            let now = plugins::plugin_read_in(root, id, name, cap).ok().flatten().map(|b| sha256_hex(&b));
             intact &= now.as_deref() == f["sha256"].as_str();
         }
     }

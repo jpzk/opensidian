@@ -122,7 +122,7 @@ pub(crate) fn read_files_with(root: &Path, id: &str, between: &dyn Fn(&Path)) ->
             None => Ok(None),
             Some(p) => {
                 between(&p);
-                crate::plugins::read_checked(&p, cap).map(Some).map_err(|e| format!("{id}/{f}: {e}"))
+                crate::plugins::read_checked(root, &p, cap).map(Some).map_err(|e| format!("{id}/{f}: {e}"))
             }
         }
     };
