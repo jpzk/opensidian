@@ -97,6 +97,21 @@ fn i319_negative_our_css_styles_hypermd_only_with_stock_line_spacing() {
     assert_eq!(read("ui/editor.js").matches("classList.add(\"HyperMD-header\"").count(), 1, "one writer of HyperMD-header in editor.js");
 }
 
+#[test]
+fn i324_lp_callout_widget_resets_editor_white_space() {
+    let c = css_rules("ui/style.css");
+    // stock .cm-embed-block: white-space normal (the widget holds rendered HTML; pre-wrap made the renderer's trailing
+    // "\n" an extra 24px line: stock .callout-content 56px vs ours 88px in the phase, cch key)
+    assert!(c.contains(".cm-callout { white-space: normal; overflow-wrap: normal; word-break: normal }"), "LP callout white-space reset");
+    // default --p-spacing = stock 1rem (stock computed callout p margin 16px with no theme / Gruvbox / Solarized)
+    assert!(c.contains("--p-spacing: 1rem; --p-spacing-empty: 0rem;"), "default --p-spacing must be stock's 1rem");
+    // negative: the reset is scoped to the callout widget, never the editor rows (source lines keep pre-wrap)
+    assert!(c.contains(".lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }"), "LP rows keep pre-wrap");
+    for bad in [".lp { white-space: normal", ".cm-line { white-space: normal", ".cm-content { white-space: normal"] {
+        assert!(!c.contains(bad), "white-space reset leaked to the editor: `{bad}`");
+    }
+}
+
 // ---------- #324: the live-preview callout widget spaces its blocks by --p-spacing ----------
 #[test]
 fn i324_lp_callout_blocks_carry_p_spacing() {

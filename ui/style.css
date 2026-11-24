@@ -1675,7 +1675,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --h5-line-height: 1.39; --h6-line-height: 1.45;
   --h1-letter-spacing: -0.018em; --h2-letter-spacing: -0.015em; --h3-letter-spacing: -0.012em;
   --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
-  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
+  --p-spacing: 1rem; --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
   /* R15.10-13 lists / checkbox / code / blockquote */
   --list-indent: calc(var(--indent-unit, calc(var(--space-unit) * 7 / 4)) * var(--indent-size, 4));
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
@@ -2504,6 +2504,9 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
 .cm-callout :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
 .cm-callout li > p { margin-block: 0 }
+/* #324: the widget holds rendered HTML, not source text: stock's .cm-embed-block resets the editor's pre-wrap. Without
+   it the renderer's trailing "\n" after </p> is a whole extra 24px line box at the bottom of .callout-content. */
+.cm-callout { white-space: normal; overflow-wrap: normal; word-break: normal }
 /* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
 /* the live-preview block widget contains its child margins (flow-root): CM6
    measures a block widget by its border box, and .metadata-container's 4px/14px
