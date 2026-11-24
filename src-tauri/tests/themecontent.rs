@@ -329,3 +329,40 @@ fn i334_tag_pills_use_tag_variables() {
     assert!(js.contains("w.dataset.propertyType = row.type"), "#334: property row lost data-property-type");
     assert!(js.contains("el(\"div\", \"multi-select-pill\")"), "#334: pill class changed");
 }
+
+fn ui_file(rel: &str) -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui").join(rel);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+const CARD: &str = ":is(.canvas-text, .canvas-file-embed)";
+
+/// #339: canvas card markdown (text card .canvas-text, note card .canvas-file-embed) sits outside
+/// .lp/.preview, so no link rule reached it and the UA default (rgb(0,0,238), underline) won.
+/// Stock: card links = --link-color with no underline (Solarized rgb(38,139,210) td none, L=D).
+#[test]
+fn i339_canvas_card_links_use_link_styling() {
+    let css = style_css();
+    let w = format!("{CARD} a.wiki");
+    assert_eq!(val(&css, &w, "color"), "var(--link-color, var(--accent-blue))");
+    assert_eq!(val(&css, &w, "text-decoration"), "var(--link-decoration, none)");
+    let u = format!("{CARD} a.wiki-unresolved");
+    assert_eq!(val(&css, &u, "color"), "var(--link-unresolved-color, var(--link-unresolved))");
+    assert_eq!(val(&css, &u, "opacity"), "var(--link-unresolved-opacity, 1)");
+    assert_eq!(val(&css, &u, "font-style"), "normal");
+    let e = format!("{CARD} a.ext");
+    assert_eq!(val(&css, &e, "color"), "var(--link-external-color, var(--accent-blue))");
+    // the default link decoration stays none (stock card links are not underlined)
+    assert_eq!(val(&css, DARK, "--link-decoration"), "none");
+    // the DOM carries the scope classes the selector needs
+    assert!(ui_file("plugins/canvas-cards.js").contains("mk(\"div\", \"canvas-text markdown-rendered\")"), "#339: text card class changed");
+    assert!(ui_file("plugins/canvas.js").contains("el(\"div\", \"canvas-file-embed\", this.contentEl)"), "#339: note card class changed");
+    // negative: the reading-view / LP link rules did not move
+    assert_eq!(val(&css, ".preview a.wiki", "color"), "var(--link-color, var(--accent-blue))");
+    assert_eq!(val(&css, ".lp a.wiki", "text-decoration"), "var(--link-decoration, none)");
+    // negative: nothing in the canvas plugin CSS hard-codes a card link colour over the variables
+    for f in ["plugins/plugins.css", "plugins/canvas-cards.js", "plugins/canvas.js"] {
+        let s = ui_file(f);
+        assert!(!s.contains("canvas-text a") && !s.contains("canvas-file-embed a"), "#339: {f} styles card links itself");
+    }
+}

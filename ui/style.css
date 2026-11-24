@@ -1943,6 +1943,12 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
 .preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-decoration-color, var(--link-unresolved-underline)); text-decoration-style: var(--link-unresolved-decoration-style, solid); filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }   /* REQ-15 */
+/* #339: canvas cards render markdown outside .lp/.preview (text card div.canvas-text.markdown-rendered,
+   note card div.canvas-file-embed > .markdown-embed-content), so no link rule reached their anchors and the
+   UA blue + underline won. Stock gives card links the app link styling: --link-color, --link-decoration (none). */
+:is(.canvas-text, .canvas-file-embed) a.wiki { color: var(--link-color, var(--accent-blue)); text-decoration: var(--link-decoration, none); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit) }
+:is(.canvas-text, .canvas-file-embed) a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; opacity: var(--link-unresolved-opacity, 1); filter: var(--link-unresolved-filter, none) }
+:is(.canvas-text, .canvas-file-embed) a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none) }
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
 .preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: var(--indentation-guide-width, 1px);
   background: var(--indentation-guide-color); pointer-events: none }
