@@ -45,6 +45,12 @@ use serde::Serialize;
    live in desk_proc/windows.rs; everything below that is not cfg'd is shared by every OS. */
 #[cfg(windows)]
 mod windows;
+/// Windows: a canonical path in its plain form (`\\?\C:\x` -> `C:\x`, `\\?\UNC\h\s` -> `\\h\s`;
+/// any other verbatim path is kept as it is). main.rs uses it for vault paths a person sees.
+#[cfg(windows)]
+pub fn plain_path(p: &Path) -> PathBuf {
+    windows::plain(p)
+}
 #[cfg(windows)]
 pub use windows::{child_path, pin, pin_dir, Ident, Pinned};
 #[cfg(windows)]
