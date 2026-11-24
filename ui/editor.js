@@ -1568,6 +1568,9 @@ const Ed = {
     // paints at the row start = LEFT of the box) whose left edge is >= the box's right edge.
     const c75 = Ed.caret75();
     if (c75) fail("dom75:" + c75);
+    // theme DOM classes on a live CM6 view (#333 active line ...): "" = every case holds
+    const thd = Ed.themeDom();
+    if (thd) fail("thdom:" + thd);
     // R17.7 link destinations: balanced parens survive whole (CommonMark), a
     // backslash escape stays literal, whitespace is still not a link, an empty
     // destination still is, and a bare URL leaves the enclosing prose's ')' out.
@@ -1751,6 +1754,33 @@ const Ed = {
       cm.destroy(); w.remove();
       if (ae && ae !== document.body && ae.isConnected && ae.focus) ae.focus(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     }
+  },
+  // theme DOM selfTest case: a throwaway, invisible live-preview CM6 view; reads back the line classes stock 1.13.7's
+  // DOM carries and theme selectors key on. "" = all hold, else a short token-safe reason.
+  //   #333 the caret line, and ONLY it, is .cm-line.cm-active (stock: "cm-line cm-active"); it follows the caret
+  themeDom() {
+    if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
+    const w = Ed.el("div", "lp");
+    w.style.cssText = "position:fixed;left:0;top:0;width:480px;opacity:0;pointer-events:none;z-index:-1";
+    const v = { lp: w }, g = { view: v, lp: w };
+    const doc = "alpha\nbeta\n# Head\ngamma";
+    const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc, extensions: [Ed.lpExt(v, () => g)] }) });
+    w.appendChild(cm.dom);
+    document.body.appendChild(w);
+    const lines = () => [...cm.contentDOM.querySelectorAll(":scope > .cm-line")];
+    const act = () => lines().map((e, i) => e.classList.contains("cm-active") ? i : -1).filter(i => i >= 0).join(".") || "none";
+    try {
+      if (lines().length !== 4) return "rows" + lines().length;
+      cm.dispatch({ selection: { anchor: 8 } });                    // "be|ta" -> line 1
+      if (act() !== "1") return "act1:" + act();
+      if (!lines()[1].classList.contains("cur")) return "cur1";
+      cm.dispatch({ selection: { anchor: doc.length } });           // end of "gamma" -> line 3; line 1 drops it
+      if (act() !== "3") return "act3:" + act();
+      cm.dispatch({ selection: { anchor: 1, head: 8 } });           // a range alpha..beta: the HEAD's line only
+      if (act() !== "1") return "acth:" + act();
+      return "";
+    } catch (e) { return "err"; }
+    finally { cm.destroy(); w.remove(); }
   },
 };
 
@@ -2916,6 +2946,8 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
 // a task row's marker prefix as Ed.block reads it: indent, any ">" quote levels (">  - [ ] x" is a
 // quoted list row too), a bullet or "N.", then "[c] ". m[0].length = the task text start (gh #46/#75)
 Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
+// the caret line's line-decoration classes: `cur` (ours: geometry/census) + `cm-active` (#333, stock's class)
+Ed.ACTIVE_LINE = "cur cm-active";
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -2995,7 +3027,10 @@ Ed.lpExt = function (v, G) {
         const car = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar"));
         if (car) tcrNext = cur;
         const tcr = car || ln.number === tcrLeft ? tp : "";
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
+        // #333: the caret line also carries `cm-active`, the class stock 1.13.7 puts on it (its DOM: "cm-line cm-active"),
+        // so a theme's active-line rule (Gruvbox `.cm-active`, Solarized `body:not(.disable-…)
+        // .cm-active`) has a target. Our own CSS paints nothing on it: with no theme rule the line looks as before.
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " " + Ed.ACTIVE_LINE : "") + tcr + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
