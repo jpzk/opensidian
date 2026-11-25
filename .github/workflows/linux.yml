@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-          ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || '' }}
+          ref: ${{ inputs.pr > 0 && format('refs/pull/{0}/head', inputs.pr) || '' }}
       - name: what is tested
         shell: bash
         env:
@@ -130,4 +130,4 @@ jobs:
       actions: read
     uses: ./.github/workflows/supply-chain.yml
     with:
-      ref: ${{ inputs.pr && format('refs/pull/{0}/head', inputs.pr) || '' }}
+      ref: ${{ inputs.pr > 0 && format('refs/pull/{0}/head', inputs.pr) || '' }}
