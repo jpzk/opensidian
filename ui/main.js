@@ -3054,7 +3054,6 @@ let wsWrites = 0;        // successful write_workspace calls THIS PROCESS (censu
 let wsRestored = 0;      // leaves rebuilt from the file on this launch
 let wsDropped = 0;       // R28.17: leaves whose file was gone, dropped instead of failing
 let wsT = null, wsLast = "", wsIds = {}, wsInFlight = null;
-let wsFile = "";         // wsCanon of the file the launch restored; "" once anything is written (see wsUnchanged)
 let wsGrp = {};          // W3: link-group key ("L<link>" | "G<group id>") -> the 16-hex `group` value on file
 /* W4 (F6, frozen): what this app does not understand it hands back unchanged.
      wsExtra   top-level keys other than WS_TOP, in file order (Obsidian drops
@@ -3258,20 +3257,6 @@ function wsDoc() {
    serialized layout is byte-identical to the last one, so a typing burst costs
    one stringify and no IPC. */
 const WS_MS = 400;
-/* THE RESTORED LAYOUT IS NOT A CHANGE. wsLast starts empty, so the first flush
-   after the launch restore (its own renderLayout arms wsTouch) wrote back the
-   layout just read. On a drive that sleeps, that write is what woke it, and the
-   durable flush held the first note open behind it (17 s measured on a USB
-   exFAT vault). wsFile keeps the file's content, key order aside; a flush whose
-   layout still says exactly that writes nothing. It is forgotten at the first
-   real write, so going back to that layout later still writes it. */
-function wsCanon(x) {
-  return JSON.stringify(x, (k, v) => v && typeof v === "object" && !Array.isArray(v)
-    ? Object.keys(v).sort().reduce((o, key) => { o[key] = v[key]; return o; }, {}) : v);
-}
-function wsUnchanged(doc) {
-  return !!wsFile && wsCanon(doc) === wsFile;
-}
 function wsTouch() {
   if (!state || !vaultPath || wsT) return;
   wsT = setTimeout(() => wsFlush(), WS_MS);
@@ -3286,19 +3271,15 @@ function wsTouch() {
    still inside the 5s the wspace phase asserts. `force` (wsLeave) never yields:
    a vault switch is a hard boundary. */
 const WS_YIELD_MS = 50, WS_YIELD_MAX = 40;
-let wsApplying = 0;      // wsApply calls in progress: the flush waits for them (no cap: the restore ends or the file stays as read)
 let wsYields = 0;
 async function wsFlush(force) {
   wsT = null;
   if (!state || !vaultPath) return;
-  // a layout being restored is not a layout yet: what it serializes half-way is neither the file nor the result
-  if (!force && wsApplying > 0) { wsT = setTimeout(() => wsFlush(), WS_YIELD_MS); return; }
   if (!force && actN > 0 && wsYields < WS_YIELD_MAX) { wsYields++; wsT = setTimeout(() => wsFlush(), WS_YIELD_MS); return; }
   wsYields = 0;
   let doc, s;
   try { doc = wsDoc(); s = JSON.stringify(doc); } catch (e) { return; }   // never let a census update throw
   if (s === wsLast) return;
-  if (wsUnchanged(doc)) { wsLast = s; return; }   // still the file the launch restored: no write
   // The vault is captured HERE, with the bytes it describes, and travels with
   // them: everything below this line is asynchronous, and `vaultPath` is not a
   // constant across an await (see wsLeave). The backend refuses a write whose
@@ -3309,7 +3290,7 @@ async function wsFlush(force) {
     try {
       await inv("write_workspace", { vault: v, layout: doc });
       if (v !== vaultPath) return;     // switched under us: the backend dropped it, so must our bookkeeping
-      wsLast = s; wsWrites++; wsFile = "";
+      wsLast = s; wsWrites++;
       updateTitle();                 // republish [ws:] — the write is observable, not asserted by faith
     } catch (e) { /* R28.13/R28.17: persistence must never be able to break the session */ }
   })();
@@ -3332,7 +3313,7 @@ async function wsFlush(force) {
 async function wsLeave() {
   if (wsT) { clearTimeout(wsT); wsT = null; await wsFlush(true); }
   try { await wsInFlight; } catch (e) { /* its own catch already ate it */ }
-  wsInFlight = null; wsLast = ""; wsFile = ""; wsIds = {}; wsGrp = {};
+  wsInFlight = null; wsLast = ""; wsIds = {}; wsGrp = {};
   wsExtra = null; wsSideRaw = {}; wsSide0 = {};          // W4: A's unknowns belong to A's file alone
 }
 
@@ -3449,16 +3430,6 @@ function wsEmptyLeaves(node, out = []) {
   }
   return out;
 }
-/* R28.4 for the MAIN split. wsNodeIn returns a one-child split as that child, and
-   state.root must be a split, so wsApply wraps it again. The wrapper is the file's
-   main split: it keeps that split's id and direction, or every launch would draw a
-   new id and rewrite workspace.json for it. */
-function wsMainWrap(main, root) {
-  if (root.children) return root;
-  const w = { dir: main && main.direction === "horizontal" ? "col" : "row", children: [root], fractions: [1] };
-  if (main && typeof main.id === "string" && main.id) w.wid = main.id;
-  return w;
-}
 function wsNodeIn(node, have) {
   if (!node || typeof node !== "object") return null;
   if (node.type === "split" && Array.isArray(node.children)) {
@@ -3509,17 +3480,8 @@ function wsNodeIn(node, have) {
 async function wsRead() {
   try { return await inv("read_workspace"); } catch (e) { return null; }
 }
-/* The restore awaits note loads, and the 400 ms layout timer (armed by its own
-   renderLayout) can fall due in the middle: a slow start wrote the half-restored
-   layout, then the finished one, both times for a file that had not changed. */
-async function wsApply(doc, names, boot) {
-  wsApplying++;
-  try { return await wsApplyIn(doc, names, boot); } finally { wsApplying--; }
-}
-async function wsApplyIn(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
+async function wsApply(doc, names, boot) {   // #242: boot = the launch restore (may answer "empty")
   if (!doc || typeof doc !== "object") return false;     // R28.13: missing/corrupt == first launch
-  // only the launch restore reads what is ON DISK; a loaded workspace or a plugin layout must be written
-  try { wsFile = boot ? wsCanon(doc) : ""; } catch (e) { wsFile = ""; }
   // W4: captured BEFORE anything can bail — even a file whose main area is
   // unusable must not lose its unknown keys or its sidebars on the next write
   wsExtra = {};
@@ -3547,7 +3509,7 @@ async function wsApplyIn(doc, names, boot) {   // #242: boot = the launch restor
     }
     return false;
   }
-  root = wsMainWrap(doc.main, root);
+  if (!root.children) root = { dir: "row", children: [root], fractions: [1] };
   state.root = root;
   state.focused = null;
   renderLayout();
