@@ -370,7 +370,7 @@ let rbN = 0;
    two calls in flight (fast note switches) both appended, so the pane showed two "Unlinked mentions"
    headers or the previous note's rows. A call that is no longer the latest drops its result after
    every await (stock 1.13.7 always shows one set, for the active note). */
-let blGen = 0, outGen = 0;
+let blGen = 0, outGen = 0, tagGen = 0, tocGen = 0;   // #315: + Tags / Outline (fetch-then-swap)
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
@@ -395,6 +395,30 @@ function rEmpty(box, msg) {
   d.className = "rempty"; d.textContent = msg; box.appendChild(d);
 }
 const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
+/* issue #315: a right pane never paints EMPTY between two refreshes. Every pane used to
+   clear its box, AWAIT the backend, then rebuild — so each save-triggered refresh
+   (rSchedule, 200 ms after typing) handed the compositor the empty box for a frame:
+   blank / transient sidebar frames while typing with Outgoing links / Tags / Outline open
+   (stock 1.13.7 shows none). Now a pane fetches FIRST, builds its new rows off-DOM (b / h
+   are DocumentFragments) and swaps them in with one replaceChildren — the old rows stay
+   painted until then. key = everything the pane is built from (note + backend data); a
+   refresh whose key matches what is painted (a keystroke in plain text leaves the links,
+   tags and headings as they were) does not touch the DOM at all. Returns true = swapped. */
+function rpSwap(box, head, key, build) {
+  if (key != null && box._rpKey === key && box.firstChild) return false;
+  const b = document.createDocumentFragment(), h = head ? document.createDocumentFragment() : null;
+  build(b, h);
+  box.replaceChildren(b);
+  if (head) head.replaceChildren(h);
+  box._rpKey = key;
+  return true;
+}
+// #315: a fetch that FAILED must not leave the previous note's rows painted (stale after a
+// note switch) — the pane ends empty, as before the fix, and the next refresh rebuilds it
+function rpDrop(box, head) {
+  box.replaceChildren(); if (head) head.replaceChildren();
+  box._rpKey = null;
+}
 async function rPanesRefresh() {
   if (!rightOpen) return;
   const n = rNote() || (rTab === "bl" ? cvTabPath(rTrack()) : null);   // cvf-links CVR-A-097: a canvas tab's backlinks
@@ -413,109 +437,114 @@ async function rPanesRefresh() {
 async function rBacklinks(n) {
   rbN++; const gen = ++blGen;            // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
-  box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
   // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
+  // #315: fetch FIRST (the painted rows stay until the swap); the unlinked mentions are fetched
+  // alongside (they used to be fetched after the linked rows were painted into the cleared box)
   const isCv = !!n && /\.canvas$/i.test(n);
-  const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  let bl, cvb, ul;
+  try {
+    [bl, cvb, ul] = !n ? [[], [], []] : isCv ? [await cvCanvasBacklinks(n), [], []]
+      : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n), inv("unlinked_mentions", { name: n }).catch(() => [])]);
+  } catch (e) { if (gen === blGen) rpDrop(box, head); throw e; }
   if (gen !== blGen) return;              // issue #176: a newer render owns the pane
-  head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
-  const c = document.createElement("span");
-  c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
-  cvBacklinkRows(box, cvb);
-  if (!bl.length && !cvb.length) rEmpty(box, "No backlinks found.");
-  for (const b of bl) {
-    const row = document.createElement("div");
-    row.className = "blnote open"; row.dataset.ol = "bt:" + b.note;
-    row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
-    row.querySelector(".bln").textContent = b.note;
-    row.querySelector(".scount").textContent = b.lines.length;
-    const kids = document.createElement("div");
-    for (const [ln, text] of b.lines) {
-      const d = document.createElement("div");
-      d.className = "blline"; d.dataset.ol = "bl:" + b.note;
-      d.title = "line " + (ln + 1);
-      text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
-        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
-        if (i % 2) el.textContent = part;
-        d.appendChild(el);
-      });
-      sideRow(d, b.note);
-      kids.appendChild(d);
+  rpInfo = "bl:" + bl.length + "|ul:" + ul.length;   // (a canvas: ul = [] -> "|ul:0", as before)
+  rpSwap(box, head, JSON.stringify(["bl", n, bl, cvb, ul, ulOpen]), (box, head) => {
+    head.appendChild(document.createTextNode("Linked mentions"));
+    const c = document.createElement("span");
+    c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
+    cvBacklinkRows(box, cvb);
+    if (!bl.length && !cvb.length) rEmpty(box, "No backlinks found.");
+    for (const b of bl) {
+      const row = document.createElement("div");
+      row.className = "blnote open"; row.dataset.ol = "bt:" + b.note;
+      row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
+      row.querySelector(".bln").textContent = b.note;
+      row.querySelector(".scount").textContent = b.lines.length;
+      const kids = document.createElement("div");
+      for (const [ln, text] of b.lines) {
+        const d = document.createElement("div");
+        d.className = "blline"; d.dataset.ol = "bl:" + b.note;
+        d.title = "line " + (ln + 1);
+        text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
+          const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+          if (i % 2) el.textContent = part;
+          d.appendChild(el);
+        });
+        sideRow(d, b.note);
+        kids.appendChild(d);
+      }
+      row.querySelector(".tc").onclick = e => {
+        e.stopPropagation();
+        row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+      };
+      sideRow(row, b.note);
+      box.appendChild(row); box.appendChild(kids);
     }
-    row.querySelector(".tc").onclick = e => {
-      e.stopPropagation();
-      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
-    };
-    sideRow(row, b.note);
-    box.appendChild(row); box.appendChild(kids);
-  }
-  const UL_SHOW = 200;
-  if (isCv) { rpInfo = "bl:" + bl.length + "|ul:0"; return; }   // a canvas: linked mentions only
-  // R10.5 Unlinked mentions: plain-text hits of this note's name in other
-  // notes (collapsed like Obsidian); each row = the line with the hit marked +
-  // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
-  // to Linked mentions on the pane's next refresh)
-  const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
-  if (gen !== blGen) return;              // issue #176
-  rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
-  if (!n) return;
-  const uh = document.createElement("div");
-  uh.className = "rhead ulhead" + (ulOpen ? " open" : ""); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut");
-  uh.innerHTML = '<span class="tc">' + CHEV + '</span>Unlinked mentions<span class="scount"></span>';
-  uh.querySelector(".scount").textContent = ul.length;
-  const ub = document.createElement("div");
-  ub.hidden = !ulOpen;
-  uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut"); ub.hidden = !ulOpen; updateTitle(); };
-  box.appendChild(uh); box.appendChild(ub);
-  if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
-  // audit #12: a note named in 75k places used to build 75k rows here (~2 s, even
-  // collapsed). The count above stays exact; the list shows the first UL_SHOW.
-  for (const m of ul.slice(0, UL_SHOW)) {
-    const row = document.createElement("div");
-    row.className = "blnote ulnote"; row.dataset.ol = "ut:" + m.note;
-    row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
-    row.querySelector(".bln").textContent = m.note;
-    row.title = "line " + (m.line + 1);
-    const d = document.createElement("div");
-    d.className = "blline"; d.dataset.ol = "ul:" + m.note;
-    // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
-    // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
-    const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
-    if (i >= 0 && i < t.length && w > 0) {
-      d.appendChild(document.createTextNode(t.slice(0, i)));
-      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
-      d.appendChild(document.createTextNode(t.slice(i + w)));
-    } else d.textContent = t;
-    sideRow(d, m.note);
-    sideRow(row, m.note);
-    row.querySelector(".ullink").onclick = async e => {
-      e.stopPropagation();
-      /* F1 (lostwrite-ui): Link REWRITES A NOTE ON DISK, so it is a write seam and
-         obeys the same rule as saveBuf — a write that did not land is VISIBLE and
-         nothing repaints as if it had. The catch here used to log the Err to the
-         devtools console — which nobody is looking at — and then the three lines
-         below ran anyway: rowSrc dropped (so an open copy
-         of the note re-reads and shows the OLD text as if refreshed), the backlinks
-         pane repainted the mention as LINKED, and the title republished. On a
-         refused write (EROFS/ENOSPC/EACCES) that painted the link the user asked
-         for and never got. saveFailed() is the existing F1 surface (#saveerr banner
-         + [saveerr:<note>] census token) — reused, not re-invented. */
-      try {
-        await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len });
-      } catch (err) { saveFailed(m.note, err); return; }   // no optimistic repaint on the failure path
-      saveCleared();                                       // this write DID land: retire an older banner
-      for (const gg of groups()) if (gg.view) gg.view.rowSrc = null;  // the linked note may be open elsewhere
-      await rBacklinks(n); updateTitle();
-    };
-    ub.appendChild(row); ub.appendChild(d);
-  }
-  if (ul.length > UL_SHOW) {
-    const more = document.createElement("div");
-    more.className = "rempty ulmore";
-    more.textContent = "\u2026 and " + (ul.length - UL_SHOW) + " more";
-    ub.appendChild(more);
-  }
+    const UL_SHOW = 200;
+    if (isCv) return;                     // a canvas: linked mentions only
+    // R10.5 Unlinked mentions: plain-text hits of this note's name in other
+    // notes (collapsed like Obsidian); each row = the line with the hit marked +
+    // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
+    // to Linked mentions on the pane's next refresh)
+    if (!n) return;
+    const uh = document.createElement("div");
+    uh.className = "rhead ulhead" + (ulOpen ? " open" : ""); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut");
+    uh.innerHTML = '<span class="tc">' + CHEV + '</span>Unlinked mentions<span class="scount"></span>';
+    uh.querySelector(".scount").textContent = ul.length;
+    const ub = document.createElement("div");
+    ub.hidden = !ulOpen;
+    uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut"); ub.hidden = !ulOpen; updateTitle(); };
+    box.appendChild(uh); box.appendChild(ub);
+    if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
+    // audit #12: a note named in 75k places used to build 75k rows here (~2 s, even
+    // collapsed). The count above stays exact; the list shows the first UL_SHOW.
+    for (const m of ul.slice(0, UL_SHOW)) {
+      const row = document.createElement("div");
+      row.className = "blnote ulnote"; row.dataset.ol = "ut:" + m.note;
+      row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
+      row.querySelector(".bln").textContent = m.note;
+      row.title = "line " + (m.line + 1);
+      const d = document.createElement("div");
+      d.className = "blline"; d.dataset.ol = "ul:" + m.note;
+      // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
+      // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
+      const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
+      if (i >= 0 && i < t.length && w > 0) {
+        d.appendChild(document.createTextNode(t.slice(0, i)));
+        const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
+        d.appendChild(document.createTextNode(t.slice(i + w)));
+      } else d.textContent = t;
+      sideRow(d, m.note);
+      sideRow(row, m.note);
+      row.querySelector(".ullink").onclick = async e => {
+        e.stopPropagation();
+        /* F1 (lostwrite-ui): Link REWRITES A NOTE ON DISK, so it is a write seam and
+           obeys the same rule as saveBuf — a write that did not land is VISIBLE and
+           nothing repaints as if it had. The catch here used to log the Err to the
+           devtools console — which nobody is looking at — and then the three lines
+           below ran anyway: rowSrc dropped (so an open copy
+           of the note re-reads and shows the OLD text as if refreshed), the backlinks
+           pane repainted the mention as LINKED, and the title republished. On a
+           refused write (EROFS/ENOSPC/EACCES) that painted the link the user asked
+           for and never got. saveFailed() is the existing F1 surface (#saveerr banner
+           + [saveerr:<note>] census token) — reused, not re-invented. */
+        try {
+          await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len });
+        } catch (err) { saveFailed(m.note, err); return; }   // no optimistic repaint on the failure path
+        saveCleared();                                       // this write DID land: retire an older banner
+        for (const gg of groups()) if (gg.view) gg.view.rowSrc = null;  // the linked note may be open elsewhere
+        await rBacklinks(n); updateTitle();
+      };
+      ub.appendChild(row); ub.appendChild(d);
+    }
+    if (ul.length > UL_SHOW) {
+      const more = document.createElement("div");
+      more.className = "rempty ulmore";
+      more.textContent = "\u2026 and " + (ul.length - UL_SHOW) + " more";
+      ub.appendChild(more);
+    }
+  });
 }
 /* outlinks census (docs/outlinks/recon.md). [olf:<note>|ae:<where>] = the note leaf the
    right-sidebar panes describe (rLeaf) and where DOM focus is (aeWhere, same codes as
@@ -592,33 +621,41 @@ function sideRow(el, name, create) {
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
   const box = $("outlist"), head = $("outhead"), gen = ++outGen;
-  box.textContent = ""; head.textContent = "";
-  const out = n ? await inv("outgoing", { name: n }) : [];
+  let out;                                // #315: fetch first, the painted rows stay until the swap
+  try { out = n ? await inv("outgoing", { name: n }) : []; }
+  catch (e) { if (gen === outGen) rpDrop(box, head); throw e; }
   if (gen !== outGen) return;             // issue #176: a newer render owns the pane
-  head.textContent = "Links"; rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
-  const c = document.createElement("span");
-  c.className = "scount"; c.textContent = out.length; head.appendChild(c);
-  if (!out.length) return rEmpty(box, "No outgoing links.");
-  for (const o of out) {
-    const d = document.createElement("div");
-    d.className = "outrow" + (o.target ? "" : " unresolved"); d.dataset.ol = (o.target ? "o:" + o.target : "u:" + o.text);
-    d.textContent = o.text;
-    sideRow(d, o.target || o.text, !o.target);
-    box.appendChild(d);
-  }
+  rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
+  rpSwap(box, head, JSON.stringify(["out", n, out]), (box, head) => {
+    head.appendChild(document.createTextNode("Links"));
+    const c = document.createElement("span");
+    c.className = "scount"; c.textContent = out.length; head.appendChild(c);
+    if (!out.length) return rEmpty(box, "No outgoing links.");
+    for (const o of out) {
+      const d = document.createElement("div");
+      d.className = "outrow" + (o.target ? "" : " unresolved"); d.dataset.ol = (o.target ? "o:" + o.target : "u:" + o.text);
+      d.textContent = o.text;
+      sideRow(d, o.target || o.text, !o.target);
+      box.appendChild(d);
+    }
+  });
 }
 // Tags: every vault tag sorted by count desc then name; nested a/b tags fold
 // into a collapsible tree (parent row count = own + kids); click a row ->
 // search pane prefilled "tag:<name>"
 async function rTags() {
-  const box = $("taglist"), head = $("tagshead");
-  box.textContent = ""; head.textContent = "";
-  const counts = await inv("tag_counts").catch(() => ({}));
+  const box = $("taglist"), head = $("tagshead"), gen = ++tagGen;
+  const counts = await inv("tag_counts").catch(() => ({}));   // #315: fetch first, the painted rows stay
+  if (gen !== tagGen) return;             // #315: a newer render owns the pane (two in flight both appended)
   const names = Object.keys(counts);
-  head.textContent = "Tags"; rpInfo = "tags:" + names.length;
-  const c = document.createElement("span");
-  c.className = "scount"; c.textContent = names.length; head.appendChild(c);
-  if (!names.length) return rEmpty(box, "No tags.");
+  rpInfo = "tags:" + names.length;
+  const paint = fill => rpSwap(box, head, JSON.stringify(["tags", counts]), (box, head) => {
+    head.appendChild(document.createTextNode("Tags"));
+    const c = document.createElement("span");
+    c.className = "scount"; c.textContent = names.length; head.appendChild(c);
+    if (!names.length) return rEmpty(box, "No tags.");
+    fill(box);
+  });
   const root = { own: 0, kids: new Map() };
   for (const n of names) {
     let cur = root, path = "";
@@ -654,7 +691,7 @@ async function rTags() {
       row.onclick = () => tagSearch(k.name);
     }
   };
-  build(box, root, 0);
+  paint(b => build(b, root, 0));
 }
 /* #119 the Properties view (stock core plugin "Properties view"): every vault property
    with the number of notes holding it, sorted by name or frequency (ui/props.js
@@ -718,11 +755,13 @@ function tagSearch(tag) {                  // pane row / inline pill -> search "
 // group's view to that heading; the heading at the viewport top is .active
 let tocHeads = [], ulOpen = false;
 async function rOutline(n) {
-  const box = $("toclist");
-  box.textContent = "";
-  tocHeads = n ? await inv("outline", { name: n }) : [];
+  const box = $("toclist"), gen = ++tocGen;
+  let heads;                               // #315: fetch first, the painted rows stay until the swap
+  try { heads = n ? await inv("outline", { name: n }) : []; }
+  catch (e) { if (gen === tocGen) rpDrop(box, null); throw e; }
+  if (gen !== tocGen) return;              // #315: a newer render owns the pane
+  tocHeads = heads;
   rpInfo = "toc:" + tocHeads.length;
-  if (!tocHeads.length) return rEmpty(box, "No headings.");
   // build tree: a heading's children = following headings with a deeper level
   const build = (parent, i, minLv) => {
     while (i < tocHeads.length && tocHeads[i].level > minLv) {
@@ -747,8 +786,11 @@ async function rOutline(n) {
     }
     return i;
   };
-  build(box, 0, 0);
-  tocSync();
+  rpSwap(box, null, JSON.stringify(["toc", n, heads]), b => {
+    if (!tocHeads.length) return rEmpty(b, "No headings.");
+    build(b, 0, 0);
+  });
+  tocSync();                               // (returns at once without headings, as before)
 }
 /* tocjump: the outline belongs to rLeaf (the note leaf rNote() rendered it for),
    NOT to the focused group — with the linked local graph focused, fg() is the
