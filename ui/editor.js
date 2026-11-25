@@ -2556,6 +2556,70 @@ Object.assign(Ed, {
     })), { userEvent: "input.type", scrollIntoView: true });
     return true;
   },
+  /* #291: document-navigation keys -> { to, extend } or null (null = not ours: the key goes on).
+     to: "docStart" | "docEnd" | "lineUp" | "lineDown". Measured on stock 1.13.7 (Linux, black box,
+     harness phase navkeysstock, 3200-line note, live preview + source):
+       Ctrl+Home / Ctrl+End    document start / end, scrolled into view   (+Shift: extend)
+       Ctrl+Up / Ctrl+Down     one SOURCE line up / down (not a wrapped row), same column
+                               clamped to the line, scrolled only when it leaves the view
+     macOS (platform convention, cannot run on the Linux box: unit-tested mapping only):
+       Cmd+Up / Cmd+Down       document start / end (+Shift: extend); Cmd+Home/End as before
+       Ctrl+Up / Ctrl+Down     not ours (the system's Mission Control / App windows)
+     PageDown / PageUp       one page down / up, the view scrolls with the caret (stock src: L1 -> L11
+                             -> L32, top L2 -> L13 -> L31), every platform (+Shift: extend); the
+                             native page move walks the rendered DOM as well (ours: L1 -> L2 -> L9)
+     Alt combinations and Ctrl+Shift+Up/Down are not ours (native/plugins, unchanged). */
+  navKey(e, mac) {
+    if (!e || e.altKey || e.isComposing) return null;
+    const k = e.key, ext = !!e.shiftKey, cmd = !!e.metaKey, ctl = !!e.ctrlKey;
+    if (k === "PageDown" || k === "PageUp") return ctl || cmd ? null : { to: k === "PageDown" ? "pageDown" : "pageUp", extend: ext };
+    if (k === "Home" || k === "End") {
+      // as before #291: either modifier is the document start / end, on every platform
+      return ctl || cmd ? { to: k === "End" ? "docEnd" : "docStart", extend: ext } : null;
+    }
+    if (k !== "ArrowUp" && k !== "ArrowDown") return null;
+    const down = k === "ArrowDown";
+    if (mac) return cmd && !ctl ? { to: down ? "docEnd" : "docStart", extend: ext } : null;
+    return ctl && !cmd && !ext ? { to: down ? "lineDown" : "lineUp", extend: false } : null;
+  },
+  isMac() { return typeof navigator !== "undefined" && /Mac/.test(navigator.platform || ""); },
+  /* #291: the target of a navKey result in (line,col), from the caret's head f and the lines L.
+     lo = the first line the caret may stand on (live preview: the line after the Properties block,
+     stock lands Ctrl+Home there; 0 otherwise). goal = the column a run of Ctrl+Up/Down keeps
+     (stock: the column survives a shorter or empty line in between), default f.c. */
+  navTarget(nav, f, L, lo, goal) {
+    const last = L.length - 1, top = Math.max(0, Math.min(last, lo | 0));
+    if (nav.to === "docStart") return { l: top, c: 0 };
+    if (nav.to === "docEnd") return { l: last, c: L[last].length };
+    const l = Math.max(Math.min(top, f.l), Math.min(last, f.l + (nav.to === "lineDown" ? 1 : -1)));
+    if (l === f.l) return { l: f.l, c: f.c };            // first / last line: the caret stays
+    return { l, c: Math.min(goal == null ? f.c : goal, L[l].length) };
+  },
+  // #291: live preview's first caret line = the line after the atomic Properties block (0 = none)
+  navBodyStart(g) {
+    const cm = Ed.cm(g), F = g && g.view && g.view._propsF;
+    if (!cm || !F) return 0;
+    const d = cm.state.field(F, false); if (!d || !d.size) return 0;
+    let end = -1; d.between(0, 0, (a, b) => { end = b; });
+    return end < 0 || end >= cm.state.doc.length ? 0 : cm.state.doc.lineAt(end).number;   // 1-based line of the end = 0-based next line
+  },
+  navRun(g, nav) {
+    const cm = Ed.cm(g); if (!cm) return;
+    if (nav.to === "pageDown" || nav.to === "pageUp") {   // CM6's page commands measure the scroller and scroll it
+      Ed._navGoal = null;
+      const dn = nav.to === "pageDown";
+      (nav.extend ? (dn ? CMc.selectPageDown : CMc.selectPageUp) : (dn ? CMc.cursorPageDown : CMc.cursorPageUp))(cm);
+      return;
+    }
+    const f = Ed.focusPos(g), L = Ed.lines(g), head = cm.state.selection.main.head;
+    const line = nav.to === "lineUp" || nav.to === "lineDown";
+    const G = Ed._navGoal, goal = line && G && G.cm === cm && G.head === head ? G.col : f.c;
+    const t = Ed.navTarget(nav, f, L, Ed.navBodyStart(g), goal);
+    if (nav.extend) Ed.extendTo(g, t.l, t.c); else Ed.place(g, t.l, t.c);
+    Ed._navGoal = line ? { cm, head: cm.state.selection.main.head, col: goal } : null;
+    // the view follows the caret (stock): nearest edge, so a move inside the view does not scroll
+    cm.dispatch({ effects: CMv.EditorView.scrollIntoView(cm.state.selection.main.head, { y: "nearest" }) });
+  },
   onKey(g, e) {
     if (!g || e.isComposing) return;
     if (typeof acKeydown === "function") { acKeydown(g, e); if (e.defaultPrevented) return; }
@@ -2576,10 +2640,15 @@ Object.assign(Ed, {
     if (k === "a" && mod) { e.preventDefault(); return Ed.selectAll(g); }
     if (k === "z" && mod) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (k === "y" && mod) { e.preventDefault(); return Ed.redo(g); }
+    // #291: the document-navigation keys run here, on the document (Ed.navKey), never as the
+    // webview's native caret move: that one only walks the RENDERED DOM, and CM6 renders a
+    // viewport, so on a note longer than it the caret stopped at the viewport edge
+    const nav = Ed.navKey(e, Ed.isMac());
+    if (nav) { e.preventDefault(); Ed.cmStart(); Ed.navRun(g, nav); return Ed.cmEnd(g); }
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
-      // Ctrl/Cmd+Home/End: document start / end; bare Home/End: the line's (smart) home / end
+      // bare Home/End: the line's (smart) home / end (Ctrl/Cmd+Home/End are Ed.navKey's)
       const f = Ed.focusPos(g) || s.b, L = Ed.lines(g), end = e.key === "End";
       const l = mod ? (end ? L.length - 1 : 0) : f.l;
       const c = mod ? (end ? L[l].length : 0) : end ? L[l].length : (f.c === Ed.homeCol(g, l) ? 0 : Ed.homeCol(g, l));
