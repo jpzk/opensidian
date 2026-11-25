@@ -102,8 +102,14 @@ jq -r --arg allow "$allow" --slurpfile pol "$policy" '
     (($allow | split("\n") | map(select(length > 0))) + ($p.extra_allow // [])) as $A
   | ($p.exceptions // []) as $X
   | ([.dependencies // [] | .[] | select(.ref == $c0."bom-ref") | .dependsOn // [] | .[] | select(test("^opensidian([-@]|$)"))]) as $parts
-  | (.metadata.component | check($A; $X; true; false)),
-    (.components // [] | .[] | check($A; $X; false; (."bom-ref" | IN($parts[]))))
+  # nested components (components[].components[], any depth; #306): checked with their OWN purl/bom-ref
+  # for exception scoping and never as a part (the exception of a part root does not reach its children)
+  | def nested: if has("components") then
+        if (.components | type) != "array" then "VIOL\t\(."bom-ref" // .name // "?")\tcomponents is not an array"
+        else .components[] | (check($A; $X; false; false), nested) end
+      else empty end;
+    (.metadata.component | (check($A; $X; true; false), nested)),
+    (.components // [] | .[] | (check($A; $X; false; (."bom-ref" | IN($parts[]))), nested))
   end
 ' "$sbom" >"$t/res" 2>"$t/err" || die "jq failed: $(cat "$t/err")"
 
@@ -111,7 +117,8 @@ if grep -q '^POLICY' "$t/res"; then
   cut -f2- "$t/res" | sed "s|^|license-policy: $policy: |" >&2; exit 1
 fi
 n=$(grep -c . "$t/res" || true); [ "$n" -gt 0 ] || die "no license verdicts (empty result)"
-comps=$(jq '(.components // []) | length' "$sbom")
+comps=$(jq 'def all_c: .[] | ., (.components // [] | if type == "array" then all_c else empty end);
+             [.components // [] | all_c] + [.metadata.component.components // [] | all_c] | length' "$sbom")   # incl. nested
 if grep -q '^VIOL' "$t/res"; then
   grep '^VIOL' "$t/res" | cut -f2- | sed 's/\t/: /' | sed 's/^/license-policy: DENY /' >&2
   echo "license-policy: FAILED $(grep -c '^VIOL' "$t/res") violation(s) in $sbom ($comps components + root)" >&2

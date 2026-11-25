@@ -50,6 +50,18 @@ red "release: dirty"       "dirty is"                '.metadata.properties[1].va
 red "release: commit"      "commit not"              '.metadata.properties[0].value = "HEAD"' --release
 red "release: no purl"     "no purl"                 'del(.metadata.component.purl)' --release
 red "two problems listed"  "2 problem"               '.bomFormat = "x" | .specVersion = "1"'
+# nested components (CycloneDX components[].components[], e.g. code compiled into libwebkit2gtk, #299):
+# their bom-refs are real refs (dependsOn may name them), take part in the uniqueness check, and each
+# nested component gets the same per-component checks as a top-level one.
+jq '.components[0].components = [{"type":"library","bom-ref":"a/embedded:e","name":"e","licenses":[{"license":{"id":"BSD-3-Clause"}}]}]
+    | .dependencies[0].dependsOn += ["a/embedded:e"]' "$t/good.json" >"$t/nested.json"
+green "$t/nested.json"; green --release "$t/nested.json"
+red "nested duplicate bom-ref" "duplicate bom-ref b"  '.components[0].components = [{"type":"library","bom-ref":"b","name":"e"}]'
+red "nested dup with root"     "duplicate bom-ref root" '.components[0].components = [{"type":"library","bom-ref":"root","name":"e"}]'
+red "nested no name"           "missing name"         '.components[0].components = [{"type":"library","bom-ref":"a/embedded:e"}]'
+red "nested bad type"          "bad type"             '.components[0].components = [{"type":"lib","bom-ref":"a/embedded:e","name":"e"}]'
+red "nested not an array"      "components not an array" '.components[0].components = {"type":"library"}'
+red "dangling nested-looking ref" "names no component" '.dependencies[0].dependsOn += ["a/embedded:zzz"]'
 echo '[]' >"$t/arr.json"; set +e; bash "$V" "$t/arr.json" 2>/dev/null; rc=$?; set -e
 [ "$rc" -eq 1 ] && ok "RED not an object (rc=1)" || bad "not an object rc=$rc"
 set +e; bash "$V" 2>/dev/null; rc=$?; set -e; [ "$rc" -eq 2 ] && ok "usage rc=2" || bad "usage rc=$rc"

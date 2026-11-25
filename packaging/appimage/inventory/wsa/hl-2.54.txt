@@ -1,0 +1,116 @@
+     WebKitGTK 2.54 highlights - The WebKitGTK Project
+                    planet.webkitgtk.org
+                    webkit.org
+                    GNOME.org
+                WebKitGTK
+WebKitGTK 2.54 highlights
+The WebKit team at Igalia is happy to announce a new release series of WebKitGTK. The main highlight of this release is a new web process compositor built on the Skia graphics library, replacing the TextureMapper-based one. Read on for the details, along with a summary of the other most noteworthy changes from the latest release cycle.
+Graphics improvements
+A new Skia-based compositor
+This cycle brings the largest overhaul of the rendering architecture since the adoption of Skia for 2D rendering: the web process compositor now uses the Skia API instead of the venerable TextureMapper. Layers are composed into the final frame using Skia, which allows sharing a single rendering infrastructure across the whole graphics stack and enables several optimizations:
+  Tile contents are recorded into deferred display lists and replayed on the compositor thread, so painting worker threads no longer need to touch the GPU at all.
+  Batched painting groups the drawing of many layers into a single Skia call, which improves performance on pages with many layers that can be painted in the same operation.
+  Unnecessary clip operations are avoided whenever possible, keeping the batched paths effective.
+Beyond raw performance, expressing compositing as Skia draw calls made several features simpler and faster: filters and masks no longer require intermediate offscreen surfaces in most cases, and CSS blend modes, which TextureMapper never implemented, now work in composited layers. And since Skia can target both OpenGL and Vulkan, the compositor no longer stands in the way of Vulkan-based rendering in the future.
+The consolidation on Skia goes beyond compositing: the option to use Cairo for 2D rendering has been removed, making Skia the only 2D rendering implementation. Rendering tiles in the main thread is no longer supported either, so threaded rendering is now the only tile painting path.
+Damage-aware compositing
+Damage tracking has seen substantial work this cycle. The damage is the region of the view that changed since the previous frame and therefore requires repainting; Paweł Lampe’s introduction to damage propagation covers the concept in depth. Compositing itself now uses this information, and does so by default: each draw the compositor issues is restricted to the damaged rectangles, in a way that preserves the batched painting described above. A new DamageRectangleThreshold preference allows tuning the balance between damage precision and bookkeeping cost.
+The performance impact
+What drove the compositor rewrite was making it simpler and easier to maintain, as Carlos García Campos explained at the Web Engines Hackfest 2026; performance came later, since TextureMapper started out ahead after more than a decade of tuning. By now the optimization work has more than closed that gap. WebKitGTK shares the compositor and all of these optimizations with WPE WebKit, whose 2.54 announcement measures their cumulative effect on a Raspberry Pi 4: MotionMark scores improve by around 36%, by around 45% on the composition-focused variant of the benchmark, and all of that while keeping the GPU markedly less busy.
+Benchmarks understate one part of the work, though. MotionMark animates nearly the entire viewport, so there is hardly anything for damage tracking to save. Real-world content behaves differently: usually a small area of the page is changing while everything else stays still, and skipping all of that quiet area cuts the per-frame GPU work to a fraction.
+Other rendering improvements
+A GPU atlas is now used for batched raster image uploads, regardless of the compositor in use, and it is reused across frames when the image set does not change, avoiding needless texture allocation and pixel uploads.
+Asynchronous scrolling is smoother: several synchronization issues between the main, scrolling, and compositing threads that caused glitches while scrolling have been fixed, and the scrolling thread no longer blocks the compositor to flush its state, removing input-latency stalls on pages with many layers.
+More animations can now run on the compositing thread: CSS animations using the steps() and linear() timing functions no longer force main-thread animation.
+Finally, the rendering mode used when hardware acceleration is not available has been reworked and unified with WPE’s: it now always uses damage information to limit repaints, produces at most one frame per vertical blank, and uses multisample anti-aliasing when available.
+API changes
+  A new API for page icons: webkit_favicon_database_get_page_icons() retrieves all the icons declared by a page as a list of WebKitImage objects, and the WebKitWebView:page-icons property exposes the icons of the currently loaded page. Each icon implements GLoadableIcon, so applications can pick the size that best fits their needs. Consequently, the previous single-favicon API (webkit_web_view_get_favicon(), the WebKitWebView:favicon property, and the WebKitFaviconDatabase getters and favicon-changed signal) are deprecated. Both changes apply to the GTK4 API only.
+  A new WebKitWebView:magnification property to handle visual scaling of the page, independent of the zoom level; it is also updated when the user pinch-zooms on a touchscreen.
+  WebKitWebsitePolicies:custom-user-agent allows setting a custom User-Agent for a single navigation, by passing the policies to webkit_policy_decision_use_with_policies().
+  webkit_feature_list_find() is a convenience function to look up a feature by identifier in a feature list.
+  In the GTK3 API, the WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND hardware acceleration policy is deprecated: hardware acceleration is now always used, and the on-demand policy behaves like WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS.
+Multimedia improvements
+Let’s start with a transition notice: the GStreamer-based WebRTC backend is being replaced with a LibWebRTC-based implementation, which is expected to be available in the next release cycle. As a consequence, WebRTC support, which in previous releases required building with experimental features enabled, is disabled in 2.54.
+The rest of the multimedia work moved forward at full speed:
+  Resource usage on pages containing many videos has been improved, by stopping the pipelines of muted, invisible video elements.
+  Media capability reporting is more accurate: non-AAC mp4a codecs (MP3, AC-3, E-AC-3) are correctly reported as supported when decoders are present, xHE-AAC support is auto-detected, and Dolby AC-4 is advertised for MSE on systems that support it.
+  Video decoding limits are now respected in MediaCapabilities queries, and can be overridden with the WEBKIT_GST_VIDEO_DECODING_LIMIT environment variable.
+  Experimental support for SourceBuffer.changeType() has been added to the MSE backend, along with a fix for playback stalling at ad transitions on Twitch.
+On top of this, the GStreamer backend has received a substantial amount of memory-safety and lifetime-correctness work that translates into a more stable multimedia experience.
+WebXR
+The OpenXR-based WebXR implementation continues to progress. The main highlight is support for the WebXR Layers API: quad, cylinder, equirect, and cube layers are now implemented, in addition to the already supported projection layers. Layers can be backed by texture arrays, and XRSession.maxRenderLayers lets content query the compositor’s layer budget.
+The backend has also been decoupled from OpenGL ES through an abstract graphics binding, paving the way for a future Vulkan-based binding.
+WebXR support remains a build-time option, enabled with the ENABLE_WEBXR=ON CMake option; the Layers support additionally requires ENABLE_WEBXR_LAYERS=ON.
+Web Platform support
+As usual, this list is not exhaustive as WebKit continuously progresses in its support for new standards. Some of the highlights for this release are:
+  The Temporal API, a modern replacement for Date, is now enabled.
+  WebAssembly JavaScript Promise Integration (JSPI) is now enabled, along with the WebAssembly Multi-Memory and Relaxed SIMD proposals.
+  Customizable select elements (appearance: base-select) are now supported.
+  The CloseWatcher API and the closedby attribute for &lt;dialog&gt; are now enabled.
+  CSS scroll anchoring is now enabled.
+  The CSS @function rule and the if() function are now available.
+  Advanced attr() substitution is now available.
+  The scrollbar-color CSS property is now supported.
+  The Gamepad API now supports rumble through vibrationActuator, implemented with libmanette.
+  The Origin-Agent-Cluster header is now supported.
+  Transferable streams and ReadableStream.from() are now enabled.
+  IndexedDB getAllRecords() is now supported.
+  Time zone changes in the host system are now picked up at runtime by Date and Intl.
+Web content also integrates better with the desktop settings: the prefers-reduced-motion media query now follows the dedicated reduced-motion setting introduced in GNOME 50, prefers-contrast is implemented for the first time in the GTK4 port, and prefers-color-scheme now honors the dark style preference there as well.
+What’s new for WebKit developers?
+WebKit can now use mimalloc as its memory allocator, as an alternative to its own bmalloc. For now it is the default only on some architectures (32-bit ARM, MIPS, RISC-V, and builds supporting 64 KB memory pages); everywhere else bmalloc remains the default, and mimalloc can be enabled with the USE_MIMALLOC build option.
+Logging now falls back to the standard error output when journald is not reachable, which is common in minimal containers, and the new WEBKIT_DEBUG_OUTPUT environment variable allows choosing the log destination explicitly.
+Profile-guided optimization is now supported in regular CMake builds with Clang, through the ENABLE_LLVM_PROFILE_GENERATION and USE_PGO_PROFILE options.
+Finally, a note for packagers: building WebKitGTK now requires Ninja, as the CMake Makefile generator is no longer supported.
+Other notes
+WebDriver automation now works regardless of which GTK version of WebKitGTK an application uses: the interaction events (keyboard, mouse, and wheel) are handled even when the application runs a build of WebKitGTK different from the one providing the WebDriver binary.
+On the localization front, a new Kazakh translation has been added, and the Brazilian Portuguese, Georgian, Japanese, Serbian, Slovenian, and Swedish translations have been updated.
+Looking forward to 2.56
+The 2.56 release series will bring even more improvements, and we expect it to be released during the spring of 2027. Until then!
+                        Latest News
+                                    &#8227; WebKitGTK 2.54.3 released!
+                                        18 NOVEMBER 2026
+                                    &#8227; WebKitGTK 2.54.2 released!
+                                        23 OCTOBER 2026
+                            (more)
+                        Security Advisories
+                                &#8227; WebKitGTK and WPE WebKit Security Advisory WSA-2026-0007
+                                    18 NOVEMBER 2026
+                                &#8227; WebKitGTK and WPE WebKit Security Advisory WSA-2026-0006
+                                    29 SEPTEMBER 2026
+                            (more)
+                        Releases
+                            &#8227; Stable tarball
+                                WebKitGTK 2.54.3
+                            &#8227; Unstable tarball
+                                WebKitGTK 2.53.92
+                            &#8227; All releases
+                            &#8227; Verifying releases
+                        Documentation
+                            &#8227; Stable API Reference
+                                WebKit
+                                WebKitWebProcessExtension
+                                JavaScriptCore
+                            &#8227; Unstable API Reference
+                                WebKit
+                                WebKitWebProcessExtension
+                                JavaScriptCore
+                            &#8227; Deprecated API Reference
+                                WebKit2
+                                WebKit1
+                        Contact
+                            &#8227; Mailing lists
+                                webkit-gtk
+                                webkit-help
+                                webkit-dev
+                            &#8227; #webkitgtk:matrix.org
+                            &#8227; @WebKitGTK on Mastodon
+                            &#8227; @WebKitGTK on Bluesky
+                        Contribute
+                            &#8227; File a bug
+                            &#8227; Get the code
+                            &#8227; How to build
+                            &#8227; How to submit code
+                            &#8227; Stable branch
+            Copyright © 2009‒2026 The WebKitGTK Team
+            Hosting kindly provided by Igalia.

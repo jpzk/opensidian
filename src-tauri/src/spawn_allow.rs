@@ -38,7 +38,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -141,13 +140,8 @@ pub fn fingerprint_parts(parts: &[&[u8]]) -> String {
 /// vault). Err = not fingerprintable -> no Always is offered, the question is asked as before.
 pub fn plugin_fingerprint(root: &Path, id: &str) -> Result<(String, String), String> {
     let read = |f: &str| -> Result<Vec<u8>, String> {
-        let p = crate::plugins::plugin_file_in(root, id, f, PLUGIN_FILE_MAX).map_err(|e| format!("{id}/{f}: {e}"))?.ok_or_else(|| format!("{id}/{f}: missing"))?;
-        let mut b = Vec::new();
-        std::fs::File::open(&p).and_then(|mut fh| fh.by_ref().take(PLUGIN_FILE_MAX + 1).read_to_end(&mut b)).map_err(|e| format!("{id}/{f}: {e}"))?;
-        if b.len() as u64 > PLUGIN_FILE_MAX {
-            return Err(format!("{id}/{f}: too big"));
-        }
-        Ok(b)
+        // #250: rule 5 + the fd read: the bytes hashed are the bytes of the inode that was checked
+        crate::plugins::plugin_read_in(root, id, f, PLUGIN_FILE_MAX).map_err(|e| format!("{id}/{f}: {e}"))?.ok_or_else(|| format!("{id}/{f}: missing"))
     };
     let (main, manifest) = (read("main.js")?, read("manifest.json")?);
     let version = serde_json::from_slice::<serde_json::Value>(&manifest).ok().and_then(|m| m["version"].as_str().map(String::from)).unwrap_or_default();

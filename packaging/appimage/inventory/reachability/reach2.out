@@ -1,0 +1,132 @@
+## webkit 2.52.6 skia CMakeLists context
+4:if (NOT WIN32 AND NOT PLAYSTATION)
+7:endif ()
+9:if (USE_SKIA_ENCODERS)
+11:endif ()
+13:if (ANDROID)
+15:endif ()
+46:    src/codec/SkCodec.cpp
+47:    src/codec/SkCodecColorProfile.cpp
+48:    src/codec/SkCodecImageGenerator.cpp
+49:    src/codec/SkColorPalette.cpp
+50:    src/codec/SkEncodedInfo.cpp
+51:    src/codec/SkExif.cpp
+52:    src/codec/SkGainmapInfo.cpp
+53:    src/codec/SkHdrAgtm.cpp
+54:    src/codec/SkHdrAgtmParse.cpp
+55:    src/codec/SkHdrMetadata.cpp
+56:    src/codec/SkImageGenerator_FromEncoded.cpp
+57:    src/codec/SkJpegCodec.cpp
+58:    src/codec/SkJpegDecoderMgr.cpp
+59:    src/codec/SkJpegMetadataDecoderImpl.cpp
+60:    src/codec/SkJpegSegmentScan.cpp
+61:    src/codec/SkJpegSourceMgr.cpp
+62:    src/codec/SkJpegUtility.cpp
+63:    src/codec/SkParseEncodedOrigin.cpp
+64:    src/codec/SkPixmapUtils.cpp
+65:    src/codec/SkPngCodec.cpp
+66:    src/codec/SkPngCodecBase.cpp
+67:    src/codec/SkPngCompositeChunkReader.cpp
+68:    src/codec/SkSampler.cpp
+69:    src/codec/SkSwizzler.cpp
+70:    src/codec/SkTiffUtility.cpp
+102:    src/core/SkBlurMaskFilterImpl.cpp
+544:    src/effects/SkEmbossMaskFilter.cpp
+606:    src/pdf/SkDeflate.cpp
+610:    src/pdf/SkPDFDocument.cpp
+809:if (WIN32)
+831:    if (ANDROID)
+846:    endif ()
+847:endif ()
+849:if (USE_LIBEPOXY)
+855:    if (USE_ANGLE_EGL)
+859:    endif ()
+860:endif ()
+862:if (USE_SKIA_ENCODERS)
+870:        src/encode/SkWebpEncoderImpl.cpp
+877:        src/encode/SkWebpEncoder_none.cpp
+879:endif ()
+881:if (USE_SKIA_OPENTYPE_SVG)
+883:    if (NOT EXPAT_FOUND)
+885:    endif ()
+963:endif ()
+987:if (WIN32)
+989:endif ()
+1048:if (COMPILER_IS_CLANG)
+1050:endif ()
+1073:if (WIN32)
+1077:endif ()
+1100:if (WTF_CPU_X86 OR WTF_CPU_X86_64)
+1108:endif ()
+1110:if (Skia_SkCMS_HSW_OPTS)
+codec files compiled:
+src/codec/SkCodecColorProfile.cpp src/codec/SkCodec.cpp src/codec/SkCodecImageGenerator.cpp src/codec/SkColorPalette.cpp src/codec/SkEncodedInfo.cpp src/codec/SkExif.cpp src/codec/SkGainmapInfo.cpp src/codec/SkHdrAgtm.cpp src/codec/SkHdrAgtmParse.cpp src/codec/SkHdrMetadata.cpp src/codec/SkImageGenerator_FromEncoded.cpp src/codec/SkJpegCodec.cpp src/codec/SkJpegDecoderMgr.cpp src/codec/SkJpegMetadataDecoderImpl.cpp src/codec/SkJpegSegmentScan.cpp src/codec/SkJpegSourceMgr.cpp src/codec/SkJpegUtility.cpp src/codec/SkParseEncodedOrigin.cpp src/codec/SkPixmapUtils.cpp src/codec/SkPngCodecBase.cpp src/codec/SkPngCodec.cpp src/codec/SkPngCompositeChunkReader.cpp src/codec/SkSampler.cpp src/codec/SkSwizzler.cpp src/codec/SkTiffUtility.cpp 
+pdf files compiled: 21
+## gdk-pixbuf 2.44.5
+gdk-pixbuf-2.44.5.tar.xz 69b93e09139b80c0ee661503d60deb5a5874a31772b5184b9cd5462a4100ab68
+69b93e09139b80c0ee661503d60deb5a5874a31772b5184b9cd5462a4100ab68  gdk-pixbuf-2.44.5.tar.xz
+io-android-bmp.c io-android-gif.c io-android-heif.c io-android-ico.c io-android-jpeg.c io-android-png.c io-android-utils.c io-android-utils.h io-android-wbmp.c io-android-webp.c io-ani-animation.c io-ani-animation.h io-ani.c io-bmp.c io-gdip-animation.c io-gdip-animation.h io-gdip-bmp.c io-gdip-emf.c io-gdip-gif.c io-gdip-ico.c io-gdip-jpeg.c io-gdip-native.h io-gdip-png.c io-gdip-propertytags.h io-gdip-tiff.c io-gdip-utils.c io-gdip-utils.h io-gdip-wmf.c io-gif-animation.c io-gif-animation.h io-gif.c io-glycin-avif.c io-glycin-bmp.c io-glycin-dds.c io-glycin-gif.c io-glycin-heic.c io-glycin-ico.c io-glycin-jpeg.c io-glycin-jxl.c io-glycin-openexr.c io-glycin-png.c io-glycin-pnm.c io-glycin-qoi.c io-glycin-raw.c io-glycin-svg.c io-glycin-tga.c io-glycin-tiff.c io-glycin-utils.c io-glycin-utils.h io-glycin-webp.c io-glycin-xbm.c io-glycin-xpm.c io-icns.c io-ico.c io-jpeg.c io-png.c io-pnm.c io-qtif.c io-tga.c io-tiff.c io-xbm.c io-xpm.c 
+option('png',
+option('tiff',
+option('jpeg',
+option('gif',
+option('glycin',
+option('android',
+option('others',
+option('builtin_loaders',
+217:if enabled_loaders.contains('glycin')
+218:  # List of formats supported by the glycin-based loader(s)
+219:  glycin_loader_formats = [
+240:  glycin_base_loader_sources = [ 'io-glycin-utils.c' ]
+242:  # Build the glycin loaders as static modules, if requested
+243:  if builtin_loaders.contains('glycin') or builtin_all_loaders
+244:    cflag_for_included_loader = ['-DINCLUDE_glycin']
+246:    glycin_loader_sources = glycin_base_loader_sources
+247:    foreach loader: glycin_loader_formats
+248:      glycin_loader_sources += 'io-glycin-@0@.c'.format(loader)
+251:    mod = static_library('staticpixbufloader-glycin',
+252:                         glycin_loader_sources,
+421:  loaders_cache = custom_target('loaders.cache',
+430:  loaders_dep = declare_dependency(sources: [ loaders_cache ])
+432:  loaders_cache = []
+## libjpeg-turbo 2.1.5
+ljt-2.1.5.tar.gz 254f3642b04e309fee775123133c6464181addc150499561020312ec61c1bf7c
+grep jpeg_fdct_16x16: 0 files
+libjpeg-turbo-2.1.5/jfdctint.c
+## libjxl 0.11.1
+jxl-0.11.1.tar.gz 1492dfef8dd6c3036446ac3b340005d92ab92f7d48ee3271b5dac1d36945d3d9
+libjxl-0.11.1/lib/extras/dec/decode.cc
+libjxl-0.11.1/lib/extras/dec/apng.cc
+libjxl-0.11.1/lib/extras/dec/apng.h
+libjxl-0.11.1/tools/benchmark/benchmark_codec_png.cc
+30:add_library(jxl_extras_internal-obj OBJECT
+69:  add_library(jxl_extras_jpegli-obj OBJECT
+86:  configure_file(extras/LICENSE.apngdis
+87:                 ${PROJECT_BINARY_DIR}/LICENSE.apngdis COPYONLY)
+131:add_library(jxl_extras_nocodec-internal STATIC EXCLUDE_FROM_ALL
+141:add_library(jxl_extras-internal STATIC EXCLUDE_FROM_ALL ${JXL_EXTRAS_OBJECTS})
+154:add_library(jxl_extras_codec STATIC
+6:57:  const size_t container_header_size = 48;
+23:380:  size_t box_contents_begin;
+24:381:  size_t box_contents_end;
+25:382:  size_t box_contents_size;
+26:383:  size_t box_size;
+## gst-plugins-base: rtcp parser location
+libgstallocators-1.0.so.0 0
+libgstapp-1.0.so.0 0
+libgstaudio-1.0.so.0 0
+libgstbase-1.0.so.0 0
+libgstfft-1.0.so.0 0
+libgstgl-1.0.so.0 0
+libgstpbutils-1.0.so.0 0
+libgstreamer-1.0.so.0 0
+libgsttag-1.0.so.0 0
+libgstvideo-1.0.so.0 0
+## webkit: printing path (PDF via skia?)
+SkPDF 10
+skia_pdf 0
+SkDocument 0
+print-to-pdf 0
+gtk_print_operation 0
+REACH2-DONE
+
