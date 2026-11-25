@@ -247,4 +247,23 @@ fn=$("$S" -C "$N" -t aarch64-linux-android -m "$t/meta.json" -j "$t/vendor.cdx.j
 check "no Gradle: no maven, WebView still listed" "$fn" \
   '([.components[] | select(.purl // "" | startswith("pkg:maven/"))] | length == 0) and any(.components[]; ."bom-ref" == "os:android-system-webview")'
 
+
+# --- the android checkout is DATA: no cargo config of its own (CodeQL 968/969, cache poisoning) ---
+# cargo metadata runs with cwd <checkout>/src-tauri, so cargo would honour <checkout>/.cargo/config*
+# and <checkout>/src-tauri/.cargo/config* (build.rustc-wrapper, build.rustc, ...): code from the
+# android branch running in the default-branch run. Every mode refuses such a checkout.
+for p in .cargo/config.toml .cargo/config src-tauri/.cargo/config.toml src-tauri/.cargo/config; do
+  K=$t/cfg-${p//\//_}; mk_checkout "$K"; mkdir -p "$K/$(dirname "$p")"
+  printf '[build]\nrustc-wrapper = "/bin/false"\n' >"$K/$p"
+  expect_fail "cargo config $p in the checkout refused (-L)" "cargo config" "$S" -L -C "$K"
+  expect_fail "cargo config $p in the checkout refused (sbom)" "cargo config" \
+    "$S" -C "$K" -t aarch64-linux-android -m "$t/meta.json" -j "$t/vendor.cdx.json" -o "$t/x"
+done
+K=$t/cfg-link; mk_checkout "$K"; mkdir -p "$t/elsewhere"; ln -s "$t/elsewhere" "$K/src-tauri/.cargo"
+ln -s /dev/null "$t/elsewhere/config.toml"
+expect_fail "cargo config reached through a symlinked .cargo refused" "cargo config" "$S" -L -C "$K"
+K=$t/cfg-dangling; mk_checkout "$K"; mkdir -p "$K/.cargo"; ln -s "$t/nowhere" "$K/.cargo/config.toml"
+expect_fail "dangling cargo config symlink refused" "cargo config" "$S" -L -C "$K"
+K=$t/cfg-audit; mk_checkout "$K"; mkdir -p "$K/src-tauri/.cargo"; echo '[advisories]' >"$K/src-tauri/.cargo/audit.toml"
+[ "$("$S" -L -C "$K")" = "$("$S" -L -C "$C")" ] && ok "a .cargo/audit.toml alone is not a cargo config" || bad "audit.toml refused"
 [ "$fails" -eq 0 ] && echo "android-sbom.test: all passed" || { echo "android-sbom.test: FAILED"; exit 1; }

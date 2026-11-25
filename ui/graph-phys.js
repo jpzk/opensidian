@@ -144,11 +144,88 @@
     return { run };
   }
 
+  // ---- the node drag, as pure steps (#279, main.js startGraph drives them from its mouse handlers) ----
+  // DRAG_SLOP2: a press only becomes a drag once the pointer is more than 4 px from the press point,
+  // so a click (or hand jitter) never pins or moves a node.
+  const DRAG_SLOP2 = 16;
+  // dragStep(d, moved, x, y): one pointer sample of a held press. d = { x, y }, the last APPLIED point
+  // (the press point until the drag starts), moved = the drag has already started. Returns null while
+  // inside the slop (d untouched), else { dx, dy } since the last applied point and moves d to (x, y).
+  function dragStep(d, moved, x, y) {
+    const dx = x - d.x, dy = y - d.y;
+    if (!moved && !(dx * dx + dy * dy > DRAG_SLOP2)) return null;
+    d.x = x; d.y = y;
+    return { dx, dy };
+  }
+  // holdQueue(d, dx, dy) / holdTake(d): the node travel of a held press waits for the next animation
+  // frame. Every sample past the slop is queued (summed into d.pdx, d.pdy); the frame takes the sum
+  // once (null when nothing is queued) and applies it before its physics and draw. A release drops
+  // what no frame took, as stock does: a press, one jump and a release inside one frame leave the node
+  // at the press point (the graph still re-flows: releaseHeld).
+  function holdQueue(d, dx, dy) { d.pdx = (d.pdx || 0) + dx; d.pdy = (d.pdy || 0) + dy; return d; }
+  function holdTake(d) {
+    const dx = d.pdx || 0, dy = d.pdy || 0;
+    d.pdx = 0; d.pdy = 0;
+    return dx || dy ? { dx, dy } : null;
+  }
+  // releaseHeat(st, held): the sim state a hold's end leaves (st = { alpha, alphaTarget, seekN, still,
+  // calm, kePeak, quiet }, changed in place and returned). The hold's alphaTarget 0.3 is dropped and the
+  // sim seeks rest again. held = a node was really moved: then the sim must re-flow around where it was
+  // dropped. While held alpha only CLIMBS toward 0.3 one step at a time, so a short drag (one frame
+  // applied the move, the release came before any physics step) ends with alpha still the rest value
+  // (~ALPHA_MIN), run() takes no step, the dropped node never moves and the sim goes quiet frozen
+  // (#279). A hold that moved a node therefore leaves alpha at least ALPHA_REST, the floor the settle
+  // seeks rest from; a longer drag (alpha already past it) is not changed, and nothing is reheated for
+  // a click or a pan (held false).
+  // releaseHeld(d, moved, pinned): does the end of this hold re-flow the sim (releaseHeat's held)? Yes when a
+  // node was really moved (pinned: a frame applied travel and set its pin), and also for a node GRAB that
+  // never reached a frame: a press on a node that went past the slop (moved) and was released before the
+  // next frame. Stock 1.13.7 (black-box, #279) leaves that node at the press point but re-flows the graph
+  // (pixel motion decaying for ~6 s, 6 runs). No for a click (never past the slop) or a pan (no node).
+  function releaseHeld(d, moved, pinned) { return !!pinned || !!(d && d.node && moved); }
+  function releaseHeat(st, held) {
+    st.alphaTarget = 0; st.calm = 0; st.kePeak = 0; st.seekN = 0; st.still = 0; st.quiet = false;
+    if (held && !(st.alpha >= ALPHA_REST)) st.alpha = ALPHA_REST;
+    return st;
+  }
+  // holdPlace(p, dx, dy): a frame applies the held travel (world units) to node p: pin on the first
+  // applied move (fx/fy), the node at the pin, at rest. p.mv counts the moves the main thread applied,
+  // so a batch copied out before one of them knows its copy of p is stale (landNodes).
+  function holdPlace(p, dx, dy) {
+    if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
+    p.fx += dx; p.fy += dy;
+    p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
+    p.mv = (p.mv | 0) + 1;
+    return p;
+  }
+  // nodesOut(N) / landNodes(N, o, X, Y, VX, VY): the node half of a physics batch (main.js batch/land).
+  // nodesOut copies the nodes out (pins from fx/fy, the move count in MV); landNodes writes a batch's
+  // result back: a node held now sits at its pin; a node pinned when the batch went out, or moved by a
+  // frame since (its move count changed: the travel was applied and the hold released while the batch
+  // was out, #292 review), stays where it was dropped; any other takes the batch's position and velocity.
+  function nodesOut(N) {
+    const n = N.length, o = { X: new Float64Array(n), Y: new Float64Array(n), VX: new Float64Array(n), VY: new Float64Array(n),
+                               PIN: new Uint8Array(n), FX: new Float64Array(n), FY: new Float64Array(n), MV: new Int32Array(n) };
+    for (let i = 0; i < n; i++) {
+      const p = N[i]; o.X[i] = p.x; o.Y[i] = p.y; o.VX[i] = p.vx; o.VY[i] = p.vy; o.MV[i] = p.mv | 0;
+      if (p.fx != null) { o.PIN[i] = 1; o.FX[i] = p.fx; o.FY[i] = p.fy; }
+    }
+    return o;
+  }
+  function landNodes(N, o, X, Y, VX, VY) {
+    for (let i = 0; i < N.length; i++) {
+      const p = N[i];
+      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
+      else if (o.PIN[i] || (p.mv | 0) !== o.MV[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
+      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
+    }
+  }
+
   if (typeof window === "undefined") {             // Worker: one engine, batches in, results out (arrays transferred both ways)
     const eng = create();
     self.onmessage = e => {
       const b = e.data, r = eng.run(b);
       self.postMessage({ id: b.id, r, st: b.st, X: b.X, Y: b.Y, VX: b.VX, VY: b.VY }, [b.X.buffer, b.Y.buffer, b.VX.buffer, b.VY.buffer]);
     };
-  } else window.GraphPhys = { create };
+  } else window.GraphPhys = { create, dragStep, holdQueue, holdTake, holdPlace, nodesOut, landNodes, releaseHeld, releaseHeat, DRAG_SLOP2, ALPHA_REST };
 })();

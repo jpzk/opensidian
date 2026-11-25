@@ -167,8 +167,12 @@ fn h340_dark_surface_border_and_ink_are_stock_greys() {
     assert_eq!(decl(&d, "--background-modifier-border").as_deref(), Some("var(--color-base-30, #333333)"), "stock dark border 51,51,51");
     assert_eq!(decl(&d, "--color-base-30").as_deref(), Some("#333333"), "the ramp row feeding the border must be the stock grey too");
     assert_eq!(decl(&d, "--text-chrome-alt").as_deref(), Some("#dadada"));
-    assert_eq!(decl(&d, "--text-chrome-faint").as_deref(), Some("#666666"));
-    assert_eq!(decl(&d, "--text-chrome-dim").as_deref(), Some("#666666"));
+    // #352 (on develop) derives the faint chrome ink from the theme --text-faint instead of a
+    // literal; #340's requirement is the dark value 102,102,102, so check what it resolves to.
+    assert_eq!(decl(&d, "--text-chrome-faint").as_deref(), Some("var(--text-faint)"));
+    assert_eq!(decl(&d, "--text-chrome-dim").as_deref(), Some("var(--text-faint)"));
+    assert_eq!(decl(&d, "--text-faint").as_deref(), Some("var(--color-base-50, #666666)"), "dark faint ink 102,102,102 (#340)");
+    assert_eq!(decl(&d, "--color-base-50").as_deref(), Some("#666666"), "dark faint ink 102,102,102 (#340)");
 }
 
 #[test]
@@ -177,7 +181,7 @@ fn h340_done_task_ink_is_text_muted_in_both_modes() {
     let d = rule(&c, "body");
     assert_eq!(decl(&d, "--checklist-done-color").as_deref(), Some("var(--text-muted)"),
         "stock done-task ink = --text-muted (dark 179,179,179 / light 92,92,92) (#340)");
-    let l = rule(&c, "body:where(.theme-light)");
+    let l = rule(&c, "body:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark))");
     assert_eq!(decl(&l, "--checklist-done-color"), None, "light must inherit the same wiring, not a second literal");
 }
 
@@ -200,7 +204,7 @@ fn h340_negative_no_catppuccin_literal_in_the_dark_default_block() {
 #[test]
 fn h340_negative_light_block_untouched() {
     let c = style();
-    let l = rule(&c, "body:where(.theme-light)");
+    let l = rule(&c, "body:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark))");
     assert_eq!(decl(&l, "--background-secondary-alt").as_deref(), Some("var(--color-base-05, #e5e5e5)"), "light is not part of #340");
     assert_eq!(decl(&l, "--background-modifier-border").as_deref(), Some("var(--color-base-30, #e4e4e4)"));
 }

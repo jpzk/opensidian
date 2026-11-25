@@ -1,0 +1,13 @@
+# #299 G2: npm packages compiled INTO vendored single-file bundles that ship no package-lock.
+# Read by vendor-sbom.sh (fails closed on a malformed/stale row or a marker missing from the bundle).
+# Columns (TAB-separated): host host_version file name version spdx_license registry_integrity marker evidence
+# Provenance (fetched on the coordinator box 2026-11-23, never guessed; logs in goal sbom-cve-b d-evidence):
+#  - MathJax-src 3.2.2 package-lock.json (https://raw.githubusercontent.com/mathjax/MathJax-src/3.2.2/package-lock.json,
+#    sha256 00f0b74ebffc35b314073e1aca264872284d5b55b0612cf74d530655a81dbb47): runtime dependencies esm (build-time
+#    loader, not bundled), mhchemparser 4.1.1, mj-context-menu 0.6.1, speech-rule-engine 4.0.6, with these integrities.
+#  - npm registry metadata (registry.npmjs.org/<name>/<version>): license Apache-2.0 for all three; integrity matches the lock.
+#  - speech-rule-engine node-only externals (commander, xmldom-sre, wicked-good-xpath) are loaded via
+#    SystemExternal.extRequire / CDN at runtime, not compiled into the bundle -> not components.
+mathjax	3.2.2	mathjax/tex-chtml-full.js	speech-rule-engine	4.0.6	Apache-2.0	sha512-Hqa4ywf7d3lX2YsnnE8BeEdqFyaTwPSyyVhVGWZlQw4XVh0NCijyVsMZD3I9HsG5JBuDXyRaMVVNZcGJlKbZxA==	r.VERSION="4.0.6",r.LOCALES	MathJax-src 3.2.2 package-lock + npm registry; bundle carries SRE Variables.VERSION 4.0.6
+mathjax	3.2.2	mathjax/tex-chtml-full.js	mj-context-menu	0.6.1	Apache-2.0	sha512-7NO5s6n10TIV96d4g2uDpG7ZDpIhMh0QNfGdJw/W47JswFcosz457wqz/b5sAKvl12sxINGFCn80NZHKwxQEXA==	return"CtxtMenu_"+t	MathJax-src 3.2.2 package-lock + npm registry; bundle carries the CtxtMenu_ class prefix of mj-context-menu
+mathjax	3.2.2	mathjax/tex-chtml-full.js	mhchemparser	4.1.1	Apache-2.0	sha512-R75CUN6O6e1t8bgailrF1qPq+HhVeFTM3XQ0uzI+mXTybmphy3b6h4NbLOYhemViQ3lUs+6CKRkC3Ws1TlYREA==	e.mhchemParser=r	MathJax-src 3.2.2 package-lock + npm registry; bundle exports mhchemParser (tex mhchem extension)

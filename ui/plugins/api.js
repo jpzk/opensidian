@@ -55,7 +55,7 @@
   const K = Object.create(null);
   K.host = host; K.be = be;
   // state several parts read and write (was: top-level lets of the one file)
-  K.st = { manifests: {}, enabledIds: [], trusted: false, layoutReady: false, vaultName: "", modelOn: false };
+  K.st = { manifests: {}, enabledIds: [], trusted: false, layoutReady: false, vaultName: "", modelOn: false, pins: {}, pinChanged: {}, pinError: null };   // pins: #251 id -> ok/new/changed/damaged/unreadable
   K.exportClasses = Object.create(null);   // name -> class: appended to the API after the fixed list, es5-callable
   K.exportValues = Object.create(null);    // name -> value (functions, objects): appended after the fixed values
   for (const [id, file] of ORDER) {
@@ -126,8 +126,9 @@
   host.apiGuarded = apiGuarded;
   Object.assign(host, {
     app, boot, enable, disable, setEnabled, setRestricted, refresh, censusTok, censusTick,
+    allow: ids => K.allow(ids),   // #251: Settings "Review and allow" (the native question; Rust measures and writes)
     tabs: () => setting.pluginTabs.slice(),
-    state: () => ({ trusted: K.st.trusted, enabled: K.st.enabledIds.slice(), installed: Object.assign({}, K.st.manifests), loaded: [...registry.keys()] }),
+    state: () => ({ trusted: K.st.trusted, enabled: K.st.enabledIds.slice(), installed: Object.assign({}, K.st.manifests), loaded: [...registry.keys()], pins: Object.assign({}, K.st.pins), pinChanged: Object.assign({}, K.st.pinChanged), pinError: K.st.pinError }),
     bridge,         // NOT frozen (freeze is shallow): item 5 sets bridge.editor = () => {editor, view} | null
   });
   Object.freeze(host);

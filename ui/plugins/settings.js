@@ -99,7 +99,7 @@
   function nav(n) {
     for (const d of [...n.querySelectorAll("[data-cp]")]) d.remove();
     const entry = (pane, text, icon) => {
-      const d = el("div", "snavi", text);
+      const d = el("div", "snavi vertical-tab-nav-item", text);   /* #328: stock nav item class */
       /* top5-func: a plugin tab that set SettingTab.icon shows it before its name (data-icon = the name) */
       if (icon != null && icon !== "" && host.api && typeof host.api.setIcon === "function") {
         const i = el("span", "snavi-icon"); host.api.setIcon(i, String(icon)); d.insertBefore(i, d.firstChild);
@@ -107,7 +107,7 @@
       d.dataset.pane = pane; d.dataset.cp = "1"; d.tabIndex = 0;
       d.onclick = () => showSettingsPage(pane);
       d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(pane); } };
-      if (typeof sPane !== "undefined" && sPane === pane) d.classList.add("sel");
+      if (typeof sPane !== "undefined" && sPane === pane) d.classList.add("sel", "is-active");
       n.appendChild(d);
     };
     // af-fix 2b (operator rule 2026-10-01, noplugins NP_WANT): no Core plugins entry, no CORE PLUGINS group,
@@ -145,7 +145,7 @@
   let inBuiltin = false;      // main.js is building one of its own panes for a built-in tab
   const builtinOf = pane => setting.settingTabs.find(t => t._pane === pane) || null;
   const paneOf = t => t._pane !== undefined ? t._pane : "plg:" + t.id;
-  function selNav(id) { for (const d of document.getElementById("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === id); }
+  function selNav(id) { for (const d of document.getElementById("snav").querySelectorAll(".snavi")) { const on = d.dataset.pane === id; d.classList.toggle("sel", on); d.classList.toggle("is-active", on); } }   /* #328 */
   function clearPage(id, cls) {
     stopBrowsing();
     fontPage = null; sPane = id; selNav(id);
@@ -243,13 +243,27 @@
         g.onclick = ev => { ev.stopPropagation(); showSettingsPage("plg:" + id); };
         ctls.push(g);
       }
+      /* #251: an enabled plugin whose files are new in this vault or changed on disk since the user
+         allowed them does not run; "Review and allow" opens the native question (Rust shows what is on disk) */
+      const pin = (s.pins || {})[id] || "new";
+      const held = !restricted && on && !loaded && pin !== "ok" && pin !== "unreadable";
+      if (held) {
+        const a = el("button", "cpb-btn cpb-cta", "Review and allow");
+        a.type = "button"; a.dataset.pinallow = id;
+        a.onclick = ev => { ev.stopPropagation(); act(async () => { await host.allow([id]); if ((host.state().pins || {})[id] === "ok") await host.enable(id); }); };
+        ctls.push(a);
+      }
       const t = toggle(on, () => act(() => host.setEnabled(id, !on)));
       t.dataset.plugin = id;
       ctls.push(t);
+      const pinNote = !held ? "" : pin === "changed"
+        ? "Changed on disk since you allowed it (" + ((s.pinChanged || {})[id] || []).join(", ") + "). Not running: review and allow it."
+        : pin === "damaged" ? "Not running: the record of allowed plugins is damaged" + (s.pinError ? " (" + s.pinError + ")" : "") + ". Review and allow it again."
+        : "New in this vault, not allowed yet. Not running: review and allow it.";
       const desc = [
         "Version " + (m.version || "?") + (m.author ? " · By " + m.author : ""),
         m.description || "",
-        st && st.state === "failed" ? "Failed to load: " + String(st.error || "") : (restricted && on ? "Enabled, not running: restricted mode is on." : ""),
+        pinNote || (st && st.state === "failed" ? "Failed to load: " + String(st.error || "") : (restricted && on ? "Enabled, not running: restricted mode is on." : "")),
       ];
       const r = row(c2, String(m.name || id), desc, ctls, restricted);
       r.dataset.plugin = id;

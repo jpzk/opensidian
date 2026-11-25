@@ -62,7 +62,8 @@ pub fn resolve(cfg: &serde_json::Value, query: &str, active: Option<&str>, dir_e
 /// resolve against a vault on disk: app.json read (never written), folders probed
 /// without following a symlink out of the vault.
 pub fn resolve_in(root: &Path, query: &str, active: Option<&str>) -> QsName {
-    let cfg = std::fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    // #250: vaultfs fd read (no symlink, regular file by fstat, capped on the fd)
+    let cfg = crate::vaultfs::read_string(root, Path::new(".obsidian/app.json"), crate::vaultfs::CFG_MAX).unwrap_or_default();
     let cfg = serde_json::from_str::<serde_json::Value>(&cfg).unwrap_or(serde_json::Value::Null);
     let croot = root.canonicalize().ok();
     let probe = |f: &str| {

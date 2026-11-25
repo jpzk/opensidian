@@ -9,6 +9,8 @@
 # opensidian:expires date (end of that day, UTC; osv-scanner reports the id again after it),
 # reason = analysis.state + detail. "resolved" entries (fixed in what we ship, e.g. the glib-fix
 # pedigree) are ignored for osv too, because osv-scanner does not read CycloneDX pedigree.
+# "exploitable" entries (VEX status affected, e.g. UBUNTU-CVE-2024-43091) are NOT ignored: they stay
+# visible findings in every scan (the bundle gate lists them as no-fix-yet); the statement lives in the VEX.
 # Usage: vex-osv-config.sh [vex.cdx.json] > osv-scanner.toml   (exit 1, no stdout, on a bad entry)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/../.." && pwd)
@@ -17,6 +19,7 @@ vex=${1:-$root/supply-chain/vex.cdx.json}
 out=$(jq -r '
   def tq: "\"" + (gsub("\\\\"; "\\\\") | gsub("\""; "\\\"") | gsub("\n"; " ")) + "\"";
   .vulnerabilities[]
+  | select(.analysis.state != "exploitable")
   | ([.properties[]? | select(.name == "opensidian:expires") | .value] | first) as $exp
   | if ($exp // "" | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not) then error("\(.id): no opensidian:expires") else . end
   | ("\(.analysis.state): \(.analysis.detail)") as $why
