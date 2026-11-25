@@ -830,6 +830,167 @@ mod tests {
         assert!(se[..al].contains("!(askedOnce && !asked)"), "allow([id]) must be skipped when refresh() just asked");
     }
 
+    /// the body of `async function <name>(` in js, up to the next line that closes it at the same indent
+    fn js_fn<'a>(js: &'a str, name: &str) -> &'a str {
+        let head = format!("async function {name}(");
+        let at = js.find(&head).unwrap_or_else(|| panic!("{name} not found"));
+        let line0 = js[..at].rfind('\n').map_or(0, |n| n + 1);
+        let indent = &js[line0..at];
+        let close = format!("\n{indent}}}\n");
+        let end = js[at..].find(&close).unwrap_or_else(|| panic!("{name}: no closing brace")) + at;
+        &js[at..end]
+    }
+    fn pos(body: &str, needle: &str) -> usize {
+        body.find(needle).unwrap_or_else(|| panic!("missing {needle:?}"))
+    }
+
+    /// #277: stock's startup order. The restored layout's showing plugin views are built only after
+    /// every enabled plugin's onload (never inside it), with layoutReady false while plugins load,
+    /// and layout-ready fires after those views exist.
+    #[test]
+    fn boot_builds_restored_views_after_plugin_onloads_then_layout_ready() {
+        let js = include_str!("../../ui/plugins/api-core.js");
+        let b = js_fn(js, "boot");
+        let hold = pos(b, "views.holdRestore();");
+        let load = pos(b, "for (const id of K.st.enabledIds) await enable(id);");
+        let mount = pos(b, "await views.mountHeld();");
+        let ready = pos(b, "K.st.layoutReady = true; workspace.layoutReady = true;");
+        let fire = pos(b, "workspace.trigger(\"layout-ready\");");
+        assert!(hold < load, "the remount hold must be on before any plugin loads");
+        assert!(load < mount, "restored views are built after every plugin's onload");
+        assert!(mount < ready, "layoutReady stays false until the restored views are built");
+        assert!(ready < fire, "layout-ready fires once layoutReady is true");
+        // negative: layoutReady is never set before the plugins load, and only once in the file
+        assert!(!b[..load].contains("layoutReady = true"), "layoutReady set true before plugin onloads (#277)");
+        assert_eq!(js.matches("K.st.layoutReady = true").count(), 1, "one place readies the layout");
+        assert_eq!(js.matches("workspace.layoutReady = true").count(), 1);
+        // fail closed: a throwing plugin load still lifts the hold and readies the layout
+        let fin = pos(b, "} finally {");
+        assert!(load < fin && fin < mount && mount < ready, "mountHeld + layoutReady must sit in the finally");
+    }
+
+    /// #277: views.js side of the hold. While held, registerView does not mount a showing restored tab
+    /// (the plugin's onload is still running); mountHeld lifts the hold FIRST (a type registered after
+    /// boot remounts at once, as before), mounts only showing restored tabs of a registered type, awaits
+    /// each view's onOpen/setState, survives a throwing remount, and is a no-op without a hold.
+    #[test]
+    fn views_hold_restored_remount_during_startup_load() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let add = &js[pos(js, "function addView(pid, type, factory) {")..pos(js, "function dropView(type) {")];
+        assert!(add.contains("if (!holdMount) for (const g of M().groups())"), "addView must not remount while held");
+        assert!(add.contains("safe(\"remount \" + type, () => loadActive(g))"), "post-boot registerView still remounts a showing tab");
+        assert!(js.contains("let holdMount = false;"), "no hold unless boot asks for it");
+        let m = js_fn(js, "mountHeld");
+        let early = pos(m, "if (!holdMount) return 0;");
+        let lift = pos(m, "holdMount = false;");
+        let each = pos(m, "for (const g of M().groups())");
+        assert!(early < lift && lift < each, "the hold is lifted before any remount");
+        assert!(m.contains("t.kind === \"unk\" && types.has(t.utype)"), "only showing restored tabs of a registered type mount");
+        let la = pos(m, "try { await loadActive(g); } catch (e)");
+        assert!(m[la..].contains("continue;"), "a throwing remount must not stop the next group");
+        assert!(m.contains("await r.opened;"), "layout-ready waits for the view's onOpen + setState");
+        let host = &js[pos(js, "const host = {")..];
+        assert!(host[..200].contains("holdRestore, mountHeld"), "views host exports the hold");
+    }
+
+    /// #277 review (CodeAnt, api-core.js:768 / views.js:882): the hold covers EVERY way a restored
+    /// view gets built, not only addView's remount. A click on a background restored tab while the
+    /// plugins still load (switchTab -> loadActive -> PV.mount) must not build a view of a type
+    /// registered in that load (it would run inside the plugin's half-done onload): the pane stays
+    /// blank and mountHeld builds the then-showing tab once every onload is done.
+    #[test]
+    fn views_hold_defers_a_tab_shown_during_startup_load() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let mount = &js[pos(js, "mount(g, t) {")..pos(js, "hide(g, t) {")];
+        let defer = pos(mount, "if (!r && holdMount && heldTypes.has(t.utype)) return true;");
+        let build = pos(mount, "r = makeView(t, t.utype");
+        assert!(defer < build, "PV.mount must defer before it builds a view while held");
+        let add = &js[pos(js, "function addView(pid, type, factory) {")..pos(js, "function dropView(type) {")];
+        assert!(add.contains("if (holdMount) heldTypes.add(type);"), "a type registered while held is deferred");
+        let m = js_fn(js, "mountHeld");
+        let lift = pos(m, "holdMount = false;");
+        assert!(lift < pos(m, "heldTypes.clear();") && pos(m, "heldTypes.clear();") < pos(m, "for (const g of M().groups())"),
+            "the deferral ends with the hold, before the held views are built");
+        // a type registered after boot is never deferred: heldTypes only grows under the hold
+        assert_eq!(js.matches("heldTypes.add(").count(), 1);
+    }
+
+    /// #277 review (CodeAnt, views.js:903 + nitpick api-core.js:772): mountHeld awaits each restored
+    /// view's onOpen/setState BEFORE layoutReady. A view whose onOpen awaits workspace.onLayoutReady
+    /// (queued until layout-ready) would hang boot forever. The wait is bounded (one deadline for all
+    /// groups) and ends at once when anything queues an onLayoutReady callback during it; boot then
+    /// readies the layout and the queued callback runs, so that onOpen completes.
+    #[test]
+    fn mount_held_wait_cannot_deadlock_layout_ready() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let m = js_fn(js, "mountHeld");
+        assert!(m.contains("const until = Date.now() + HOLD_OPEN_MS;"), "one deadline for the whole wait");
+        assert!(js.contains("HOLD_OPEN_MS = 10000"), "bounded at 10 s");
+        let race = pos(m, "await Promise.race([");
+        assert!(m[race..].contains("setTimeout("), "the onOpen wait races a timer");
+        assert!(m[race..].contains("lrWake"), "the onOpen wait also ends when an onLayoutReady callback is queued");
+        assert!(!m.contains("try { await r.opened; } catch (_) {} n++;"), "no unbounded await of onOpen before layout-ready");
+        // the wake: onLayoutReady's not-yet-ready branch kicks the wait before it queues on layout-ready
+        let olr = &js[pos(js, "onLayoutReady(cb) {")..];
+        let olr = &olr[..olr.find('\n').unwrap()];
+        assert!(pos(olr, "views.lrKick()") < pos(olr, "this.on(\"layout-ready\", cb)"), "onLayoutReady while not ready wakes mountHeld's wait");
+        let host = &js[pos(js, "const host = {")..];
+        assert!(host[..200].contains("holdRestore, mountHeld, lrKick"), "views host exports the wake");
+        // fail closed: whatever the wait does, boot still readies the layout afterwards (finally, checked in the boot test)
+        assert!(m[pos(m, "for (const g of M().groups())")..].contains("continue;"));
+    }
+
+    /// #277: a note leaf switched (no active) to a view of its own file replaces the note tab, as stock
+    /// (one tab): the leftover note tab was restored as a markdown leaf next start, converted again by
+    /// Excalidraw, and the board on screen was a stale detached view stuck on "waiting". Data safety:
+    /// never a pinned note, a shown one only saved + still clean after the last await, a hidden one only
+    /// if never loaded; a view of another file (or a non-note tab) keeps the note as before.
+    #[test]
+    fn views_own_file_conversion_replaces_note_tab() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let o = js_fn(js, "openTyped");
+        // the note's file is read while the leaf is still the note tab (bindLeaf rebinds it to the new tab)
+        let nf = pos(o, "if (t0 && !t0.kind) try { const ls = d.leafState(leaf); if (ls && ls.type === \"markdown\" && ls.state && typeof ls.state.file === \"string\") noteFile0 = ls.state.file; } catch (_) {}");
+        let bind = pos(o, "if (t0 || leaf._nt || split || !g.tabs.length) bindLeaf(leaf, t);");
+        assert!(nf < bind, "noteFile0 must be read before bindLeaf");
+        let br = &o[pos(o, "else if (t0 && !active && !leaf._nt) {")..pos(o, "else await openTabView(g, t, at, true);")];
+        let own = pos(br, "const own = !t0.kind && !t0.pinned && !!state && typeof state.file === \"string\" && !!state.file && noteFile0 === state.file;");
+        assert!(!br.contains("d.leafState(leaf)"), "the branch runs after bindLeaf: the leaf no longer reads the note");
+        let saved = pos(br, "const saved = own && was ? await noteSaved(g, t0) : false;");
+        let flush = pos(br, "if (was && typeof flushSave === \"function\") try { await flushSave(g); } catch (_) {}");
+        let guard = pos(br, "const drop = own && !t0.pinned && (was");
+        assert!(br.contains("? saved && activeTab(g) === t0 && !(typeof bufDirty === \"function\" && bufDirty(g))"), "a shown note goes only saved and clean");
+        assert!(br.contains(": t0.base === undefined && activeTab(g) !== t0);"), "a hidden note goes only if never loaded");
+        let ins = pos(br, "g.tabs.push(t);");
+        let close = pos(br, "if (drop) { const j = g.tabs.indexOf(t0); if (j >= 0 && typeof closeTab === \"function\") await closeTab(g, j, \"plugin-detach\", \"plugin\", true); }");
+        assert!(own < saved && saved < flush && flush < guard && guard < ins && ins < close, "guard after the last await, before the switch; close last");
+        assert!(!br[guard..ins].contains("await"), "nothing awaits between the dirty guard and the switch");
+        assert_eq!(br.matches("closeTab(").count(), 1, "the note tab is closed only through the guarded drop");
+    }
+
+    /// #277: setViewState({type:"empty"}) on a plugin-view tab replaces its view with the empty view, as
+    /// stock. Excalidraw rebuilds a drawing restored before layout-ready with setViewState empty ->
+    /// excalidraw; ignoring "empty" kept the "waiting for Obsidian" view and the board never painted.
+    #[test]
+    fn views_set_view_state_empty_closes_plugin_view() {
+        let js = include_str!("../../ui/plugins/views.js");
+        let svs_at = pos(js, "async setViewState(vs, eState) {");
+        let svs = &js[svs_at..svs_at + pos(&js[svs_at..], "\n        }\n")];
+        let typed = pos(svs, "if (type && types.has(type)) return openTyped(");
+        let empty = pos(svs, "if (type === \"empty\" && !this._side && this._t && this._t.kind === \"unk\") return emptyTab(this);");
+        let side = pos(svs, "if (this._side && (type === \"empty\" || !type)) return;");
+        assert!(typed < empty && empty < side, "a registered type opens first; side leaves keep their no-op");
+        let e = js_fn(js, "emptyTab");
+        let close = pos(e, "const r = recs.get(t); if (r) closeRec(r);");
+        let ut = pos(e, "t.utype = \"empty\";");
+        assert!(close < ut, "the old view is closed before the tab turns empty");
+        assert!(e.contains("state: { type: \"empty\", state: {}"), "the persisted leaf is stock's empty leaf");
+        assert!(!e.contains("closeTab"), "the leaf keeps its tab");
+        // the next setViewState of a plugin type then builds a fresh view (no rec -> makeView, onOpen, setState)
+        let o = js_fn(js, "openTyped");
+        assert!(o.contains("if (r && r.type === type && !inst) {"), "same type re-sets state only while a view exists");
+    }
+
     #[test]
     fn list_merges_stats_and_drops_bad_rows() {
         let l = br#"[{"id":"a-plug","name":"A","author":"x","description":"d","repo":"o/a"},
