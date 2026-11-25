@@ -12651,31 +12651,21 @@ async function startGraph(g, cfg) {
     gw = null;
   };
   function batch(steps, budget) {
-    const n = N.length, X = new Float64Array(n), Y = new Float64Array(n), VX = new Float64Array(n), VY = new Float64Array(n);
-    const PIN = new Uint8Array(n), FX = new Float64Array(n), FY = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      const p = N[i]; X[i] = p.x; Y[i] = p.y; VX[i] = p.vx; VY[i] = p.vy;
-      if (p.fx != null) { PIN[i] = 1; FX[i] = p.fx; FY[i] = p.fy; }
-    }
+    const o = GraphPhys.nodesOut(N);   // X Y VX VY PIN FX FY (the X..VY buffers are transferred to the worker)
     if (lnkSrc !== links) {             // rebuild() replaces `links`, so its identity is the version
       lnkSrc = links; const L = links.length;
       lnk = { LA: new Int32Array(L), LB: new Int32Array(L), LBI: new Float64Array(L), LK: new Float64Array(L) };
       for (let i = 0; i < L; i++) { const l = links[i]; lnk.LA[i] = l.a; lnk.LB[i] = l.b; lnk.LBI[i] = l.bias; lnk.LK[i] = l.k; }
     }
-    return { gen: nGen, X, Y, VX, VY, PIN, FX, FY, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
+    return { gen: nGen, ...o, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
              f: { repel: F.repel, repelK: REPEL_K, repelP: REPEL_P, dist: F.dist, center: F.center, centerK: CENTER_K },
              st: { alpha, alphaTarget, seekN, still, calm, kePeak, quiet } };
   }
   // a result: positions and state back, the settle side effects, then the replayed events
-  function land(bgen, r, st, X, Y, VX, VY, PIN) {
+  function land(bgen, r, st, X, Y, VX, VY, bo) {   // bo: the batch as posted (its PIN)
     inflight = false; const q = evq; evq = [];
     if (g.simGen !== gen || bgen !== nGen) return;   // retired, or N[] swapped while the batch was out
-    for (let i = 0; i < N.length; i++) {
-      const p = N[i];
-      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
-      else if (PIN[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
-      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
-    }
+    GraphPhys.landNodes(N, bo, X, Y, VX, VY);   // a held node at its pin, one dropped while the batch was out stays put
     ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = st);
     if (sTr && r.tr) {
       const T = r.tr, o = performance.timeOrigin;
@@ -12703,13 +12693,13 @@ async function startGraph(g, cfg) {
     const w = gwGet();
     if (!w) {                           // main thread: the frame budget bounds the batch
       const b = batch(steps, PH_BUDGET_MS);
-      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b.PIN);
+      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b);
       return;
     }
     const b = batch(steps, PH_WORKER_MS);
     inflight = true;
     w.onmessage = e => {
-      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b.PIN);
+      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b);
       if (g.simGen !== gen || quiet) { gwPut(); if (g.simGen === gen) wake(); return; }
       if (!(rcSnap && rcSnap.vraw === undefined)) pump();   // C5: rcPre must see the swap before any step
     };
@@ -12901,7 +12891,8 @@ async function startGraph(g, cfg) {
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
-  let firstFrame = true, running = false, dirty = true, shadeNow = false;
+  let firstFrame = true, running = false, dirty = true, shadeNow = false, glOwed = false;   // glOwed: #279, see the settled branch of step()
+  let drag = null, moved = false;      // the held press (C3, below); declared before step(): its first run is synchronous and holdApply (#279) reads drag
   if (g.gwRelease) g.gwRelease();      // the sim this start retires gives its physics worker back
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
   // gwRelease: a sim retired between batches (cancelAnimationFrame + simGen = 0, nothing in the Worker)
@@ -12951,6 +12942,7 @@ async function startGraph(g, cfg) {
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
+    holdApply();                       // #279: the node travel queued since the last frame, before its physics and draw
     // The settle test runs after EVERY physics step (ui/graph-phys.js), not once per frame: counted
     // per frame, "10 calm" meant 10..70 steps depending on how many steps each frame happened to
     // carry (wall clock), so the sim froze at a timing-dependent step and two runs of the same vault
@@ -12959,7 +12951,7 @@ async function startGraph(g, cfg) {
     pump();
     const anim = animT0 >= 0;          // a running timelapse draws every frame, settled or not
     const drew = dirty || anim;
-    if (drew) { draw(); dirty = false; }
+    if (drew) { draw(); dirty = false; glOwed = true; }
     if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
     if (quiet && !inflight && animT0 < 0) {   // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false; gwPut();
@@ -12968,7 +12960,11 @@ async function startGraph(g, cfg) {
       // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
       // a settled GL loop draws the same frame once more on the next animation frame — nothing new to show,
       // it only pushes the real last frame onto the screen.
-      if (drew && glr) requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); });
+      // #279: not only a draw in THIS frame is owed that push: a frame that drew and was followed by
+      // frames that did not (a batch that ran no step, the last one before quiet) left the same unseen
+      // frame — a quick drag's node stayed drawn at its old place under a label already at the new one.
+      // glOwed = a loop frame drew since the last push.
+      if (glOwed && glr) { glOwed = false; requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); }); }
       // graphperf: a ggkeep tab left at rest comes back QUIET, so its very first frame lands here —
       // inside the tab_switch paint. v0.6.1 restarted hot and settled ~2 s later, outside it.
       // State is set now; the title + span flush are published after the next frame (afterPaint).
@@ -13147,7 +13143,7 @@ async function startGraph(g, cfg) {
   // fx/fy only WHILE HELD (R16.6, operator 2026-10-06: a released node is FREE
   // and settles back under the forces, as stock's does); on empty canvas it
   // pans the camera exactly as it always did. Click w/o movement still navigates.
-  let drag = null, moved = false;
+  // (drag, moved: declared above step() — #279 holdApply reads drag from the very first, synchronous step)
   // release: unpin the held node and drop the d3 alphaTarget back to 0, so the
   // sim cools from where it is (alpha ~0.3) instead of freezing the node. Every
   // way a hold can end goes through here: mouseup on the canvas, the pointer
@@ -13156,11 +13152,25 @@ async function startGraph(g, cfg) {
   // Pins exist only while held, so release clears EVERY pin in N: a refresh
   // during the hold (C3 carry) swaps in a new node object that carries fx/fy,
   // and that copy must be freed too.
+  // #279: node travel no frame has applied yet (drag.pdx/pdy, see holdApply) ends with the hold, as
+  // stock's does: a press, one jump and a release inside one frame leave the node at the press point.
+  // A hold that grabbed a node (GraphPhys.releaseHeld: a pin was set, or a node press went past the
+  // slop) leaves the sim re-flowing (GraphPhys.releaseHeat), as stock's: with the move applied but no
+  // physics step run yet, alpha still at its rest value froze the dropped node; a grab no frame
+  // applied ended with alphaTarget still 0 and was never re-flowed at all.
   const release = () => {
+    const d0 = drag;
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
-    for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) ev(() => { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); });
+    let pinned = false;
+    for (const q of N) if (q.fx != null) { q.fx = q.fy = null; pinned = true; }
+    const held = GraphPhys.releaseHeld(d0, moved, pinned);
+    if (alphaTarget !== 0 || held) ev(() => {
+      sTrMark("release");
+      const s = GraphPhys.releaseHeat({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet }, held);
+      ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = s);
+      g.graphSettled = false; if (g.simGen === gen) wake();
+    });
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -13176,36 +13186,45 @@ async function startGraph(g, cfg) {
     drag = { x: e.clientX, y: e.clientY, node: i >= 0 ? N[i] : null };
     moved = false;
   };
-  cv.onmousemove = e => {
-    const r = cv.getBoundingClientRect();
-    if (drag) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (moved || dx * dx + dy * dy > 16) {
-        moved = true;
-        if (drag.node) {
-          // NODE drag. Pin on the first real movement, not on mousedown: a bare
-          // click must not stick a node it never moved. Pointer px -> world
-          // units via the camera scale, so a zoomed-out drag still tracks.
-          let p = drag.node;
-          if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
-            p = drag.node = N.find(q => q.n === p.n);
-            if (!p) { release(); return; }
-          }
-          if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
-          window.__graphHeld = release;
-          p.fx += dx / view.scale; p.fy += dy / view.scale;
-          p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
-          // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
-          // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
-        } else {
-          view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
-        }
-        drag.x = e.clientX; drag.y = e.clientY;
-        redraw();
-      }
+  // one pointer sample of the held press (GraphPhys.dragStep: nothing inside the 4 px click slop)
+  // #279: a NODE sample is only queued (GraphPhys.holdQueue); the next animation frame applies it
+  // (holdApply, top of step(), before that frame's physics and draw), so the disc, its edges and its
+  // label are always drawn from one applied position, and a release before that frame drops it.
+  function holdMove(e) {
+    const m = GraphPhys.dragStep(drag, moved, e.clientX, e.clientY);
+    if (!m) return;
+    const { dx, dy } = m;
+    moved = true;
+    if (drag.node) {
+      window.__graphHeld = release;
+      GraphPhys.holdQueue(drag, dx, dy);
+      wake();
       return;
     }
+    view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
+    redraw();
+  }
+  function holdApply() {
+    if (!drag || !drag.node) return;
+    const m = GraphPhys.holdTake(drag);
+    if (!m) return;
+    // NODE drag. Pin on the first real movement, not on mousedown: a bare
+    // click must not stick a node it never moved. Pointer px -> world
+    // units via the camera scale, so a zoomed-out drag still tracks.
+    let p = drag.node;
+    if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
+      p = drag.node = N.find(q => q.n === p.n);
+      if (!p) { release(); return; }
+    }
+    GraphPhys.holdPlace(p, m.dx / view.scale, m.dy / view.scale);   // pin on the first applied move, node at the pin
+    // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
+    // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
+    if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
+    dirty = true;
+  }
+  cv.onmousemove = e => {
+    const r = cv.getBoundingClientRect();
+    if (drag) { holdMove(e); return; }
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const h = hitTest(x, y);
     if (h !== hov) { hov = h; redraw(); gHover(g, e, N[h]); }   // cp-hover-editor: the engine hears every hover change
