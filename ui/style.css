@@ -77,9 +77,9 @@ body {
   --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit */
   --background-modifier-border-hover: var(--color-base-35, #3f3f3f);   /* #327: stock menu/graph-control frame = base-35 (stock 1.13.7 default D 63, Solarized D base02 7,54,66) */
   --mono-rgb-100: 255, 255, 255;   /* #337: stock-defined base var (themes write rgba(var(--mono-rgb-100), a)); stock 1.13.7 Minimal D prompt input border-top = 255,255,255/0.05 */
-  --background-secondary-alt: #313244;                        /* no ramp row measured */
+  --background-secondary-alt: #1c1c1c;                        /* #340: stock dark tab header painted 28,28,28 (was Catppuccin #313244) */
   --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit */
-  --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = --divider-color/--background-modifier-border */
+  --background-modifier-border: var(--color-base-30, #333333);/* T6b: base-30 = --divider-color/--background-modifier-border */
   --indentation-guide-color: color-mix(in srgb, var(--mono-100, #fff) 12%, transparent);   /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
@@ -230,14 +230,14 @@ body {
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --bg-button-default: #fff;   /* the focused (default) answer in the rename/delete prompts. Ours, not --text-on-accent: a theme with a light accent sets that one DARK (AnuPpuccin: its base), which painted the default button in the label colour */
-  --border-strong: #585b70;
+  --border-strong: #555555;
   --border-focus-ring: #bdbdbd;
-  --rule-faint: #31324499;
-  --text-chrome-alt: #cdd6f5;
   --text-chrome-faint: var(--text-faint);   /* #352: faint chrome ink (counts, hints, footer, group headings) is the theme --text-faint like stock (default L #ababab / D #666666); the built-ins that once split it are gone */
   --text-chrome-dim: var(--text-faint);     /* #352 */
+  --rule-faint: #33333399;
+  --text-chrome-alt: #dadada;
   --text-on-accent: #fff;
-  --text-quiet: #bac2de;
+  --text-quiet: #b3b3b3;
   --link-unresolved: #7c86c8;
   --link-unresolved-underline: color-mix(in srgb, currentColor 30%, transparent);   /* listlinks REQ-15: underline = link colour at 0.3 alpha */
   --accent-mauve: var(--color-accent, #cba6f7);
@@ -310,7 +310,7 @@ body {
   --color-base-00: #1c1c1c;
   --color-base-10: #232323;
   --color-base-100: #dadada;
-  --color-base-30: #45475a;
+  --color-base-30: #333333;   /* #340: stock dark border (code border 51,51,51; light #e4e4e4 = same row) */
   --color-base-50: #666666;
   --color-base-70: #b3b3b3;
   --color-cyan: #53dfdd;
@@ -418,8 +418,8 @@ body {
   --tag-color: var(--accent-blue);
   --tag-decoration: none;
   --tag-padding-y: 0;
-  --tag-radius: 999px;
-  --tag-size: .85em;
+  --tag-radius: 2em;                /* #343: stock 1.13.7 tag pill corner = 28px on a 14px tag (2em) */
+  --tag-size: .875em;               /* #343: stock tag font-size 14px at 16px text */
   /* callouts (#59 slice 1): stock 1.13.7 app.css body block, verbatim names + formulas (see the
      ".callout" section at the end of this file). The colours fall back to Obsidian's dark palette
      literals instead of defining --color-* here: --text-error etc. already read var(--color-red, …)
@@ -775,7 +775,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
              color: var(--text-chrome-muted) }
 .trow .tfi svg { width: var(--icon-s, 14px); height: var(--icon-s, 14px) }
 .trow .tfi svg[stroke-width="2"] { stroke-width: var(--icon-s-stroke-width, 2) }
-.trow.folder { font-weight: 500; padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
+.trow.folder { padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
 .trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: var(--nav-tag-radius, 3px);   /* goal canvas-core: the CANVAS tag on a .canvas row */
              font-size: 0.7em; letter-spacing: .04em; color: var(--nav-tag-color, var(--text-chrome-dim)); background: var(--nav-tag-background, var(--bg-surface)); font-weight: var(--nav-tag-weight, inherit); }
 .trow.active .ttag { color: var(--nav-tag-color-active, var(--nav-tag-color, var(--text-chrome-dim))) }
@@ -1017,7 +1017,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
-  border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .85em); text-decoration: var(--tag-decoration, none);
+  border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .875em); text-decoration: var(--tag-decoration, none);
   cursor: pointer; white-space: nowrap; border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp a.tag:hover, .preview a.tag:hover { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)); color: var(--tag-color-hover, var(--tag-color, var(--accent-blue))); text-decoration: var(--tag-decoration-hover, var(--tag-decoration, none)); }
 .graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: var(--bg-ribbon); position: relative; z-index: 1 }   /* above .graphgl */
@@ -1510,12 +1510,12 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
 /* #59 slice 2: per-level heading ink = the theme's --h<n>-color (Obsidian: h<n> { color: var(--h<n>-color) }), the
    reading view below the same; a theme that declares none keeps --text-heading / currentColor, so the default is unchanged */
-.lp .h1 { font-size: var(--h1-size); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, inherit); font-variant: var(--h1-variant, inherit); }
-.lp .h2 { font-size: var(--h2-size); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, inherit); font-variant: var(--h2-variant, inherit); }
-.lp .h3 { font-size: var(--h3-size); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, inherit); font-variant: var(--h3-variant, inherit); }
-.lp .h4 { font-size: var(--h4-size); color: var(--h4-color, var(--text-heading, currentColor)); font-family: var(--h4-font, inherit); font-style: var(--h4-style, inherit); font-variant: var(--h4-variant, inherit); }
-.lp .h5 { font-size: var(--h5-size); color: var(--h5-color, var(--text-heading, currentColor)); font-family: var(--h5-font, inherit); font-style: var(--h5-style, inherit); font-variant: var(--h5-variant, inherit); }
-.lp .h6 { font-size: var(--h6-size); color: var(--h6-color, var(--text-heading, currentColor)); font-family: var(--h6-font, inherit); font-style: var(--h6-style, inherit); font-variant: var(--h6-variant, inherit); }
+.lp .h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, inherit); font-variant: var(--h1-variant, inherit); }
+.lp .h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, inherit); font-variant: var(--h2-variant, inherit); }
+.lp .h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, inherit); font-variant: var(--h3-variant, inherit); }
+.lp .h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); color: var(--h4-color, var(--text-heading, currentColor)); font-family: var(--h4-font, inherit); font-style: var(--h4-style, inherit); font-variant: var(--h4-variant, inherit); }
+.lp .h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); color: var(--h5-color, var(--text-heading, currentColor)); font-family: var(--h5-font, inherit); font-style: var(--h5-style, inherit); font-variant: var(--h5-variant, inherit); }
+.lp .h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); color: var(--h6-color, var(--text-heading, currentColor)); font-family: var(--h6-font, inherit); font-style: var(--h6-style, inherit); font-variant: var(--h6-variant, inherit); }
 .lp .b { font-weight: var(--bold-weight); color: var(--bold-color, inherit); }
 .lp .i { font-style: italic; color: var(--italic-color, inherit); font-weight: var(--italic-weight, inherit); }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
@@ -1531,7 +1531,15 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp a.wiki { text-decoration: var(--link-decoration, none) }
 .lp a.wiki:hover { text-decoration-line: var(--link-decoration-hover, var(--link-decoration, none)) }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
-.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+/* stock live preview draws the tag pill on .cm-hashtag-begin ('#', start corners) + .cm-hashtag-end (name, end
+   corners), the spans Ed.inline now emits; the .lp a.tag wrapper only keeps text styling. :where() keeps these at
+   class specificity so a theme's .cm-hashtag.cm-hashtag-end rule (Solarized: border-radius unset) wins as in stock. */
+.lp a.tag, .lp a.tag:hover { background: none; border-width: 0; border-radius: 0; padding: 0 }
+:where(.lp a.tag) > .cm-hashtag { background: var(--tag-bg); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); padding-top: var(--tag-padding-y, 0); padding-bottom: var(--tag-padding-y, 0) }
+:where(.lp a.tag) > .cm-hashtag-begin { border-radius: var(--tag-radius, 2em) 0 0 var(--tag-radius, 2em); border-right-width: 0; padding-left: var(--tag-padding-x, 7px) }
+:where(.lp a.tag) > .cm-hashtag-end { border-radius: 0 var(--tag-radius, 2em) var(--tag-radius, 2em) 0; border-left-width: 0; padding-right: var(--tag-padding-x, 7px) }
+:where(.lp a.tag:hover) > .cm-hashtag { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)) }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
 .lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--code-background);   /* #331: stock paints LP code rows with --code-background */
              padding: 0 8px; white-space: pre; overflow-x: auto }
@@ -1709,7 +1717,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --space-unit: 0.25rem;
   --font-weight: var(--font-normal, 400); --bold-modifier: 200; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
   /* R15.7-9 headings */
-  --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
+  /* #342: stock 1.13.7 computed h1 h2 h3 h5 h6 = 25.888/23.392/21.088/17.216/16px at 16px (devtools, goal theme-default); h4 1.188em, re-measured on the box (theme-th-default) */
+  --h1-size: 1.618em; --h2-size: 1.462em; --h3-size: 1.318em; --h4-size: 1.188em; --h5-size: 1.076em; --h6-size: 1em;
   --h1-weight: 700; --h2-weight: 600; --h3-weight: 600; --h4-weight: 600; --h5-weight: 600; --h6-weight: 600;
   --h1-line-height: 1.15; --h2-line-height: 1.21; --h3-line-height: 1.27; --h4-line-height: 1.33;
   --h5-line-height: 1.39; --h6-line-height: 1.45;
@@ -1721,7 +1730,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
-  --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
+  --code-size: var(--font-smaller, 0.92em); --code-radius: var(--radius-s, 4px);   /* #343: stock inline code corner 4px */
   --blockquote-border-thickness: 2px;   /* #347: stock default (was 3px) */
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
@@ -1860,7 +1869,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    is nothing to cover, the ::before is already invisible underneath. */
 .lp.titling::before, .preview.titling::before, .lp.cmown .cm-scroller.titling::before { visibility: hidden }
 /* R34.18 — THE ROOT CAUSE, AND WHY THE FIX IS HERE AND NOT ON .titleedit.
-   The shared rule above is written in em and tokens: `--h1-size: 1.974em` and
+   The shared rule above is written in em and tokens: `--h1-size: 1.618em` and
    `--h1-letter-spacing: -0.018em`. `em` resolves against the element's INHERITED
    font-size, and `color: inherit` / an undeclared font-family resolve against
    the inherited value — so identical declarations produce different type when
