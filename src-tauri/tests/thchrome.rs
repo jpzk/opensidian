@@ -172,7 +172,7 @@ fn i349_negative_resting_row_stays_muted_and_light_mode_does_not_override() {
     let c = css();
     let r = rule(&c, ".trow");
     assert!(r.contains("color: var(--nav-item-color)") && !r.contains("--nav-item-color-hover"), "#349: the RESTING row must keep the muted nav ink: {r}");
-    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &c[c.find("\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {").unwrap()..];
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--nav-item-color-hover:"), "#349: light mode must inherit the same hover default");
 }
@@ -207,7 +207,7 @@ fn i322_negative_inactive_tabs_and_the_tab_strip_stay_unoutlined() {
     assert!(!rule(&c, ".tab").contains("box-shadow"), "#322: inactive tabs must not be outlined");
     let bar = rule(&c, ".tabbar");
     assert!(bar.contains("border-bottom-width: var(--tab-outline-width, 0)"), "#322: the strip's bottom border must stay 0 by default: {bar}");
-    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &c[c.find("\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {").unwrap()..];
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--tab-outline-color:"), "#322: light mode must inherit the same wiring (the border colour differs, not the var)");
 }
@@ -226,7 +226,7 @@ fn i326_negative_geometry_and_other_modals_are_unchanged() {
     let c = css();
     let r = rule(&c, "#mbox");
     assert!(r.contains("border-radius: 8px") && r.contains("width: 520px"), "#326: prompt geometry is out of scope: {r}");
-    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &c[c.find("\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {").unwrap()..];
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--prompt-border-color:") && light.contains("--background-modifier-border-focus: #bdbdbd"), "#326: light must inherit the wiring via its own focus border");
 }
@@ -244,7 +244,7 @@ fn i327_menus_and_graph_controls_chain_to_secondary_and_border_hover() {
     assert!(g.contains("border: 1px solid var(--background-modifier-border-hover, var(--border))"), "#327: graph controls border is not --background-modifier-border-hover: {g}");
     // themes that set no border-hover (Gruvbox) get stock's default: base-35, stock D 63 / L 218
     assert_eq!(decl_in(&c, "\nbody {", "--background-modifier-border-hover"), "var(--color-base-35, #3f3f3f)", "#327: dark border-hover default is not stock base-35");
-    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--background-modifier-border-hover"), "var(--color-base-35, #dadada)", "#327: light border-hover default is not stock base-35");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {", "--background-modifier-border-hover"), "var(--color-base-35, #dadada)", "#327: light border-hover default is not stock base-35");
 }
 #[test]
 fn i327_negative_border_hover_is_not_the_plain_border() {
@@ -262,7 +262,7 @@ fn i327_negative_no_elevated_surface_and_geometry_unchanged() {
     assert!(g.contains("border-radius: 8px") && g.contains("width: var(--graph-controls-width, 240px)"), "#327: graph controls geometry is out of scope: {g}");
     assert_eq!(decl_in(&c, "\nbody {", "--menu-radius"), "6px", "#327: menu radius is not this issue (AnuPpuccin 8 vs 6 left out)");
     // light/dark differ by --background-secondary only: no mode block redefines the menu wiring
-    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &c[c.find("\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {").unwrap()..];
     let light = &light[..light.find("\n}").unwrap()];
     assert!(!light.contains("--menu-background:") && light.contains("--background-secondary: #f6f6f6"), "#327: light must inherit the wiring via its own secondary (stock 246)");
 }
@@ -286,7 +286,7 @@ fn i337_focused_prompt_input_reads_border_focus_and_dropdowns_interactive_normal
     assert_eq!(decl_in(&c, "\nbody {", "--dropdown-background"), "var(--interactive-normal)", "#337: dropdowns do not read --interactive-normal");
     // stock --interactive-normal: light base-00 (default 255, Solarized base2), dark base-30 (Solarized base02)
     assert_eq!(decl_in(&c, "\nbody {", "--interactive-normal"), "var(--color-base-30)", "#337: dark --interactive-normal is not base-30");
-    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--interactive-normal"), "var(--color-base-00, #ffffff)", "#337: light --interactive-normal is not base-00");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {", "--interactive-normal"), "var(--color-base-00, #ffffff)", "#337: light --interactive-normal is not base-00");
     let d = rule(&c, ".sctl.dropdown");
     assert!(d.contains("background: var(--dropdown-background") && d.contains("border: 0;"), "#337: dropdown fill/border-width not stock: {d}");
     assert!(d.contains("box-shadow: var(--input-shadow, inset 0 0 0 1px var(--border))"), "#337: dropdown frame must come from --input-shadow: {d}");
@@ -326,7 +326,7 @@ fn i352_negative_no_mode_block_reintroduces_a_faint_literal() {
     let n_faint = c.matches("\n  --text-chrome-faint:").count();
     let n_dim = c.matches("\n  --text-chrome-dim:").count();
     assert_eq!((n_faint, n_dim), (1, 1), "#352: a mode block re-declares the faint chrome ink as a literal");
-    let light = &c[c.find("\nbody:where(.theme-light) {").unwrap()..];
+    let light = &c[c.find("\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {").unwrap()..];
     let light = &light[..light.find("\n}").unwrap()];
     assert!(light.contains("--text-faint: var(--color-base-50, #ababab)"), "#352: light keeps the stock default faint #ababab via --text-faint");
     // muted ink is NOT faint: the two must stay separate variables
@@ -433,7 +433,7 @@ fn i328_negative_active_fill_is_not_the_theme_nav_item_active_var() {
     assert!(!a.contains("--nav-item-background-active"), "#328: settings nav fill reads --nav-item-background-active (Solarized L would paint accent/.1, stock does not): {a}");
     // our default hover tint is the stock one in both modes, so default/Gruvbox/AnuPpuccin are unchanged
     assert_eq!(decl_in(&c, "\nbody {", "--background-modifier-hover"), "rgba(255, 255, 255, .067)", "#328: dark hover tint changed");
-    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--background-modifier-hover"), "rgba(0, 0, 0, .067)", "#328: light hover tint changed");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {", "--background-modifier-hover"), "rgba(0, 0, 0, .067)", "#328: light hover tint changed");
 }
 #[test]
 fn i328_negative_ours_does_not_outrank_theme_nav_rules() {
@@ -452,14 +452,14 @@ fn i337_mono_rgb_100_is_defined_like_stock() {
     // invalid at computed time -> currentColor (ours 15,15,15 / 209,209,209). Stock: L 0,0,0 / D 255,255,255.
     let c = css();
     assert_eq!(decl_in(&c, "\nbody {", "--mono-rgb-100"), "255, 255, 255", "#337: dark --mono-rgb-100 not stock");
-    assert_eq!(decl_in(&c, "\nbody:where(.theme-light) {", "--mono-rgb-100"), "0, 0, 0", "#337: light --mono-rgb-100 not stock");
+    assert_eq!(decl_in(&c, "\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {", "--mono-rgb-100"), "0, 0, 0", "#337: light --mono-rgb-100 not stock");
 }
 #[test]
 fn i337_negative_mono_rgb_is_a_bare_triplet_not_a_colour() {
     // rgba(var(--mono-rgb-100), a) only parses with a bare "r, g, b" triplet; a colour value (#fff, rgb())
     // would make every theme rule using it invalid again.
     let c = css();
-    for scope in ["\nbody {", "\nbody:where(.theme-light) {"] {
+    for scope in ["\nbody {", "\nbody:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {"] {
         let v = decl_in(&c, scope, "--mono-rgb-100");
         assert!(!v.contains('#') && !v.contains('(') && v.split(',').count() == 3, "#337: --mono-rgb-100 is not a bare triplet: {v}");
     }
