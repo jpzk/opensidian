@@ -14,7 +14,7 @@
 # Runs:  cargo test --locked --no-fail-fast  (src-tauri, = box T0 scope), then
 #        cargo build --locked --profile devfast  (a build that does not reuse the test profile).
 # Gate:  cargo test rc must be 0 AND the passed counts must reach the floors (a run that silently
-#        lost tests fails): TOTAL_MIN (all test binaries + doctests) and LIB_MIN (the lib unittests).
+#        lost tests fails): TOTAL_MIN (all test binaries + doctests) and LIB_MIN (the crate unittests: the src/main.rs test binary).
 #        Defaults = the coordinator box count for develop 3b46919 (2026-11-23): 669 total / 592 lib.
 # Output: $OUT (default <tree>/dist/linux-test) cargo-test.log, cargo-build.log, apt.log,
 #         pkgset.tsv, summary.txt. Nothing is cached: the cargo home lives in $OUT/cargo-home
@@ -117,20 +117,26 @@ podman run --rm --network=host -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="$RUST" -e 
 [ "$rc" = 0 ] || die "container stage rc=$rc"
 L=$OUT/cargo-test.log; [ -s "$L" ] || die "no cargo test log"
 TRC=$(cat "$OUT/test.rc"); BRC=$(cat "$OUT/build.rc")
-# counts: sum of "N passed" over every "test result:" line; lib = the result right after "Running unittests src/lib.rs"
-TOTAL=$(awk '/^test result:/{for(i=1;i<=NF;i++) if($(i+1)=="passed;") s+=$i} END{print s+0}' "$L")
+# counts: per test binary (each "Running ..."/"Doc-tests ..." section) only its LAST "test result:" line
+# is the binary's own summary; earlier ones in a section are re-exec'd test subprocesses (filtered
+# single-test runs) whose output lands in the parent's log. unit = the src/main.rs unittests binary
+# (the crate's suite lives there; src/lib.rs holds only the few shared modules)
+sect() { awk '/^ *(Running|Doc-tests) /{if(n!="")print n" "p; n=$0; p=0; next}
+  /^test result:/{p=0; for(i=1;i<=NF;i++) if($(i+1)=="passed;") p=$i}
+  END{if(n!="")print n" "p}' "$1"; }
+TOTAL=$(sect "$L" | awk '{s+=$NF} END{print s+0}')
 FAILED=$(awk '/^test result:/{for(i=1;i<=NF;i++) if($(i+1)=="failed;") s+=$i} END{print s+0}' "$L")
-LIB=$(awk '/Running unittests src\/lib.rs/{f=1;next} f&&/^test result:/{for(i=1;i<=NF;i++) if($(i+1)=="passed;") print $i; exit}' "$L")
+LIB=$(sect "$L" | awk '/Running unittests src\/main.rs /{print $NF; exit}')
 LIB=${LIB:-0}
 { echo "arch=$ARCH image=$IMG snapshot=$SNAP rust=$RUST"
-  echo "cargo_test_rc=$TRC passed_total=$TOTAL failed_total=$FAILED passed_lib=$LIB floors=$TOTAL_MIN/$LIB_MIN"
+  echo "cargo_test_rc=$TRC passed_total=$TOTAL failed_total=$FAILED passed_unit_main=$LIB floors=$TOTAL_MIN/$LIB_MIN"
   echo "cargo_build_devfast_rc=$BRC"
   grep -E '^test .* FAILED$|^failures:$|panicked at' "$L" | head -40 || true; } | tee "$OUT/summary.txt"
 grep -E '^test result:|Running ' "$L" | sed 's/^/    /' | head -80
 ok=1
 [ "$TRC" = 0 ] || { say "FAIL: cargo test rc=$TRC ($FAILED failed)"; ok=0; }
 [ "$TOTAL" -ge "$TOTAL_MIN" ] || { say "FAIL: $TOTAL tests passed < floor $TOTAL_MIN"; ok=0; }
-[ "$LIB" -ge "$LIB_MIN" ] || { say "FAIL: lib $LIB passed < floor $LIB_MIN"; ok=0; }
+[ "$LIB" -ge "$LIB_MIN" ] || { say "FAIL: unit (src/main.rs) $LIB passed < floor $LIB_MIN"; ok=0; }
 [ "$BRC" = 0 ] || { say "FAIL: cargo build --profile devfast rc=$BRC"; tail -40 "$OUT/cargo-build.log"; ok=0; }
 [ "$ok" = 1 ] || exit 1
 say "PASS: $TOTAL passed ($LIB lib), 0 failed, devfast build ok"
