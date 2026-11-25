@@ -351,7 +351,7 @@ const Ed = {
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
         if (bar >= 0) add(Ed.mk(target + "|", "wl"), true);
-        const a = Ed.el("a", "wiki wl");
+        const a = Ed.el("a", "wiki wl cm-hmd-internal-link");   // #339: stock LP link class (AnuPpuccin scopes --link-decoration: none to it)
         a.href = "#";
         const note = hash >= 0 ? target.slice(0, hash) : target;
         if (note) a.dataset.note = note;
@@ -419,7 +419,7 @@ const Ed = {
       }
       let done = false;
       for (const [open, cls, tag] of [["***", "bi", "strong"], ["**", "b", "strong"],
-                                      ["~~", "s", "span"], ["==", "hl", "mark"],
+                                      ["~~", "s", "span"], ["==", "hl", "span"],
                                       ["*", "i", "em"], ["_", "i", "em"]]) {
         if (!rest.startsWith(open)) continue;
         if (open === "_" && i > 0 && !/\s/.test(s[i - 1])) break;  // intraword _ is plain
@@ -431,6 +431,7 @@ const Ed = {
           const m0 = Ed.mk(open);
           box.appendChild(m0);
           const e = Ed.el(tag, cls);
+          if (cls === "hl") e.classList.add("cm-highlight");   // #335: stock LP highlight is span.cm-highlight, so theme rules for it (Solarized .cm-s-obsidian span.cm-highlight, Gruvbox .cm-highlight) reach it
           Ed.inline(g, e, s.slice(a0, j));
           box.appendChild(e);
           const m1 = Ed.mk(open);
@@ -3321,6 +3322,7 @@ Ed.lpExt = function (v, G) {
     let tcrNext = -1;
     // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
     const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
+    const frs = Ed.lpFenceRows(doc);   // #331: fence rows take the stock line class HyperMD-codeblock
     const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
     let last = -1;
     for (const { from, to } of view.visibleRanges) {
@@ -3356,7 +3358,7 @@ Ed.lpExt = function (v, G) {
         // #333: the caret line also carries `cm-active`, the class stock 1.13.7 puts on it (its DOM: "cm-line cm-active"),
         // so a theme's active-line rule (Gruvbox `.cm-active`, Solarized `body:not(.disable-…)
         // .cm-active`) has a target. Our own CSS paints nothing on it: with no theme rule the line looks as before.
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " " + Ed.ACTIVE_LINE : "") + tcr + fl).range(ln.from));
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (frs.has(ln.number) ? " HyperMD-codeblock" : "") + (ln.number === cur ? " " + Ed.ACTIVE_LINE : "") + tcr + fl).range(ln.from));
         const emit = i => {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
@@ -3500,6 +3502,25 @@ Ed.cbFences = function (doc) {
     }
   }
   Ed._cbDoc = doc; Ed._cbOut = out;
+  return out;
+};
+/* #331: the line numbers (1-based) of every row of every closed fence of doc, delimiters included
+   (with or without a language). Live preview gives those rows the line class HyperMD-codeblock, which
+   style.css paints with --code-background as stock does: Ed.block marks only the ``` delimiter rows
+   (span.fence), the body rows were plain .lprow on the page background. Cached on the doc. */
+Ed.lpFenceRows = function (doc) {
+  if (Ed._frDoc === doc) return Ed._frOut;
+  const out = new Set();
+  let open = null;
+  for (let i = 1; i <= doc.lines; i++) {
+    const m = Ed.CB_FENCE.exec(doc.line(i).text);
+    if (!open) { if (m && !(m[1][0] === "`" && m[3].includes("`"))) open = { ch: m[1][0], n: m[1].length, l0: i }; continue; }
+    if (m && m[1][0] === open.ch && m[1].length >= open.n && !m[2] && !m[3].trim()) {
+      for (let k = open.l0; k <= i; k++) out.add(k);
+      open = null;
+    }
+  }
+  Ed._frDoc = doc; Ed._frOut = out;
   return out;
 };
 // a processor was (un)registered: every editor rebuilds its code-block widgets

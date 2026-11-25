@@ -111,6 +111,8 @@ body {
   --accent-h: 258;
   --accent-s: 88%;
   --accent-l: 66%;
+  --color-accent-hsl: var(--accent-h), var(--accent-s), var(--accent-l);   /* #336: stock base triple, both modes */
+  --interactive-accent-hsl: var(--color-accent-hsl);   /* #336: Solarized --tag-background hsla(this, .1/.2) */
   --color-accent: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
   --color-accent-1: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --color-accent-2: hsl(calc(var(--accent-h) - 5), calc(var(--accent-s) * 1.05), calc(var(--accent-l) * 1.29));
@@ -122,7 +124,7 @@ body {
      --interactive-accent and Obsidian still tints selection with it, so the
      triple is the wrong source. tag pill: the triple at .1 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 33%, transparent);
-  --tag-background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1);
+  --tag-background: hsla(calc(var(--accent-h) * 1.0028), calc(var(--accent-s) * 1.008), calc(var(--accent-l) * .9893), .1);   /* #334: fitted to stock dark computed tint (default accent -> rgba(137,88,245,.1)); multiplicative so a theme hue in deg stays valid */
   /* ---- chrome surfaces under Obsidian's theme names (themelight audit):
      the active tree row and the selected palette row are the SAME white veil;
      the active tab = the note surface; file tree ink = --text-muted. */
@@ -210,8 +212,9 @@ body {
   --checkbox-color: var(--bg-button-primary);
   --checkbox-marker-color: var(--bg-base);
   --checklist-done-color: var(--text-chrome-faint);
-  --code-background: var(--bg-surface);
-  --blockquote-border-color: var(--text-accent);
+  --code-background: var(--background-primary-alt);   /* #320: stock default (inline code on the alt background) */
+  --blockquote-border-color: var(--interactive-accent);   /* #347: stock default (interactive accent, not text accent) */
+  --blockquote-background-color: transparent;   /* #330: stock default; a theme setting it (AnuPpuccin crust .5) paints behind blockquotes */
   /* ==================== LAYER 3 — OURS ALONE =============================
      An editor has surfaces the theme recon never showed painting through any
      name we probed (a ribbon ink, an elevated popover, a faint rule, the
@@ -322,6 +325,7 @@ body {
   --font-monospace-theme: var(--font-monospace-override), var(--font-monospace-default);
   --font-normal: 400;
   --font-semibold: 600;
+  --font-bold: 700;   /* #336: stock base weight; themes build on it (Solarized --table-header-weight) */
   --font-smallest: .7em;
   --font-text-theme: var(--font-text-override), var(--font-default);
   --font-ui-large: 16px;
@@ -347,12 +351,13 @@ body {
   --input-padding: 4px 6px;
   --input-radius: 4px;
   --interactive-normal: var(--border);
-  --link-color: var(--accent-blue);
+  --link-color: var(--text-accent);   /* #332: stock links follow the theme accent */
   --link-color-hover: var(--text-accent-hover);
-  --link-decoration: none;
-  --link-external-color: var(--accent-blue);
+  --link-decoration: underline;   /* #339: stock default-theme links are underlined (reading view, live preview, canvas cards); every bundled theme sets none itself */
+  --link-external-color: var(--text-accent);   /* #332 */
   --link-external-decoration: underline;
-  --link-unresolved-color: var(--link-unresolved);
+  --link-unresolved-color: var(--link-color);   /* #321: stock derives the unresolved ink from the link colour */
+  --link-unresolved-opacity: 0.7;   /* #321: stock dims unresolved links (default, Minimal, AnuPpuccin, Gruvbox) */
   --link-unresolved-decoration-color: var(--link-unresolved-underline);
   --menu-background: var(--bg-base);
   --menu-border-width: 1px;
@@ -475,7 +480,7 @@ body:where(.theme-light, :root[data-theme="light"] > :not(.theme-dark)) {
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
   --text-warning: var(--color-orange, #ec7500);               /* deep-templater F10: stock 1.13.7 pixel of templater's device-only note (edge/ev/stock-r1-F10-tab2.png) */
-  --text-highlight-bg: rgba(255, 208, 0, .4);   /* #348: stock 1.13.7 computed value in light too (= #ffec99 over white) */
+  --text-highlight-bg: rgba(255, 208, 0, .4);   /* #323/#335/#348: stock light computes the translucent tint, not its opaque over-white #ffec99 (wrong over any non-white surface) */
   /* the code token names (deep-templater F24): plugin highlighters paint with them,
      templater's <% %> commands most visibly (var(--code-property, #d4d4d4) etc.), and
      without them they took their dark fallbacks on a light page. Values = stock
@@ -497,6 +502,7 @@ body:where(.theme-light, :root[data-theme="light"] > :not(.theme-dark)) {
   --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --text-accent: var(--color-accent);
   --interactive-accent: var(--color-accent-1);
+  --tag-background: hsla(calc(var(--accent-h) * .9833), calc(var(--accent-s) * .982), calc(var(--accent-l) * 1.079), .1);   /* #334: fitted to stock light computed tint (default accent -> rgba(147,118,245,.1)) */
   /* light selection = --interactive-accent at .2 (Wasp and 1984 agree); the
      tree row and palette row hover = black at .067 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
@@ -683,7 +689,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .shit { padding: 2px 8px 2px 16px; color: var(--text-chrome-muted); cursor: pointer;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background-color: var(--search-result-background, transparent); }
 .shit:hover { background: var(--bg-surface) }
-.shit mark { background: none; color: var(--accent-yellow) }
+/* #323: a search / backlink match is stock's .search-result-file-matched-text: the theme highlight
+   behind --text-normal ink. ONE bare class selector (0,1,0) so a theme rule for the class (Solarized
+   ink --text-on-accent, Gruvbox --text-highlight-fg) wins by load order, exactly as in stock. */
+.search-result-file-matched-text { background-color: var(--text-highlight-bg); color: var(--text-normal) }
 .sempty { padding: 8px; color: var(--text-chrome-dim) }
 /* bmfolder: `flex: 1` is LOAD-BEARING, not tidiness. .spane is a flex column, so
    a content-sized #bmlist ends at its last row and the area below the rows is the
@@ -804,7 +813,6 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: var(--font-ui-smaller, 12px);   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
-.blline mark { background: none; color: var(--accent-yellow) }
 .outrow { padding: 4px 10px; color: var(--text-chrome); cursor: pointer; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis }
 .outrow:hover { background: var(--bg-surface) }
@@ -954,7 +962,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
   border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
 .lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 .lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
-.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
+.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
@@ -994,7 +1002,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
 .preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
-.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
+.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal }   /* #321: upright like stock */
 .preview mark { background-color: var(--text-highlight-bg); color: var(--text-normal) }   /* #348: reading ==highlight== (stock .markdown-rendered mark: --text-highlight-bg, ink --text-normal; same as the lp .hl) */
 .lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none); }   /* #59: thickness rides in the shorthand (a longhand after it would drop the shorthand from CSSOM) */
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
@@ -1493,7 +1501,11 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .i { font-style: italic; color: var(--italic-color, inherit); font-weight: var(--italic-weight, inherit); }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
 .lp .s { text-decoration: line-through }
-.lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
+/* #335: the LP ==marker== is stock's span.cm-highlight: --text-highlight-bg behind --text-normal ink (issue #47),
+   under ONE bare class selector (0,1,0) so the theme's own highlight rules (Solarized .cm-s-obsidian
+   span.cm-highlight ink --text-on-accent + 2px padding, Gruvbox .cm-highlight --text-highlight-fg) win as in
+   stock. Before, the element was a bare <mark class="hl">: no theme rule named it, and .lp .hl hard-coded the ink. */
+.cm-highlight { background-color: var(--text-highlight-bg); color: var(--text-normal) }
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--link-color, var(--accent-blue)) }
 .lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--link-color-hover, var(--text-accent-hover)) }   /* themematch: link hover ink */
@@ -1502,8 +1514,9 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
 .lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
-.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
+.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--code-background);   /* #331: stock paints LP code rows with --code-background */
              padding: 0 8px; white-space: pre; overflow-x: auto }
+.lp .lprow.HyperMD-codeblock { background-color: var(--code-background) }   /* #331: every fence row (body + delimiters, Ed.lpFenceRows), not only the ``` rows */
 .lp .bq { color: var(--blockquote-color, inherit) }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,
    sized by the viewport-relative rule below; recentres on resize with no JS.
@@ -1674,7 +1687,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --font-text-size: 16px; --font-smaller: 0.92em; --line-height-normal: 1.55; --line-height-tight: 1.25;
   /* ONE spacing unit for the content column (TOKENS.md): every margin, indent, radius and width below is a multiple of it */
   --space-unit: 0.25rem;
-  --font-weight: var(--font-normal, 400); --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
+  --font-weight: var(--font-normal, 400); --bold-modifier: 200; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
   /* R15.7-9 headings */
   --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
   --h1-weight: 700; --h2-weight: 600; --h3-weight: 600; --h4-weight: 600; --h5-weight: 600; --h6-weight: 600;
@@ -1689,7 +1702,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
   --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
-  --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
+  --blockquote-border-thickness: 2px;   /* #347: stock default (was 3px) */
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
      this file: --list-marker-color, --checkbox-border-color, --checkbox-color,
@@ -1946,6 +1959,26 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
 .preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-decoration-color, var(--link-unresolved-underline)); text-decoration-style: var(--link-unresolved-decoration-style, solid); filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }   /* REQ-15 */
+/* #339: canvas cards render markdown outside .lp/.preview (text card div.canvas-text.markdown-rendered,
+   note card div.canvas-file-embed > .markdown-embed-content), so no link rule reached their anchors and the
+   UA blue + underline won. Stock gives card links the app link styling: --link-color, --link-decoration (default underline, a theme sets none). */
+:is(.canvas-text, .canvas-file-embed) a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit) }
+/* #339: the card link decoration at (0,1,1), under a theme's own .markdown-rendered .internal-link rule (AnuPpuccin none, (0,2,0)) as in stock;
+   default = --link-decoration (stock underline), Minimal/Gruvbox/Solarized set the variable none */
+:where(.canvas-text, .canvas-file-embed) a.wiki { text-decoration: var(--link-decoration, underline) }
+:is(.canvas-text, .canvas-file-embed) a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; opacity: var(--link-unresolved-opacity, 1); filter: var(--link-unresolved-filter, none) }
+:is(.canvas-text, .canvas-file-embed) a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none) }
+/* #353: the heading / bold / italic colour rules were scoped to .lp/.preview, so canvas card markdown painted
+   them in body ink; stock paints card headings --hN-color and bold --bold-color as in the note view (Gruvbox red /
+   orange). Colours only: card heading sizes and spacing are the default-theme card typography (#342). */
+:is(.canvas-text, .canvas-file-embed) h1 { color: var(--h1-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h2 { color: var(--h2-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h3 { color: var(--h3-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h4 { color: var(--h4-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h5 { color: var(--h5-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h6 { color: var(--h6-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) :is(b, strong) { color: var(--bold-color, inherit) }
+:is(.canvas-text, .canvas-file-embed) em { color: var(--italic-color, inherit) }
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
 .preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: var(--indentation-guide-width, 1px);
   background: var(--indentation-guide-color); pointer-events: none }
@@ -1977,12 +2010,12 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .token.regex, .token.important { color: var(--code-important, inherit) }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--transparent);
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background-color: var(--blockquote-background-color);   /* #330 */
   position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
 .preview blockquote > :last-child { margin-bottom: 0 }
-.lp blockquote { padding-inline-start: 11px }
+.lp blockquote { padding-inline-start: 12px }   /* #347: 2px bar + 12px = text at +14 like stock (gate LP_BQ_TEXT_X=14) */
 /* R15.10-13 in LIVE PREVIEW, on the R17 flat row DOM (ui/editor.js emits ONE
    div.lprow per source line — there is no ul/ol/li/blockquote to select, so
    the semantic rules above are reading-mode only). The reading-view offsets are
@@ -2022,11 +2055,11 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp:not(.src) .li > .lpre:first-child:has(+ .lbody) { flex: none; white-space: pre }
 .lp:not(.src) .li > .lpre:first-child + .lbody { flex: 1 1 0; min-width: 0 }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
-   the h1 "H" ink x (+2 from the column), text 11px past it */
-.lp .bq { display: block; margin-inline-start: 2px;
+   the h1 "H" ink x (+2 from the column), text 12px past the 2px bar (#347: +14 like stock) */
+.lp .bq { display: block; margin-inline-start: 2px; background-color: var(--blockquote-background-color);   /* #330 */
   border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding-inline-start: 11px }
-.lp .bq .bq { margin-inline-start: 0 }                          /* nested "> >": only the outer one is offset */
+  padding-inline-start: 12px }
+.lp .bq .bq { margin-inline-start: 0; background-color: transparent }                         /* nested "> >": only the outer one is offset and painted (#330: no double alpha) */
 
 /* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint
    invalidation so floorProbe() measures a frame, not an elided class flip.
@@ -2551,6 +2584,9 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .metadata-input-checkbox { margin: 6px; }
 .multi-select-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
 .multi-select-pill { display: inline-flex; align-items: center; gap: 2px; padding: 1px 8px; border-radius: 12px; background: var(--border); font-size: 13px; }
+/* #334: a tags-property pill is a tag: stock paints it --tag-color on --tag-background (Gruvbox L ink
+   rgb(76,122,93) on rgb(235,219,178)); other list pills (aliases) keep the neutral pill above. */
+.metadata-property[data-property-type="tags"] .multi-select-pill { color: var(--tag-color); background-color: var(--tag-background) }
 .multi-select-pill-remove-button { cursor: pointer; opacity: .6; padding: 0 2px; }
 .multi-select-pill-remove-button:hover { opacity: 1; }
 .multi-select-input { flex: 1 1 60px; width: auto; }
