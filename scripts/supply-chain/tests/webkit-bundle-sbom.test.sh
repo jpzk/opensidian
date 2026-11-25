@@ -76,7 +76,9 @@ cat >"$t/bin/apt-cache" <<S
 case "\$*" in *libwebkit2gtk-4.1-0*=2.50.1-0ubuntu1*) printf 'Package: libwebkit2gtk-4.1-0\nSHA256: $H1\n';; *) exit 100;; esac
 S
 chmod +x "$t/bin/"*
-run() { env PATH="$t/bin:$PATH" UNOWNED="$t/unowned" DOC_ROOT="$t/doc" DISTRO=${DISTRO:-ubuntu-26.04} SOURCE_DATE_EPOCH=1700000000 \
+# #299 G1: embedded-component table for the fixture webkit (2.50.1); rows for another version are ignored
+printf "# comment\n2.50.1\tskia\tm140\tpkg:generic/skia@m140\tBSD-3-Clause\tSkMilestone.h 140\n2.50.1\tpdfjs-dist\t5.0.1\tpkg:npm/pdfjs-dist@5.0.1\tApache-2.0\tpdf.mjs\n9.9.9\tangle\t1\tpkg:generic/angle@1\tBSD-3-Clause\tx\n" >"$t/emb.tsv"
+run() { env PATH="$t/bin:$PATH" UNOWNED="$t/unowned" DOC_ROOT="$t/doc" WK_EMBEDDED=${WK_EMBEDDED:-$t/emb.tsv} DISTRO=${DISTRO:-ubuntu-26.04} SOURCE_DATE_EPOCH=1700000000 \
   WK_EXEC_DIR="$W" WK_BUNDLE="$W/injected-bundle/libwebkit2gtkinjectedbundle.so" WK_LIB="$L/libwebkit2gtk-4.1.so.0" \
   "$here/webkit-bundle-sbom.sh" "$@"; }
 expect_fail() { local name=$1 pat=$2; shift 2
@@ -97,6 +99,8 @@ chk "epoch percent-encoded" 'any(.components[]; .purl=="pkg:deb/ubuntu/libgcrypt
 chk "EXCL libs (libc, libX11) not bundled" '[.components[].properties[]?|select(.name=="opensidian:bundled-libs").value]|join(",")|(test("libc\\.so")|not) and (test("libX11")|not)'
 chk "brotli = upstream pin, not the deb" \
   'any(.components[]; .purl=="pkg:github/google/brotli@v1.2.1" and (.properties[0].value=="libbrotlicommon.so.1,libbrotlidec.so.1")) and (any(.components[]; .purl|startswith("pkg:deb/ubuntu/brotli"))|not)'
+chk "G4 (#299): brotli carries a CPE so grype can match it" \
+  'any(.components[]; .name=="brotli" and .cpe=="cpe:2.3:a:google:brotli:1.2.1:*:*:*:*:*:*:*")'
 chk "unique bom-refs + dependency graph complete" \
   '([.components[]."bom-ref"]|length)==([.components[]."bom-ref"]|unique|length) and (.dependencies[0].dependsOn|sort)==([.components[]."bom-ref"]|sort)'
 
@@ -150,6 +154,35 @@ expect_fail "missing copyright file" "libsoup-3.0-0: no .*copyright" run --pkgse
 mv "$t/cr" "$D/libsoup-3.0-0/copyright"
 printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n\nFiles: *\n' >"$D/libgcrypt20/copyright"
 expect_fail "DEP-5 without License: line" "has no License: line" run --pkgset "$t/pkgset.tsv"
+# ---- #299 G1: components embedded INSIDE libwebkit2gtk (Skia, ANGLE, pdf.js, ...) ----
+printf 'This is Debian libgcrypt.\nGNU Lesser General Public License...\n' >"$D/libgcrypt20/copyright"
+: >"$t/unowned"
+run >"$t/sbom.json" 2>"$t/err" || { cat "$t/err"; bad "G1 run rc!=0"; }
+W2='.components[]|select(.name=="webkit2gtk")'
+chk "G1: webkit2gtk carries embedded skia as nested component with version + purl" \
+  "[$W2|.components[]?|select(.name==\"skia\")]|length==1 and .[0].version==\"m140\" and .[0].purl==\"pkg:generic/skia@m140\" and .[0].licenses==[{expression:\"BSD-3-Clause\"}]"
+chk "G1: embedded pdf.js has a matchable pkg:npm purl" "any($W2|.components[]?; .purl==\"pkg:npm/pdfjs-dist@5.0.1\")"
+chk "G1: only rows of THIS webkit version (2.50.1), not 9.9.9" "[$W2|.components[]?|.name]|sort==[\"pdfjs-dist\",\"skia\"]"
+chk "G1: embedded-in + evidence properties" \
+  "all($W2|.components[]; any(.properties[]; .name==\"opensidian:embedded-in\" and .value==\"webkit2gtk@2.50.1-0ubuntu1\") and any(.properties[]; .name==\"opensidian:evidence\"))"
+chk "G1: bom-refs unique incl. nested" '[..|objects|select(has("bom-ref"))."bom-ref"]|length==(unique|length)'
+chk "G1: webkit2gtk dependsOn its embedded components" \
+  '(.dependencies[]|select(.ref|startswith("deb:webkit2gtk@"))|.dependsOn|sort)==([.components[]|select(.name=="webkit2gtk")|.components[]."bom-ref"]|sort)'
+# the release path (sbom-local.sh) merges this fragment and runs sbom-validate.sh on the result: a
+# nested-component SBOM must survive both (Release dry run 45174250029 failed exactly here)
+if mo=$(bash "$here/sbom-merge.sh" -o "$t/merged" -v 0.0.1 "$t/sbom.json" 2>"$t/merr") \
+   && bash "$here/sbom-validate.sh" "$mo" 2>"$t/verr"; then ok "G1: merged SBOM with nested components passes sbom-validate.sh"
+else cat "$t/merr" "$t/verr" 2>/dev/null; bad "G1: merged SBOM with nested components passes sbom-validate.sh"; fi
+WK_EMBEDDED=$t/nope expect_fail "G1: missing embedded table fails closed" "embedded-component table" run
+grep -v '^2\.50\.1' "$t/emb.tsv" >"$t/emb2.tsv"
+WK_EMBEDDED=$t/emb2.tsv expect_fail "G1: webkit version absent from table fails closed" "no embedded-component rows for webkit 2.50.1" run
+printf '2.50.1\tskia\tm140\t\tBSD-3-Clause\tx\n' >"$t/emb3.tsv"
+WK_EMBEDDED=$t/emb3.tsv expect_fail "G1: row without purl fails closed" "bad row" run
+# the REAL table covers the webkit the AppImage build pins (packaging/ci/appimage-build.sh)
+pin=$(sed -n 's/.*libwebkit2gtk-4\.1-0=\([0-9.]*\)-.*/\1/p' "$here/../../packaging/ci/appimage-build.sh" | head -1)
+real=$(awk -F'\t' -v v="$pin" '!/^#/ && $1==v && $2!="" && $3!="" && $4 ~ /^pkg:/ && $5!="" && $6!=""' "$here/webkit-embedded.tsv" | cut -f2 | sort | tr '\n' ' ')
+[ "$real" = "angle libsysprof-capture pdfjs-dist skia xdgmime " ] && ok "G1: webkit-embedded.tsv covers pinned webkit $pin: $real" || bad "G1: webkit-embedded.tsv rows for pinned webkit '$pin': '$real'"
+
 # ---- osv-fixed-gate ----
 mk() { jq -n --arg eco "$1" --argjson ev "$2" '{results:[{packages:[{package:{name:"webkit2gtk",version:"2.50.1-0ubuntu1",ecosystem:"Ubuntu:26.04:LTS"},
   vulnerabilities:[{id:"UBUNTU-CVE-2026-0001",aliases:["CVE-2026-0001"],affected:[{package:{name:"webkit2gtk",ecosystem:$eco},ranges:[{type:"ECOSYSTEM",events:$ev}]}]}]}]}]}'; }
