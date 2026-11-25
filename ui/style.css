@@ -1618,6 +1618,9 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .sbtn, .supdlink, #sbox [role=button], #sbox button { cursor: pointer }
 #sbox [aria-disabled="true"], #sbox .srow.dis .sbtn { cursor: default }
 .supd { margin-top: 4px }
+/* #294: the signed sha256 line (copyable, sha256sum format) and one line per warning */
+.supdsha { font-family: var(--font-monospace); user-select: text; overflow-wrap: anywhere; margin-top: 2px }
+.supdwarn { color: var(--text-error); margin-top: 2px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }
@@ -2293,6 +2296,11 @@ span.is-flashing { background: var(--highlight-yellow) }
   background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
 #ldcard .ldbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 .ssecrestartbtn { margin-left: 6px; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; font-size: 12px; cursor: pointer }
+/* #295 Settings › Security › Microphone: ask | always allow | off (ui/security.js micRow) */
+.ssecmicseg { gap: 4px }
+.ssecmicseg .sbtn { font-size: 13px; color: var(--text-normal) }
+.ssecmicseg .sbtn.acc { color: var(--bg-ribbon) }
+.srow.dis .ssecmicseg .sbtn { opacity: .55 }
 /* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;

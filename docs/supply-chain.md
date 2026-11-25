@@ -4,21 +4,24 @@ Workflow: `.github/workflows/supply-chain.yml` (#188). It is the **one** workflo
 scanning and dependency policy work. Scripts live in `scripts/supply-chain/` (bash + jq + coreutils,
 no python/js tooling); their tests are in `scripts/supply-chain/tests/`.
 
-## Triggers (operator decision, 2026-11-17)
+## Triggers (operator decisions 2026-11-17, 2026-11-23)
 
 - push to `main`, `develop` and `release/**`
 - push of tags `v*`
 - weekly cron (Monday 04:23 UTC), so new advisories show up when no code changes
-- `workflow_dispatch` (input `codemirror_rebuild` turns on the opt-in rebuild job)
-- `workflow_call`, so `release.yml` can call it (no inputs)
+- `workflow_dispatch` (input `codemirror_rebuild` turns on the opt-in rebuild job; input `ref` picks
+  the ref to check out, empty = the dispatched ref)
+- `workflow_call`, so `release.yml` (no inputs) and `linux.yml` can call it
 
-There is **no `pull_request` trigger** (and never `pull_request_target`). Earlier versions of this
-workflow ran on every PR; that trigger was removed on purpose.
-
-**Consequence (accepted by the operator):** cargo audit / deny / vet and the CVE scans no longer gate
-PRs. An unaudited crate, a disallowed license or a vulnerable dependency is caught only **after** it
-has landed on `develop` (the push run turns red), not before the merge. Review new dependencies in
-the PR by hand and fix forward on develop.
+**Pull requests (operator 2026-11-23, supersedes the 2026-11-17 "no PR trigger" decision):** every PR
+to `develop` / `main` runs this whole workflow through `.github/workflows/linux.yml`
+(`pull_request` -> `workflow_call`), so pin-check, cargo audit / deny / vet, the vendored-JS CVE scan,
+the VEX check and the gate self-tests gate PRs again, with the same fail-closed jobs as a push run.
+There is still no `pull_request` trigger in `supply-chain.yml` itself and never
+`pull_request_target`: a fork PR runs with GitHub's read-only `GITHUB_TOKEN` and no secrets, and the
+calling job is `permissions: contents: read` (a called workflow can only narrow the caller's token).
+`linux.yml`'s `workflow_dispatch` input `pr` tests an open PR's head (`refs/pull/<n>/head`, passed
+here as `ref`) without pushing to that PR. See the header of `linux.yml`.
 
 `release.yml` branches named `v<ver>-release` are not matched by `release/**`; releases reach this
 workflow through `workflow_call` instead. The concurrency group includes `github.workflow` (the

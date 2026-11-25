@@ -76,7 +76,17 @@ if [ "$FLAVOR" = portable ]; then
   # libwayland-client and needs its newer symbols (wl_display_create_queue_with_name, mesa 26); a bundled
   # older copy on LD_LIBRARY_PATH shadows it, libEGL_mesa fails to load, and WebKitWebProcess aborts with
   # "Could not create default EGL display: EGL_BAD_PARAMETER" (measured on fresh F44/U26.04, 2026-10-03).
-  EXCL='^(ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libutil\.so|libresolv\.so|libmvec\.so|libnss_|libanl\.so|libthread_db|libstdc\+\+|libgcc_s|libGL\.so|libGLX|libGLdispatch|libOpenGL|libEGL|libdrm|libgbm|libglapi|libwayland-|libX|libxcb|libfontconfig|libfreetype|libexpat|libz\.so|libasound|libcom_err|libcrypt\.so|libkeyutils|libgpg-error)'
+  # #298 (host-provided, evidence: packaging/appimage/inventory/reachability/, RESULT of goal appimg-298):
+  #   krb5 (libgssapi_krb5/libkrb5/libk5crypto/libkrb5support): needed ONLY by libsoup's GSSAPI
+  #     "Negotiate" auth; its own deps libcom_err/libkeyutils were already host-provided, so a
+  #     bundled krb5 mixed with host com_err was inconsistent. 19 osv alerts/arch.
+  #   libsqlite3: webkit localStorage/IndexedDB + libsoup cookie/HSTS db; stable C ABI, on every
+  #     desktop distro. 11 alerts/arch.
+  #   libdbus-1: the client lib must match the host bus daemon anyway (a11y bridge, opensidian). 4.
+  #   libmount/libblkid (util-linux): libgio's mount-table monitor only; on every Linux. 4.
+  # Guarded by scripts/supply-chain/appimage-excl-check.sh (run below and on the SBOM in release.yml):
+  # removing any of these from EXCL, or one reappearing in the AppDir/SBOM, fails the build.
+  EXCL='^(ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libutil\.so|libresolv\.so|libmvec\.so|libnss_|libanl\.so|libthread_db|libstdc\+\+|libgcc_s|libGL\.so|libGLX|libGLdispatch|libOpenGL|libEGL|libdrm|libgbm|libglapi|libwayland-|libX|libxcb|libfontconfig|libfreetype|libexpat|libz\.so|libasound|libcom_err|libcrypt\.so|libkeyutils|libgpg-error|libgssapi_krb5|libkrb5\.so|libk5crypto|libkrb5support|libsqlite3|libdbus-1|libmount|libblkid)'
 
   echo "[appdir] ldd closure (minus excludelist)"
   { ldd "$BIN"
@@ -148,6 +158,9 @@ if [ "$FLAVOR" = portable ]; then
     echo "[brotli] bundled $f ($BROTLI_VER)"
   done
   rm -rf "$BROTLI_SRC" "$BROTLI_LIBS"
+
+  # #298: no excluded library may be in the AppDir (cp -n above, brotli, or a future copy step)
+  bash scripts/supply-chain/appimage-excl-check.sh --appdir "$APPDIR"
 
   # ---- portfix: point the BUNDLED libwebkit2gtk at the AppDir copies (Tauri's AppImage trick) ----
   # The two compiled-in dirs (helper dir = $WKEXEC, injected-bundle dir = dirname $WKBUNDLE + "/")

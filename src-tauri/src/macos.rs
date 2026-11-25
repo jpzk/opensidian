@@ -224,6 +224,14 @@ pub mod keychain {
         format!("secret storage: keychain {what}: OSStatus {st}{}", msg.map(|m| format!(" ({m})")).unwrap_or_default())
     }
 
+    /// the object SecItemCopyMatching stored in `out` with errSecSuccess. Security documents a +1
+    /// object whenever a kSecReturn* key was set, but nothing enforces that: a NULL fails closed here
+    /// instead of being dereferenced (CodeQL 1722/1723, rust/access-invalid-pointer)
+    pub(super) fn copied<'a>(out: *const c_void, what: &str) -> Result<&'a AnyObject, String> {
+        // SAFETY: out is NULL or the live +1 CF object SecItemCopyMatching stored; as_ref checks NULL
+        unsafe { (out as *const AnyObject).as_ref() }.ok_or_else(|| format!("secret storage: keychain {what}: success without a result"))
+    }
+
     /// the ids stored for this vault, sorted
     pub fn ids(vault: &str) -> Result<Vec<String>, String> {
         let q = base(vault);
@@ -238,10 +246,10 @@ pub mod keychain {
         if st != 0 {
             return Err(err("list", st));
         }
+        let arr = copied(out, "list")?;
         let mut ids = vec![];
-        // SAFETY: out is an NSArray of NSDictionary (released below)
+        // SAFETY: arr (= out) is an NSArray of NSDictionary (released below)
         unsafe {
-            let arr = &*(out as *const AnyObject);
             let n: usize = msg_send![arr, count];
             for i in 0..n {
                 let item: *const AnyObject = msg_send![arr, objectAtIndex: i];
@@ -272,9 +280,9 @@ pub mod keychain {
         if st != 0 {
             return Err(err("read", st));
         }
-        // SAFETY: out is an NSData (released below)
+        let d = copied(out, "read")?;
+        // SAFETY: d (= out) is an NSData (released below)
         let v = unsafe {
-            let d = &*(out as *const AnyObject);
             let len: usize = msg_send![d, length];
             let p: *const u8 = msg_send![d, bytes];
             let v = if len == 0 { Vec::new() } else { std::slice::from_raw_parts(p, len).to_vec() };
@@ -471,14 +479,14 @@ pub fn clip_key_monitor(ns_window: usize, off: impl Fn() -> bool + 'static, refu
 
 /// WKWebView -> its window label, for the media gate (registered by audiorec::install*)
 static MEDIA_WEBVIEWS: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
-static MEDIA_DECIDE: std::sync::OnceLock<fn(&str, bool, bool) -> bool> = std::sync::OnceLock::new();
+static MEDIA_DECIDE: std::sync::OnceLock<fn(&str, bool, bool) -> isize> = std::sync::OnceLock::new();
 
 /// The macOS twin of audiorec.rs's WebKitGTK permission-request handler. wry's WKUIDelegate
 /// answers EVERY getUserMedia with Grant; this replaces that one method on wry's delegate class
 /// (class_replaceMethod, once) with a gate that asks `decide(label, audio, video)` for the webview
 /// the request came from — an unregistered webview (the app page, any other) is Deny.
 /// Main thread (with_webview).
-pub fn media_gate(wv: *mut std::ffi::c_void, label: &str, decide: fn(&str, bool, bool) -> bool) {
+pub fn media_gate(wv: *mut std::ffi::c_void, label: &str, decide: fn(&str, bool, bool) -> isize) {
     let wv = wv as *mut AnyObject;
     if wv.is_null() {
         return eprintln!("[audiorec] media gate: no webview");
@@ -525,14 +533,23 @@ unsafe extern "C-unwind" fn gate_imp(
     // WKMediaCaptureType: 0 camera, 1 microphone, 2 camera + microphone
     let (audio, video) = (kind == 1 || kind == 2, kind == 0 || kind == 2);
     let label = MEDIA_WEBVIEWS.lock().ok().and_then(|m| m.iter().find(|(p, _)| *p == webview as usize).map(|(_, l)| l.clone()));
-    let allow = match (&label, MEDIA_DECIDE.get()) {
-        (Some(l), Some(d)) => d(l, audio, video),
-        _ => false,
+    // WKPermissionDecision: 0 prompt (WebKit's native system prompt, devaccess row = ask),
+    // 1 grant, 2 deny; anything but 0 / 1 from the decision = 2
+    let dec = match (&label, MEDIA_DECIDE.get()) {
+        (Some(l), Some(d)) => match d(l, audio, video) {
+            n @ (0 | 1) => n,
+            _ => 2,
+        },
+        _ => 2,
     };
-    eprintln!("[audiorec] user-media request {} audio={audio} video={video} display=false -> {}", label.as_deref().unwrap_or("<unknown webview>"), if allow { "Allow" } else { "Deny" });
-    // WKPermissionDecision: 1 grant, 2 deny
+    let said = match dec {
+        0 => "Ask (system prompt)",
+        1 => "Allow",
+        _ => "Deny",
+    };
+    eprintln!("[audiorec] user-media request {} audio={audio} video={video} display=false -> {said}", label.as_deref().unwrap_or("<unknown webview>"));
     if let Some(h) = handler.as_ref() {
-        h.call((if allow { 1 } else { 2 },));
+        h.call((dec,));
     }
 }
 
@@ -618,5 +635,16 @@ mod tests {
         kc::delete(&v, "k-one").expect("delete");
         assert_eq!(kc::get(&v, "k-one").expect("get3"), None);
         assert!(kc::ids(&v).expect("ids2").is_empty());
+    }
+
+    /// CodeQL 1722/1723: a success status with a NULL result fails closed instead of being
+    /// dereferenced (the non-NULL path is keychain_roundtrip above)
+    #[test]
+    fn keychain_success_without_result_is_an_error() {
+        use super::keychain as kc;
+        for what in ["list", "read"] {
+            let e = kc::copied(std::ptr::null(), what).expect_err("NULL result must be an error");
+            assert_eq!(e, format!("secret storage: keychain {what}: success without a result"));
+        }
     }
 }

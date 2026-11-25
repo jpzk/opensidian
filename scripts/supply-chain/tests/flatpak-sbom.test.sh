@@ -37,6 +37,16 @@ check "root dependsOn every component" "$t/ok.json" \
 expect_fail "G9: archive without sha256 fails closed" "without url/sha256" "$F" "$fx/nosha.yml"
 expect_fail "G9: malformed sha256 fails closed" "without url/sha256" "$F" "$fx/badsha.yml"
 expect_fail "module with no known license fails closed" "without a known license" "$F" "$fx/nolicense.yml"
+check "G4 (#299): brotli carries a CPE so grype can match it (pkg:github has no OSV ecosystem)" "$t/ok.json" \
+  '[.components[] | select(.name == "brotli")][0].cpe == "cpe:2.3:a:google:brotli:1.2.1:*:*:*:*:*:*:*"'
+expect_fail "G4 (#299): github module without a CPE mapping fails closed" "without a CPE" "$F" "$fx/nocpe.yml"
+for v in commit release codeload; do
+  expect_fail "G4 (#306 CodeAnt): github-hosted archive outside refs/tags form ($v) fails closed, not a CPE-less pkg:generic" \
+    "github-hosted archive" "$F" "$fx/gh-$v.yml"
+done
+"$F" "$fx/nongithub.yml" >"$t/ng.json"
+check "#306 CodeAnt: a non-github archive module ships as pkg:generic with download_url + sha256 (not silently dropped)" "$t/ng.json" \
+  '[.components[] | select(.type == "library")] | length == 1 and .[0].purl == "pkg:generic/brotli?download_url=https%3A%2F%2Fwww.example.org%2Fdist%2Fbrotli-1.2.1.tar.gz" and .[0].hashes[0].content == ("1" * 64)'
 expect_fail "missing manifest fails" "no " "$F" "$fx/absent.yml"
 "$F" >"$t/repo.json"
 check "repo manifest: brotli + runtime, all licensed" "$t/repo.json" \
