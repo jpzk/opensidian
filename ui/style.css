@@ -2523,13 +2523,8 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 /* #324: the live-preview callout widget is a rendered fragment (stock DOM div.cm-embed-block.markdown-rendered.cm-callout,
    ui/editor.js Ed.coField): stock spaces its blocks exactly like the reading view (--p-spacing), so the reading-view block
    spacing rules above apply to it too. Same specificity as the .preview rules: theme sheets still win on order. */
-.cm-callout :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }
-.cm-callout :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
-.cm-callout :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
-.cm-callout li > p { margin-block: 0 }
 /* #324: the widget holds rendered HTML, not source text: stock's .cm-embed-block resets the editor's pre-wrap. Without
    it the renderer's trailing "\n" after </p> is a whole extra 24px line box at the bottom of .callout-content. */
-.cm-callout { white-space: normal; overflow-wrap: normal; word-break: normal }
 /* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
 /* the live-preview block widget contains its child margins (flow-root): CM6
    measures a block widget by its border box, and .metadata-container's 4px/14px
