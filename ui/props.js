@@ -404,7 +404,38 @@
       provide: f => [EditorView.decorations.from(f), EditorView.atomicRanges.of(view => view.state.field(f))],
     });
     v._propsF = field;   // Ed.scrollToLine asks whether a Properties block sits above its destination
-    return field;
+    return [field, Props.rawRows(v, bust)];
+  };
+
+  // #341: when the frontmatter is shown RAW (source mode, or Properties in document = source) its lines
+  // carry the line class "fmrow" (style.css: muted ink, 14px at a 16px editor, like stock's raw frontmatter).
+  // Re-read only when an edit touches the block (or the first line, which can open one) or a transaction
+  // carries the lp bust / Props.fx (properties-mode change), or the raw mode flipped — never per keystroke in the body.
+  Props.rawRows = function (v, bust) {
+    const { Decoration, ViewPlugin } = CMv;
+    if (!ViewPlugin) return [];
+    const line = Decoration.line({ class: "fmrow" });
+    const raw = () => { return !!(v.lp && v.lp.classList.contains("src")) || Props.mode === "source"; };
+    const build = st => {
+      const r = raw();
+      if (!r) return { d: Decoration.none, end: -1, r };
+      if (st.doc.line(1).text.trim() !== "---") return { d: Decoration.none, end: -1, r };
+      const p = PM().parse(st.doc.toString());
+      if (!p || p.invalid) return { d: Decoration.none, end: -1, r };
+      const last = st.doc.lineAt(p.close.s).number, out = [];
+      for (let n = 1; n <= last; n++) out.push(line.range(st.doc.line(n).from));
+      return { d: Decoration.set(out), end: st.doc.line(last).to, r };
+    };
+    return ViewPlugin.fromClass(class {
+      constructor(view) { this.s = build(view.state); this.decorations = this.s.d; }
+      update(u) {
+        const fx = u.transactions.some(t => t.effects.some(e => e.is(bust) || e.is(Props.fx)));
+        const touch = u.docChanged && u.changes.touchesRange(0, Math.max(this.s.end, u.startState.doc.line(1).to));
+        if (fx || touch || raw() !== this.s.r) this.s = build(u.state);   // also the first update after a mode flip
+        else if (u.docChanged) this.s = { d: this.s.d.map(u.changes), end: this.s.end < 0 ? -1 : u.changes.mapPos(this.s.end), r: this.s.r };
+        this.decorations = this.s.d;
+      }
+    }, { decorations: p => p.decorations });
   };
 
   // ---- "Add file property" (Ctrl+;, the tab menu row) ----

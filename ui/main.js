@@ -2531,9 +2531,10 @@ function noteMenu(e, nm) {                 // right-click a tree note row
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const mkItem = (label, fn) => {
+  const mkItem = (label, fn, warn) => {     // warn: stock's destructive row (.is-warning = --text-error ink, #345)
     const d = document.createElement("div");
     d.textContent = label;
+    if (warn) d.className = "is-warning";
     d.onmousedown = ev => ev.stopPropagation();
     d.onclick = () => { closeMenu(); fn(); };
     m.appendChild(d);
@@ -2558,7 +2559,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
      user is when they decide a note is finished — and it opens a question, not
      a deletion. askDelete does no I/O of its own beyond counting the inbound
      links the confirmation has to state. */
-  mkItem("Delete", () => askDelete(nm));
+  mkItem("Delete", () => askDelete(nm), true);   // #345: .is-warning, like stock's file-menu Delete
   /* [mt:note:<name>] — WHICH ROW the browser's hit test actually handed us. The
      explorer row is found by OCR in the harness, and R20.8's lesson applies
      harder here than it did for tabs: an OCR row miss followed by "Delete" would
@@ -8225,6 +8226,39 @@ function fuzzy(q, s) {  // lower score = better; -1 = no match
   }
   return 1000;
 }
+/* #346: the characters fuzzy() matched, as [start, end) ranges over s (adjacent
+   characters merged) — the SAME rule as fuzzy(): the first substring hit, else the
+   greedy subsequence. [] = nothing to mark (empty query or no match). */
+function fuzzySpans(q, s) {
+  q = q.toLowerCase();
+  const l = s.toLowerCase();
+  if (!q) return [];
+  const i = l.indexOf(q);
+  if (i >= 0) return [[i, i + q.length]];
+  const out = [];
+  let pos = 0;
+  for (const c of q) {
+    pos = l.indexOf(c, pos);
+    if (pos < 0) return [];
+    const last = out[out.length - 1];
+    if (last && last[1] === pos) last[1] = pos + 1; else out.push([pos, pos + 1]);
+    pos++;
+  }
+  return out;
+}
+/* #346: a suggestion title with stock's match markup — the matched runs are
+   <span class="suggestion-highlight"> (bold), the rest plain text nodes, so
+   textContent (what the census reads) stays the bare label. */
+function fuzzyLabel(el, q, s) {
+  let at = 0;
+  for (const [a, b] of fuzzySpans(q, s)) {
+    if (a > at) el.appendChild(document.createTextNode(s.slice(at, a)));
+    const m = document.createElement("span"); m.className = "suggestion-highlight"; m.textContent = s.slice(a, b);
+    el.appendChild(m);
+    at = b;
+  }
+  if (at < s.length) el.appendChild(document.createTextNode(s.slice(at)));
+}
 
 // R12: the field being typed in — the lp raw row when one is open (source +
 // live preview both edit there now), else the hidden model textarea
@@ -8635,7 +8669,7 @@ function renderModal() {
   mdItems.forEach((it, i) => {
     const d = document.createElement("div");
     d.className = "mrow" + (i === mdSel ? " sel" : "");
-    const l = document.createElement("span"); l.textContent = it.label;
+    const l = document.createElement("span"); fuzzyLabel(l, $("minput").value.trim(), it.label);   // #346: matched runs bold
     const h = document.createElement("span"); h.className = "mhint";
     h.textContent = it.hint || "";
     d.append(l, h);
@@ -14116,7 +14150,8 @@ function buildSettingsNav() {
       nav.appendChild(h);
     }
     const d = document.createElement("div");
-    d.className = "snavi"; d.textContent = I18N.tk("snav-" + e.id, e.entry);
+    d.className = "snavi vertical-tab-nav-item";   /* #328: stock nav item classes, so theme .vertical-tab-nav-item(.is-active) rules match */
+    d.textContent = I18N.tk("snav-" + e.id, e.entry);
     d.dataset.pane = e.id; d.tabIndex = 0;
     d.onclick = () => showSettingsPage(e.id);
     d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
@@ -14134,7 +14169,7 @@ function showSettingsPage(id) {
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
   const pane = e ? e.id : "hotkeys";
   sPane = pane;
-  for (const d of $("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === pane);
+  for (const d of $("snav").querySelectorAll(".snavi")) { const on = d.dataset.pane === pane; d.classList.toggle("sel", on); d.classList.toggle("is-active", on); }   /* #328: stock active class */
   const pg = $("spage"); pg.innerHTML = ""; pg.className = "";
   const rows = SMODEL.rows.filter(r => r.tab === pane);   // what this pane owes the census
   sRowsShown = rows.length;

@@ -99,7 +99,7 @@
   function nav(n) {
     for (const d of [...n.querySelectorAll("[data-cp]")]) d.remove();
     const entry = (pane, text, icon) => {
-      const d = el("div", "snavi", text);
+      const d = el("div", "snavi vertical-tab-nav-item", text);   /* #328: stock nav item class */
       /* top5-func: a plugin tab that set SettingTab.icon shows it before its name (data-icon = the name) */
       if (icon != null && icon !== "" && host.api && typeof host.api.setIcon === "function") {
         const i = el("span", "snavi-icon"); host.api.setIcon(i, String(icon)); d.insertBefore(i, d.firstChild);
@@ -107,7 +107,7 @@
       d.dataset.pane = pane; d.dataset.cp = "1"; d.tabIndex = 0;
       d.onclick = () => showSettingsPage(pane);
       d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(pane); } };
-      if (typeof sPane !== "undefined" && sPane === pane) d.classList.add("sel");
+      if (typeof sPane !== "undefined" && sPane === pane) d.classList.add("sel", "is-active");
       n.appendChild(d);
     };
     // af-fix 2b (operator rule 2026-10-01, noplugins NP_WANT): no Core plugins entry, no CORE PLUGINS group,
@@ -145,7 +145,7 @@
   let inBuiltin = false;      // main.js is building one of its own panes for a built-in tab
   const builtinOf = pane => setting.settingTabs.find(t => t._pane === pane) || null;
   const paneOf = t => t._pane !== undefined ? t._pane : "plg:" + t.id;
-  function selNav(id) { for (const d of document.getElementById("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === id); }
+  function selNav(id) { for (const d of document.getElementById("snav").querySelectorAll(".snavi")) { const on = d.dataset.pane === id; d.classList.toggle("sel", on); d.classList.toggle("is-active", on); } }   /* #328 */
   function clearPage(id, cls) {
     stopBrowsing();
     fontPage = null; sPane = id; selNav(id);
