@@ -99,9 +99,14 @@ podman run --rm --network=host -e ARCH="$ARCH" -e TGT="$TGT" -e RUST="$RUST" -e 
   /tmp/rust/install.sh --prefix=/opt/rust --components=rustc,cargo,rust-std-$TGT >/dev/null
   export PATH=/opt/rust/bin:$PATH CARGO_HOME=/out/cargo-home CARGO_TARGET_DIR=/out/target TMPDIR=/tmp CARGO_TERM_COLOR=never
   rustc --version | grep -q "^rustc $RUST " || { say "FAIL: $(rustc --version) != $RUST"; exit 1; }
+  # cargo test runs UNPRIVILEGED: several tests pin non-root semantics (a 0555 vault refuses
+  # writes, /root is not the user home) and fail as container root; the build stays as root
+  useradd -m -U -s /bin/bash tst
+  mkdir -p /out/cargo-home /out/target && chown -R tst:tst /w /out
   cd /w/src-tauri
-  say "cargo test --locked --no-fail-fast"
-  trc=0; cargo test --locked --no-fail-fast > /out/cargo-test.log 2>&1 || trc=$?
+  say "cargo test --locked --no-fail-fast (as $(id tst))"
+  trc=0; runuser -u tst -- env HOME=/home/tst PATH="$PATH" CARGO_HOME=/out/cargo-home CARGO_TARGET_DIR=/out/target TMPDIR=/tmp CARGO_TERM_COLOR=never cargo test --locked --no-fail-fast > /out/cargo-test.log 2>&1 || trc=$?
+  chown -R 0:0 /w /out
   echo "$trc" > /out/test.rc; say "cargo test rc=$trc"
   say "cargo build --locked --profile devfast"
   brc=0; cargo build --locked --profile devfast > /out/cargo-build.log 2>&1 || brc=$?
