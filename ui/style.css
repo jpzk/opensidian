@@ -1682,7 +1682,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --h5-line-height: 1.39; --h6-line-height: 1.45;
   --h1-letter-spacing: -0.018em; --h2-letter-spacing: -0.015em; --h3-letter-spacing: -0.012em;
   --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
-  --p-spacing: 1rem; --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
+  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
   /* R15.10-13 lists / checkbox / code / blockquote */
   --list-indent: calc(var(--indent-unit, calc(var(--space-unit) * 7 / 4)) * var(--indent-size, 4));
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
