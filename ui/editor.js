@@ -1052,15 +1052,100 @@ const Ed = {
     const m = /^(\s*(?:> )*(?:[-*+] \[[ xX]\] |[-*+] |\d+\. ))/.exec(t) || /^(\s*(?:> )+)/.exec(t);
     return m ? m[0].length : 0;
   },
-  // one RAW column left/right, crossing the line edge (R17.5 M69-M71). Pure:
-  // covered by Ed.selfTest. null = the document edge, leave it to the browser.
+  /* #274: the next USER-PERCEIVED character boundary in line text t from column c
+     (a UTF-16 index), going back or forward. One step crosses a whole grapheme
+     cluster — a ZWJ emoji sequence (🤦‍♂️ is 5 code units), a flag (two regional
+     indicators), a skin-tone modifier, a base + combining marks — as stock 1.13.7
+     does. Intl.Segmenter (UAX #29) when the engine has it; otherwise one CODE
+     POINT, never half a surrogate pair. seg === null forces that fallback (selfTest).
+     Returns c itself only at the text edge. Pure. */
+  _gseg: undefined,
+  gseg() {
+    if (Ed._gseg === undefined) {
+      try { Ed._gseg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null; }
+      catch (_) { Ed._gseg = null; }
+    }
+    return Ed._gseg;
+  },
+  cluster(t, c, back, seg) {
+    t = String(t || "");
+    const n = t.length;
+    c = Math.max(0, Math.min(c, n));
+    if (back ? c === 0 : c === n) return c;
+    const S = seg === undefined ? Ed.gseg() : seg;
+    if (S) {
+      try {
+        // #274 review: ask for the LOW half when the index is the high half of a pair (same code
+        // point, so the same segment by UAX #29). JSC's containing(i) for a high surrogate i
+        // reports the PREVIOUS cluster's start (box census [edt:fail3:inside:2:7]): a caret just
+        // after the high half then stepped back past the cluster and Backspace split it.
+        let q = back ? c - 1 : c;
+        const u0 = t.charCodeAt(q), u1 = t.charCodeAt(q + 1);
+        if (u0 >= 0xd800 && u0 <= 0xdbff && u1 >= 0xdc00 && u1 <= 0xdfff) q++;
+        const cur = S.segment(t).containing(q);
+        if (cur) {
+          const k = back ? cur.index : cur.index + cur.segment.length;
+          if (back ? k < c : k > c) return k;
+        }
+      } catch (_) { /* fall through to code points */ }
+    }
+    const hi = u => u >= 0xd800 && u <= 0xdbff, lo = u => u >= 0xdc00 && u <= 0xdfff;
+    if (back) return c >= 2 && lo(t.charCodeAt(c - 1)) && hi(t.charCodeAt(c - 2)) ? c - 2 : c - 1;
+    return c + 1 < n && hi(t.charCodeAt(c)) && lo(t.charCodeAt(c + 1)) ? c + 2 : c + 1;
+  },
+  /* #274: where ONE Backspace at column c stops. Stock 1.13.7 (black-box, goal
+     fix-274 evidence logs stock-1/4/5): the cluster goes whole (🤦‍♂️, family, flag,
+     ❤️, 🏳️‍🌈, 😀) UNLESS it carries a "stop" extender after its first code point — a
+     combining/enclosing mark (U+0301, keycap U+20E3) or a skin-tone modifier
+     (U+1F3FB..1F3FF); then Backspace removes from the LAST such extender to c
+     (é -> e, 👍🏽 -> 👍, 🤦🏽‍♂️ -> 🤦, 1️⃣ -> 1️). Variation selectors (U+FE00..FE0F)
+     and the joiner are not stops. Delete / arrows / Shift+arrows still take the
+     whole cluster (Ed.cluster). Never splits a surrogate pair. Pure. */
+  _mark: undefined,
+  isStop(u) {
+    if (u >= 0x1f3fb && u <= 0x1f3ff) return true;            // skin-tone modifier
+    if (u >= 0xfe00 && u <= 0xfe0f) return false;             // variation selector: never a stop
+    if (Ed._mark === undefined) {
+      try { Ed._mark = new RegExp("^\\p{M}$", "u"); } catch (_) { Ed._mark = null; }
+    }
+    if (Ed._mark) return Ed._mark.test(String.fromCodePoint(u));
+    return (u >= 0x300 && u <= 0x36f) || (u >= 0x1ab0 && u <= 0x1aff) || (u >= 0x1dc0 && u <= 0x1dff) ||
+           (u >= 0x20d0 && u <= 0x20ff) || (u >= 0xfe20 && u <= 0xfe2f);   // engines without \p{}: the common mark blocks
+  },
+  backDel(t, c, seg) {
+    t = String(t || "");
+    c = Math.max(0, Math.min(c, t.length));
+    const k = Ed.cluster(t, c, true, seg);
+    if (k >= c) return k;
+    let stop = -1;
+    for (let i = k, first = true; i < c; first = false) {
+      const u = t.codePointAt(i), w = u > 0xffff ? 2 : 1;
+      if (!first && Ed.isStop(u)) stop = i;
+      i += w;
+    }
+    return stop > k ? stop : k;
+  },
+  /* #274 review (CodeAnt 4654882322): a caret the editor API placed INSIDE a
+     cluster (setCursor accepts any UTF-16 ch). Returns [s, e] of the cluster that
+     strictly contains c (s < c < e), else null. Backspace and Delete then remove
+     that whole cluster instead of a part of it. Same segmenter / code-point
+     fallback as Ed.cluster, so the fallback only reports a split surrogate pair. Pure. */
+  inside(t, c, seg) {
+    t = String(t || "");
+    if (c <= 0 || c >= t.length) return null;
+    const s = Ed.cluster(t, c, true, seg), e = Ed.cluster(t, s, false, seg);
+    return s < c && e > c ? [s, e] : null;
+  },
+  // one CHARACTER left/right (a grapheme cluster, #274), crossing the line edge
+  // (R17.5 M69-M71). Pure: covered by Ed.selfTest. null = the document edge,
+  // leave it to the browser.
   step(g, l, c, back) {
-    const L = Ed.lines(g);
+    const L = Ed.lines(g), t = L[l] || "";
     if (back) {
-      if (c > 0) return { l, c: c - 1 };
+      if (c > 0) return { l, c: Ed.cluster(t, c, true) };
       return l > 0 ? { l: l - 1, c: L[l - 1].length } : null;
     }
-    if (c < (L[l] || "").length) return { l, c: c + 1 };
+    if (c < t.length) return { l, c: Ed.cluster(t, c, false) };
     return l < L.length - 1 ? { l: l + 1, c: 0 } : null;
   },
   /* R17.6 / R17.7 REVEAL — PER TOKEN, not per row.
@@ -1247,9 +1332,11 @@ const Ed = {
   del(g, s, forward, word) {                     // Backspace / Delete
     if (!s.empty) return Ed.replace(g, s, "", "del");
     const L = Ed.lines(g), { l, c } = s.a;
+    const ins = word ? null : Ed.inside(L[l], c);       // #274 review: never leave part of a cluster
+    if (ins) return Ed.replace(g, { a: { l, c: ins[0] }, b: { l, c: ins[1] }, empty: false }, "", "del");
     if (!forward) {
       if (c > 0) {
-        let k = c - 1;
+        let k = Ed.backDel(L[l], c);                      // #274: a whole character, not one code unit
         if (word) { k = c; while (k > 0 && /\s/.test(L[l][k - 1])) k--; while (k > 0 && !/\s/.test(L[l][k - 1])) k--; }
         return Ed.replace(g, { a: { l, c: k }, b: { l, c }, empty: false }, "", "del");
       }
@@ -1257,7 +1344,7 @@ const Ed = {
       return Ed.replace(g, { a: { l: l - 1, c: L[l - 1].length }, b: { l, c: 0 }, empty: false }, "", "del");
     }
     if (c < L[l].length) {
-      let k = c + 1;
+      let k = Ed.cluster(L[l], c, false);                 // #274
       if (word) { k = c; while (k < L[l].length && /\s/.test(L[l][k])) k++; while (k < L[l].length && !/\s/.test(L[l][k])) k++; }
       return Ed.replace(g, { a: { l, c }, b: { l, c: k }, empty: false }, "", "del");
     }
@@ -1620,6 +1707,53 @@ const Ed = {
       const n = Ed.step(sg, l, c, back);
       if ((n ? n.l + "." + n.c : "-") !== want) fail("step:" + l + "." + c + (back ? "<" : ">"));
     }
+    // #274: a step crosses a whole grapheme cluster. [text, col, back, want, seg]:
+    // seg null = the code-point fallback (no Intl.Segmenter), which never splits a
+    // surrogate pair; the cluster rows run only where the engine has a segmenter.
+    const FP = "\u{1F926}‍♂️", FAM = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    const gc = [["a\u{1F600}b", 3, true, 1, null], ["a\u{1F600}b", 1, false, 3, null],
+                ["a\uD83Db", 2, true, 1, null], ["a\uDE00b", 1, false, 2, null],          // lone surrogates: one unit
+                ["a" + FP + "b", 6, true, 5, null], ["ab", 0, true, 0, null], ["ab", 2, false, 2, null], ["", 0, false, 0, null]];
+    if (Ed.gseg()) gc.push(
+      ["a" + FP + "b", 6, true, 1], ["a" + FP + "b", 1, false, 6], ["a" + FP + "b", 3, true, 1], ["a" + FP + "b", 3, false, 6],
+      ["x" + FAM, 9, true, 1], ["x" + FAM, 1, false, 9],
+      ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, true, 4], ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, false, 4],
+      ["\u{1F44D}\u{1F3FD}", 4, true, 0], ["éx", 0, false, 2], ["éx", 2, true, 0],
+      ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2],
+      // #274 review: c - 1 is the HIGH half of a pair (a caret inside it): still that cluster's edge
+      ["a\u{1F600}b", 2, true, 1], ["a" + FP + "b", 2, true, 1], ["x" + FAM, 8, true, 1]);
+    for (const [t, c, back, want, seg] of gc)
+      if (Ed.cluster(t, c, back, seg) !== want) fail("cluster:" + c + (back ? "<" : ">") + (seg === null ? "cp" : "") + ":" + t.length);
+    // #274 Backspace stop [text, col, want, seg] (stock 1.13.7 oracle): a cluster goes whole unless it
+    // carries a mark / skin-tone modifier, then from the last one; a surrogate pair whole on any engine
+    const bd = [["a\u{1F600}b", 3, 1, null], ["a" + FP + "b", 6, 5, null], ["ab", 0, 0, null], ["", 0, 0, null], ["a\uDE00", 2, 1, null]];
+    if (Ed.gseg()) bd.push(["a" + FP + "b", 6, 1], ["x" + FAM, 9, 1], ["a\u{1F1E9}\u{1F1EA}b", 5, 1],
+      ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, 4], ["a\u{1F44D}\u{1F3FD}b", 5, 3], ["a\u{1F44D}\u{1F3FD}b", 3, 1],
+      ["a\u{1F600}b", 3, 1], ["ab", 1, 0],
+      ["a\u2764\uFE0Fb", 3, 1], ["a\u{1F926}\u{1F3FD}\u200D\u2642\uFE0Fb", 8, 3], ["ae\u0301b", 3, 2],
+      ["a1\uFE0F\u20E3b", 4, 3], ["a1\uFE0Fb", 3, 1], ["a\u{1F3F3}\uFE0F\u200D\u{1F308}b", 7, 1], ["ae\u0301\u0323b", 4, 3]);
+    bd.push(["ae\u0301b", 3, 2, null], ["a\u{1F44D}\u{1F3FD}b", 5, 3, null]);   // fallback: one code point
+    for (const [u, want] of [[0x1F3FB, true], [0x1F3FF, true], [0x0301, true], [0x20E3, true], [0xFE0F, false],
+                             [0xFE00, false], [0x200D, false], [0x41, false], [0x1F44D, false]])
+      if (Ed.isStop(u) !== want) fail("isStop:" + u.toString(16));
+    // #274 review: Ed.inside [text, col, want "s,e" | "-", seg] — only a caret strictly inside a cluster
+    const ia = [["a\u{1F600}b", 2, "1,3", null], ["a\u{1F600}b", 1, "-", null], ["a\u{1F600}b", 3, "-", null],
+                ["a\u{1F600}b", 0, "-", null], ["a\u{1F600}b", 4, "-", null], ["", 0, "-", null], ["ab", 1, "-", null]];
+    if (Ed.gseg()) ia.push(["a" + FP + "b", 3, "1,6"], ["a" + FP + "b", 2, "1,6"], ["a" + FP + "b", 5, "1,6"],
+      ["a" + FP + "b", 1, "-"], ["a" + FP + "b", 6, "-"], ["x" + FAM, 4, "1,9"], ["aéb", 2, "1,3"], ["ab", 1, "-"]);
+    for (const [t, c, want, seg] of ia) {
+      const r = Ed.inside(t, c, seg);
+      if ((r ? r.join(",") : "-") !== want) fail("inside:" + c + (seg === null ? "cp" : "") + ":" + t.length);
+    }
+    for (const [t, c, want, seg] of bd)
+      if (Ed.backDel(t, c, seg) !== want) fail("backDel:" + c + (seg === null ? "cp" : "") + ":" + t.length);
+    const eg2 = { view: { lines: ["a" + FP, "b"] } };
+    const sw2 = Ed.gseg() ? [[1, 0, true, "0.6"], [0, 6, true, "0.1"], [0, 1, false, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]]
+                          : [[1, 0, true, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]];
+    for (const [l, c, back, want] of sw2) {
+      const n = Ed.step(eg2, l, c, back);
+      if ((n ? n.l + "." + n.c : "-") !== want) fail("step274:" + l + "." + c + (back ? "<" : ">"));
+    }
     // R17.1 Enter / Shift+Enter, asserted on the MODEL (no DOM, no view): each
     // case is [before, caret l.c, op, after, caret l.c] straight off the MUST
     // list. `enter` is where list semantics live, so it is checked in-app on
@@ -1702,6 +1836,26 @@ const Ed = {
         ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
         ["- [/] doing", 0, 11, "ctrl-l", "- [ ] doing", 0, 11],                          // #153 custom status resets
         ["- [>] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // #153
+        // #274: Backspace / Delete remove a whole character, never one code unit of it
+        ...(Ed.gseg() ? [
+          ["a\u{1F926}‍♂️b", 0, 6, "bs", "ab", 0, 1],                     // ZWJ + VS16, 5 units
+          ["a\u{1F926}‍♂️b", 0, 1, "del", "ab", 0, 1],
+          ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, 8, "bs", "\u{1F1E9}\u{1F1EA}", 0, 4], // one flag of two
+          ["\u{1F44D}\u{1F3FD}!", 0, 0, "del", "!", 0, 0],                               // skin tone
+          ["a\u{1F44D}\u{1F3FD}b", 0, 5, "bs", "a\u{1F44D}b", 0, 3],                     // Backspace: only the modifier (stock)
+        ] : []),
+        ["a\u{1F600}b", 0, 3, "bs", "ab", 0, 1],                                         // a surrogate pair, any engine
+        ["a\u{1F600}b", 0, 1, "del", "ab", 0, 1],
+        ["a\n\u{1F600}", 1, 0, "bs", "a\u{1F600}", 0, 1],                                // line join unchanged
+        // #274 review (CodeAnt 4654882322): a caret INSIDE a cluster (editor API) removes the whole cluster
+        ["a\u{1F600}b", 0, 2, "bs", "ab", 0, 1],                                         // inside a surrogate pair, any engine
+        ["a\u{1F600}b", 0, 2, "del", "ab", 0, 1],
+        ...(Ed.gseg() ? [
+          ["a\u{1F926}‍♂️b", 0, 3, "bs", "ab", 0, 1],                     // inside the ZWJ sequence
+          ["a\u{1F926}‍♂️b", 0, 3, "del", "ab", 0, 1],
+          ["a\u{1F926}‍♂️b", 0, 5, "bs", "ab", 0, 1],                     // before the VS16
+          ["x\u{1F468}‍\u{1F469}‍\u{1F467}y", 0, 4, "del", "xy", 0, 1],     // family
+        ] : []),
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
