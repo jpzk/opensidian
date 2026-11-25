@@ -21,6 +21,21 @@ set-general-plugin-api-version = プラグイン API バージョン { $v }
 set-general-plugin-api-version-desc = このビルドが実装しているプラグイン API です。より新しい minAppVersion を要求するプラグインは読み込まれません。
 set-general-automatic-updates = 自動更新
 set-general-automatic-updates-desc = 自動更新は現在無効です。新しい署名済みリリースを探すには「更新を確認」を使ってください。
+# #294 Check for updates: the verdict (updates.rs check_with) and its line in Settings
+update-none = Opensidian は最新です（{ $v }）。公開済みのリリースが見つかりません。
+update-available = Opensidian { $version } が利用できます。チェックサムは { $key } で署名されています。ダウンロードしたファイルをこのハッシュで確認してください。
+update-current = Opensidian は最新です（{ $v }）。最新リリース { $version } のチェックサムは { $key } で署名されています。
+update-unsigned = 最新リリース { $version } は署名されていません（または署名が無効です）。無視しました。
+update-mismatch = 最新リリース { $version }：リリースのファイルが署名済みのチェックサムと一致しません。無視しました。
+update-rollback = 以前に署名済みリリース { $version } を確認しましたが、現在検証できる最新のリリースは { $v } です。古いリリースは案内しません。
+update-warn-unsigned = より新しいリリース { $version } は署名されていません（または署名が無効です）。無視しました。
+update-warn-mismatch = より新しいリリース { $version }：リリースのファイルが署名済みのチェックサムと一致しません。無視しました。
+update-no-artefact = 署名済みのチェックサムに、このプラットフォーム向けのリリースファイルが含まれていません。
+update-artefact-missing = このプラットフォーム用の署名済みファイル（{ $file }）がリリースに添付されていません。
+update-rollback-none = 以前に署名済みリリース { $version } を確認しましたが、現在 GitHub にリリースが表示されません。何も案内しません。
+update-checking = GitHub で署名済みリリースを確認しています…
+update-view-release = リリースを表示
+update-error = 更新を確認できませんでした：{ $error }
 set-general-language = 言語
 set-general-language-desc = 表示言語を変更します。 | Opensidian に新しい言語を追加する方法
 set-general-help = ヘルプ
@@ -150,6 +165,17 @@ set-fileslinks-allow-uri-callbacks = URI コールバックを許可
 set-fileslinks-allow-uri-callbacks-desc = Opensidian URI を処理するとき、x-success や x-error による x-callback-url の利用を許可します。 | 詳しく見る
 set-fileslinks-rebuild-vault-cache = 保管庫のキャッシュを再構築
 set-fileslinks-rebuild-vault-cache-desc = 保管庫の大きさによって、キャッシュの再構築には数秒から数分かかります。 | 詳しく見る
+
+## Settings > Security > Sandbox (#293)
+
+secsb-section = サンドボックス
+secsb-label = Landlock サンドボックス
+secsb-enforced = 有効
+secsb-not-enforced = 無効（適用されていません）
+secsb-off = オフ
+secsb-desc-enforced = このウィンドウは、保管庫とアプリに必要なフォルダーにだけ書き込めます。起動時に OPENSIDIAN_LANDLOCK=1 でオンになります。
+secsb-desc-not-enforced = サンドボックスはオンですが、このウィンドウでは適用されていないため、ここでは保管庫を開きません。
+secsb-desc-off = オンになっていません。OPENSIDIAN_LANDLOCK=1 で Opensidian を起動すると、保管庫の中に制限されます（Linux のみ）。
 
 ## Command palette and Settings > Hotkeys
 
@@ -358,3 +384,24 @@ menu-zoom-to-selection = 選択範囲にズーム
 menu-as-obsidian-url = Obsidian URL として
 menu-from-system-root = システムのルートから
 menu-from-vault-folder = 保管庫のフォルダーから
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = デバイスへのアクセス
+secdev-camera = カメラ
+secdev-camera-desc = アプリとコミュニティプラグインによるカメラへのアクセス。カメラの使用中は、ウィンドウのタイトルが「● Camera」で始まります。
+secdev-location = 位置情報
+secdev-location-desc = アプリとコミュニティプラグインに提供するあなたの位置情報。
+secdev-notifications = 通知
+secdev-notifications-desc = アプリとコミュニティプラグインからのデスクトップ通知。
+secdev-pointerlock = ポインターロック
+secdev-pointerlock-desc = クリックの後、アプリまたはコミュニティプラグインがマウスポインターを隠して捕捉できます(3D 表示、ゲーム)。Esc で解除されます。
+secdev-values = 確認する: 要求のたびに別のシステムウィンドウで確認します。常に許可: そのウィンドウを出さずに許可します(この選択はシステムウィンドウで一度だけ確認します)。オフ: すべての要求を拒否し、ウィンドウも表示しません。
+secdev-na = 利用不可
+secdev-na-desc = アプリにもプラグインにも許可されず、ウィンドウも表示されません: 画面キャプチャ、デバイス名、保護されたメディア (EME)、ウェブサイトデータへのアクセス、WebXR、MIDI。
+secmic-label = マイク
+secmic-desc = 確認する: 録音を始めるたびに、録音機能が別のシステムウィンドウで確認します。常に許可: そのウィンドウを出さずに録音を始めます(この選択はシステムウィンドウで一度だけ確認します)。オフ: すべての録音を拒否し、ウィンドウも表示しません。マイクの使用中は、ウィンドウのタイトルが「● Recording」で始まります。
+secmic-ask = 確認する
+secmic-always = 常に許可
+secmic-off = オフ
+secmic-forced = { $name } により強制的にオフになっています。

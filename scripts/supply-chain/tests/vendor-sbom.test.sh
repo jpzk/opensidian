@@ -89,4 +89,36 @@ fresh; sed -i '1s/(mermaid 12.3.0)/(mermaid 11.17.2)/' "$mb"; neg "mermaid bundl
 fresh; printf '%s
 ' '=====================================================================' 'stray@1.0.0  (SPDX: MIT)' >>"$mb"; neg "mermaid bundled: truncated last block"
 fresh; rm "$mb"; neg "mermaid bundled: LICENSES-bundled.txt missing"
+
+# #299 G2: npm packages compiled INTO mathjax/tex-chtml-full.js (no package-lock ships with it) come
+# from the pinned table vendor-embedded.tsv: one pkg:npm component each (Apache-2.0 per registry,
+# SHA-512 = registry integrity), the mathjax component dependsOn them; the node-only externals
+# speech-rule-engine requires at runtime (commander, xmldom-sre, wicked-good-xpath) are NOT components
+if [ -s "$t/bom.json" ] && jq -e '
+     [.components[] | select(.properties // [] | any(.name == "opensidian:embedded_in" and (.value | startswith("ui/vendor/mathjax/tex-chtml-full.js"))))] as $e
+     | ($e | map(.purl) | sort) == ["pkg:npm/mhchemparser@4.1.1", "pkg:npm/mj-context-menu@0.6.1", "pkg:npm/speech-rule-engine@4.0.6"]
+     and ($e | all(.licenses == [{license: {id: "Apache-2.0"}}]
+                   and (.hashes[0].alg == "SHA-512") and (.hashes[0].content | test("^[0-9a-f]{128}$"))
+                   and (.externalReferences[0].url == "https://registry.npmjs.org/\(.name)/-/\(.name)-\(.version).tgz")
+                   and (.properties | any(.name == "opensidian:embedded-marker"))
+                   and (.properties | any(.name == "opensidian:evidence"))))
+     and ((.dependencies[] | select(.ref == "pkg:npm/mathjax@3.2.2") | .dependsOn | sort) == ($e | map(."bom-ref") | sort))
+     and ([.components[] | select(.name | IN("commander", "xmldom-sre", "wicked-good-xpath", "esm"))] | length) == 0
+   ' "$t/bom.json" >/dev/null; then ok "G2: mathjax embeds speech-rule-engine 4.0.6, mj-context-menu 0.6.1, mhchemparser 4.1.1 (pkg:npm, Apache-2.0, sha512), mathjax dependsOn them"
+else bad "G2: mathjax embedded components (jq -e)"; fi
+negE() { # $1 label, $2 expected stderr pattern, $3 table file; rc!=0, empty stdout, the G2 reason
+  if VENDOR_DIR=$t/v VENDOR_EMBEDDED=$3 "$s" >"$t/o" 2>"$t/e"; then bad "$1 accepted"
+  elif [ -s "$t/o" ]; then bad "$1: rc!=0 but wrote stdout"
+  elif ! grep -q -- "$2" "$t/e"; then bad "$1: failed for another reason: $(tail -1 "$t/e")"
+  else ok "$1 -> non-zero, no SBOM ($(grep -- "$2" "$t/e" | head -1 | sed "s|$t|<t>|g"))"; fi
+}
+et=$here/vendor-embedded.tsv
+fresh; negE "G2: embedded table missing" "embedded table" "$t/nope.tsv"
+fresh; sed 's/^mathjax\t3\.2\.2\t/mathjax\t3.2.1\t/' "$et" >"$t/e1.tsv"; negE "G2: rows only for another mathjax version" "no embedded rows for locked mathjax 3.2.2" "$t/e1.tsv"
+fresh; sed 's/CtxtMenu_/CtxtMenu_NOT_IN_BUNDLE/' "$et" >"$t/e2.tsv"; negE "G2: marker absent from the bundle" "marker not found" "$t/e2.tsv"
+fresh; sed 's|\tmathjax/tex-chtml-full.js\tmhchemparser|\tmathjax/other.js\tmhchemparser|' "$et" >"$t/e3.tsv"; negE "G2: bundle file not a locked file of the host" "not a locked file of mathjax" "$t/e3.tsv"
+fresh; sed 's/\tApache-2.0\tsha512-R75/\t\tsha512-R75/' "$et" >"$t/e4.tsv"; negE "G2: row without license" "bad row" "$t/e4.tsv"
+fresh; { cat "$et"; grep '^mathjax.*mhchemparser' "$et"; } >"$t/e5.tsv"; negE "G2: duplicate row" "twice" "$t/e5.tsv"
+fresh; { cat "$et"; printf 'nosuchlib\t1.0.0\tx.js\tfoo\t1.0.0\tMIT\tsha512-AAAA\tm\te\n'; } >"$t/e6.tsv"; negE "G2: row for a host not in the lock" "not a locked library" "$t/e6.tsv"
+fresh; sed 's/\tsha512-Hqa4[^\t]*\t/\tsha1-abc\t/' "$et" >"$t/e7.tsv"; negE "G2: non-sha512 integrity" "bad row" "$t/e7.tsv"
 exit $fails

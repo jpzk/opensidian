@@ -69,7 +69,7 @@ jq -s --arg ver "$ver" --arg ts "$ts" --arg tag "$tag" --arg lic "$lic" '
   | ([ .[] | .metadata.component."bom-ref" ]) as $roots
   | ($deps | group_by(.ref) | map({ref: .[0].ref, dependsOn: (map(.dependsOn // []) | add | unique)})
      + [{ref: $rel, dependsOn: ($roots | unique)}]) as $d
-  | ([$comps[]."bom-ref"] + [$rel]) as $known
+  | ([$comps[] | .. | objects | select(has("bom-ref")) | ."bom-ref"] + [$rel]) as $known   # nested components (#299 G1) count
   | ([$d[] | .ref, .dependsOn[]] | unique | map(select(. as $r | $known | index($r) | not))) as $dangling
   | if ($dangling | length) > 0 then error("dependency refs naming no component: \($dangling | join(", "))") else . end
   | { bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
@@ -86,7 +86,7 @@ h=$(sha256sum "$t/body" | cut -c1-32)
 uuid="${h:0:8}-${h:8:4}-5${h:13:3}-8${h:17:3}-${h:20:12}"
 jq --arg sn "urn:uuid:$uuid" '{bomFormat, specVersion, serialNumber: $sn} + del(.bomFormat, .specVersion)' "$t/body" >"$t/out"
 jq -e '.specVersion == "1.6" and (.serialNumber | test("^urn:uuid:[0-9a-f-]{36}$"))
-       and ([.components[]."bom-ref"] | length == (unique | length))' "$t/out" >/dev/null || die "merged SBOM failed self-check"
+       and ([.components[] | .. | objects | select(has("bom-ref")) | ."bom-ref"] | length == (unique | length))' "$t/out" >/dev/null || die "merged SBOM failed self-check"
 mv "$t/out" "$dest"
 echo "sbom-merge: $dest ($(jq '.components | length' "$dest") components)" >&2
 echo "$dest"

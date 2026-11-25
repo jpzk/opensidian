@@ -452,11 +452,13 @@ fn daily_rel_ok(s: &str) -> bool {
 
 /// the whole file as an object; absent / empty = {}; unparsable / not an object = Err (never replaced)
 fn vcfg_load(root: &std::path::Path, rel: &str) -> Result<serde_json::Value, String> {
-    let p = root.join(rel);
-    let cur = match std::fs::symlink_metadata(&p) {
-        Ok(m) if m.len() > 1 << 20 => return Err(format!("{rel} is over 1 MiB — refusing it")),
-        Ok(_) => std::fs::read_to_string(&p).map_err(|e| format!("{rel}: {e}"))?,
-        Err(_) => String::new(),
+    // #250 (audit F-3): the vaultfs fd read — no symlink at any component, no
+    // FIFO / device, regular file by fstat, the 1 MiB cap on the opened fd
+    let cur = match crate::vaultfs::read_string(root, std::path::Path::new(rel), 1 << 20) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => return Err(format!("{rel} is over 1 MiB — refusing it")),
+        Err(e) => return Err(format!("{rel}: {e}")),
     };
     if cur.trim().is_empty() {
         return Ok(serde_json::json!({}));

@@ -27,6 +27,8 @@ const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "fun
 const PLGVS = window.__osPluginHost && typeof __osPluginHost.vaultSync === "function" ? __osPluginHost.vaultSync : null;
 // goal cv-journeys: the app's own note rename reaches the file model (api-vault host.noteMoved: the watcher never reports it)
 const PLGNM = window.__osPluginHost && typeof __osPluginHost.noteMoved === "function" ? __osPluginHost.noteMoved : null;
+// CodeAnt #262/#283: the core media_rename (restricted-vault canvas Rename) reaches the file model (api-vault host.mediaMoved)
+const PLGMM = window.__osPluginHost && typeof __osPluginHost.mediaMoved === "function" ? __osPluginHost.mediaMoved : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -368,7 +370,7 @@ let rbN = 0;
    two calls in flight (fast note switches) both appended, so the pane showed two "Unlinked mentions"
    headers or the previous note's rows. A call that is no longer the latest drops its result after
    every await (stock 1.13.7 always shows one set, for the active note). */
-let blGen = 0, outGen = 0;
+let blGen = 0, outGen = 0, tagGen = 0, tocGen = 0;   // #315: + Tags / Outline (fetch-then-swap)
 async function setRTab(t, persist = true) {
   if (!RPANES[t]) t = "bl";
   rTab = t;
@@ -393,6 +395,30 @@ function rEmpty(box, msg) {
   d.className = "rempty"; d.textContent = msg; box.appendChild(d);
 }
 const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
+/* issue #315: a right pane never paints EMPTY between two refreshes. Every pane used to
+   clear its box, AWAIT the backend, then rebuild — so each save-triggered refresh
+   (rSchedule, 200 ms after typing) handed the compositor the empty box for a frame:
+   blank / transient sidebar frames while typing with Outgoing links / Tags / Outline open
+   (stock 1.13.7 shows none). Now a pane fetches FIRST, builds its new rows off-DOM (b / h
+   are DocumentFragments) and swaps them in with one replaceChildren — the old rows stay
+   painted until then. key = everything the pane is built from (note + backend data); a
+   refresh whose key matches what is painted (a keystroke in plain text leaves the links,
+   tags and headings as they were) does not touch the DOM at all. Returns true = swapped. */
+function rpSwap(box, head, key, build) {
+  if (key != null && box._rpKey === key && box.firstChild) return false;
+  const b = document.createDocumentFragment(), h = head ? document.createDocumentFragment() : null;
+  build(b, h);
+  box.replaceChildren(b);
+  if (head) head.replaceChildren(h);
+  box._rpKey = key;
+  return true;
+}
+// #315: a fetch that FAILED must not leave the previous note's rows painted (stale after a
+// note switch) — the pane ends empty, as before the fix, and the next refresh rebuilds it
+function rpDrop(box, head) {
+  box.replaceChildren(); if (head) head.replaceChildren();
+  box._rpKey = null;
+}
 async function rPanesRefresh() {
   if (!rightOpen) return;
   const n = rNote() || (rTab === "bl" ? cvTabPath(rTrack()) : null);   // cvf-links CVR-A-097: a canvas tab's backlinks
@@ -411,109 +437,114 @@ async function rPanesRefresh() {
 async function rBacklinks(n) {
   rbN++; const gen = ++blGen;            // [rpn:] — counted at ENTRY: the bug is calling it at all
   const box = $("bllist"), head = $("blhead");
-  box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
   // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
+  // #315: fetch FIRST (the painted rows stay until the swap); the unlinked mentions are fetched
+  // alongside (they used to be fetched after the linked rows were painted into the cleared box)
   const isCv = !!n && /\.canvas$/i.test(n);
-  const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  let bl, cvb, ul;
+  try {
+    [bl, cvb, ul] = !n ? [[], [], []] : isCv ? [await cvCanvasBacklinks(n), [], []]
+      : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n), inv("unlinked_mentions", { name: n }).catch(() => [])]);
+  } catch (e) { if (gen === blGen) rpDrop(box, head); throw e; }
   if (gen !== blGen) return;              // issue #176: a newer render owns the pane
-  head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
-  const c = document.createElement("span");
-  c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
-  cvBacklinkRows(box, cvb);
-  if (!bl.length && !cvb.length) rEmpty(box, "No backlinks found.");
-  for (const b of bl) {
-    const row = document.createElement("div");
-    row.className = "blnote open"; row.dataset.ol = "bt:" + b.note;
-    row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
-    row.querySelector(".bln").textContent = b.note;
-    row.querySelector(".scount").textContent = b.lines.length;
-    const kids = document.createElement("div");
-    for (const [ln, text] of b.lines) {
-      const d = document.createElement("div");
-      d.className = "blline"; d.dataset.ol = "bl:" + b.note;
-      d.title = "line " + (ln + 1);
-      text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
-        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
-        if (i % 2) el.textContent = part;
-        d.appendChild(el);
-      });
-      sideRow(d, b.note);
-      kids.appendChild(d);
+  rpInfo = "bl:" + bl.length + "|ul:" + ul.length;   // (a canvas: ul = [] -> "|ul:0", as before)
+  rpSwap(box, head, JSON.stringify(["bl", n, bl, cvb, ul, ulOpen]), (box, head) => {
+    head.appendChild(document.createTextNode("Linked mentions"));
+    const c = document.createElement("span");
+    c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
+    cvBacklinkRows(box, cvb);
+    if (!bl.length && !cvb.length) rEmpty(box, "No backlinks found.");
+    for (const b of bl) {
+      const row = document.createElement("div");
+      row.className = "blnote open"; row.dataset.ol = "bt:" + b.note;
+      row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
+      row.querySelector(".bln").textContent = b.note;
+      row.querySelector(".scount").textContent = b.lines.length;
+      const kids = document.createElement("div");
+      for (const [ln, text] of b.lines) {
+        const d = document.createElement("div");
+        d.className = "blline"; d.dataset.ol = "bl:" + b.note;
+        d.title = "line " + (ln + 1);
+        text.split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
+          const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+          if (i % 2) el.textContent = part;
+          d.appendChild(el);
+        });
+        sideRow(d, b.note);
+        kids.appendChild(d);
+      }
+      row.querySelector(".tc").onclick = e => {
+        e.stopPropagation();
+        row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+      };
+      sideRow(row, b.note);
+      box.appendChild(row); box.appendChild(kids);
     }
-    row.querySelector(".tc").onclick = e => {
-      e.stopPropagation();
-      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
-    };
-    sideRow(row, b.note);
-    box.appendChild(row); box.appendChild(kids);
-  }
-  const UL_SHOW = 200;
-  if (isCv) { rpInfo = "bl:" + bl.length + "|ul:0"; return; }   // a canvas: linked mentions only
-  // R10.5 Unlinked mentions: plain-text hits of this note's name in other
-  // notes (collapsed like Obsidian); each row = the line with the hit marked +
-  // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
-  // to Linked mentions on the pane's next refresh)
-  const ul = n ? await inv("unlinked_mentions", { name: n }).catch(() => []) : [];
-  if (gen !== blGen) return;              // issue #176
-  rpInfo = "bl:" + bl.length + "|ul:" + ul.length;
-  if (!n) return;
-  const uh = document.createElement("div");
-  uh.className = "rhead ulhead" + (ulOpen ? " open" : ""); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut");
-  uh.innerHTML = '<span class="tc">' + CHEV + '</span>Unlinked mentions<span class="scount"></span>';
-  uh.querySelector(".scount").textContent = ul.length;
-  const ub = document.createElement("div");
-  ub.hidden = !ulOpen;
-  uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut"); ub.hidden = !ulOpen; updateTitle(); };
-  box.appendChild(uh); box.appendChild(ub);
-  if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
-  // audit #12: a note named in 75k places used to build 75k rows here (~2 s, even
-  // collapsed). The count above stays exact; the list shows the first UL_SHOW.
-  for (const m of ul.slice(0, UL_SHOW)) {
-    const row = document.createElement("div");
-    row.className = "blnote ulnote"; row.dataset.ol = "ut:" + m.note;
-    row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
-    row.querySelector(".bln").textContent = m.note;
-    row.title = "line " + (m.line + 1);
-    const d = document.createElement("div");
-    d.className = "blline"; d.dataset.ol = "ul:" + m.note;
-    // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
-    // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
-    const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
-    if (i >= 0 && i < t.length && w > 0) {
-      d.appendChild(document.createTextNode(t.slice(0, i)));
-      const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
-      d.appendChild(document.createTextNode(t.slice(i + w)));
-    } else d.textContent = t;
-    sideRow(d, m.note);
-    sideRow(row, m.note);
-    row.querySelector(".ullink").onclick = async e => {
-      e.stopPropagation();
-      /* F1 (lostwrite-ui): Link REWRITES A NOTE ON DISK, so it is a write seam and
-         obeys the same rule as saveBuf — a write that did not land is VISIBLE and
-         nothing repaints as if it had. The catch here used to log the Err to the
-         devtools console — which nobody is looking at — and then the three lines
-         below ran anyway: rowSrc dropped (so an open copy
-         of the note re-reads and shows the OLD text as if refreshed), the backlinks
-         pane repainted the mention as LINKED, and the title republished. On a
-         refused write (EROFS/ENOSPC/EACCES) that painted the link the user asked
-         for and never got. saveFailed() is the existing F1 surface (#saveerr banner
-         + [saveerr:<note>] census token) — reused, not re-invented. */
-      try {
-        await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len });
-      } catch (err) { saveFailed(m.note, err); return; }   // no optimistic repaint on the failure path
-      saveCleared();                                       // this write DID land: retire an older banner
-      for (const gg of groups()) if (gg.view) gg.view.rowSrc = null;  // the linked note may be open elsewhere
-      await rBacklinks(n); updateTitle();
-    };
-    ub.appendChild(row); ub.appendChild(d);
-  }
-  if (ul.length > UL_SHOW) {
-    const more = document.createElement("div");
-    more.className = "rempty ulmore";
-    more.textContent = "\u2026 and " + (ul.length - UL_SHOW) + " more";
-    ub.appendChild(more);
-  }
+    const UL_SHOW = 200;
+    if (isCv) return;                     // a canvas: linked mentions only
+    // R10.5 Unlinked mentions: plain-text hits of this note's name in other
+    // notes (collapsed like Obsidian); each row = the line with the hit marked +
+    // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
+    // to Linked mentions on the pane's next refresh)
+    if (!n) return;
+    const uh = document.createElement("div");
+    uh.className = "rhead ulhead" + (ulOpen ? " open" : ""); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut");
+    uh.innerHTML = '<span class="tc">' + CHEV + '</span>Unlinked mentions<span class="scount"></span>';
+    uh.querySelector(".scount").textContent = ul.length;
+    const ub = document.createElement("div");
+    ub.hidden = !ulOpen;
+    uh.onclick = () => { ulOpen = !ulOpen; uh.classList.toggle("open", ulOpen); uh.dataset.ol = "uh:" + (ulOpen ? "open" : "shut"); ub.hidden = !ulOpen; updateTitle(); };
+    box.appendChild(uh); box.appendChild(ub);
+    if (!ul.length) return rEmpty(ub, "No unlinked mentions found.");
+    // audit #12: a note named in 75k places used to build 75k rows here (~2 s, even
+    // collapsed). The count above stays exact; the list shows the first UL_SHOW.
+    for (const m of ul.slice(0, UL_SHOW)) {
+      const row = document.createElement("div");
+      row.className = "blnote ulnote"; row.dataset.ol = "ut:" + m.note;
+      row.innerHTML = '<span class="bln"></span><button class="ullink">Link</button>';
+      row.querySelector(".bln").textContent = m.note;
+      row.title = "line " + (m.line + 1);
+      const d = document.createElement("div");
+      d.className = "blline"; d.dataset.ol = "ul:" + m.note;
+      // issue #178: mark THIS row's occurrence (m.mcol/m.mlen, UTF-16 inside m.text), like stock 1.13.7 —
+      // an indexOf of the name always marked the first one on the line (a [[link]] or another hit)
+      const t = m.text, i = m.mcol == null ? -1 : m.mcol, w = m.mlen || 0;
+      if (i >= 0 && i < t.length && w > 0) {
+        d.appendChild(document.createTextNode(t.slice(0, i)));
+        const mk = document.createElement("mark"); mk.textContent = t.slice(i, i + w); d.appendChild(mk);
+        d.appendChild(document.createTextNode(t.slice(i + w)));
+      } else d.textContent = t;
+      sideRow(d, m.note);
+      sideRow(row, m.note);
+      row.querySelector(".ullink").onclick = async e => {
+        e.stopPropagation();
+        /* F1 (lostwrite-ui): Link REWRITES A NOTE ON DISK, so it is a write seam and
+           obeys the same rule as saveBuf — a write that did not land is VISIBLE and
+           nothing repaints as if it had. The catch here used to log the Err to the
+           devtools console — which nobody is looking at — and then the three lines
+           below ran anyway: rowSrc dropped (so an open copy
+           of the note re-reads and shows the OLD text as if refreshed), the backlinks
+           pane repainted the mention as LINKED, and the title republished. On a
+           refused write (EROFS/ENOSPC/EACCES) that painted the link the user asked
+           for and never got. saveFailed() is the existing F1 surface (#saveerr banner
+           + [saveerr:<note>] census token) — reused, not re-invented. */
+        try {
+          await inv("link_mention", { note: m.note, target: n, line: m.line, col: m.col, len: m.len });
+        } catch (err) { saveFailed(m.note, err); return; }   // no optimistic repaint on the failure path
+        saveCleared();                                       // this write DID land: retire an older banner
+        for (const gg of groups()) if (gg.view) gg.view.rowSrc = null;  // the linked note may be open elsewhere
+        await rBacklinks(n); updateTitle();
+      };
+      ub.appendChild(row); ub.appendChild(d);
+    }
+    if (ul.length > UL_SHOW) {
+      const more = document.createElement("div");
+      more.className = "rempty ulmore";
+      more.textContent = "\u2026 and " + (ul.length - UL_SHOW) + " more";
+      ub.appendChild(more);
+    }
+  });
 }
 /* outlinks census (docs/outlinks/recon.md). [olf:<note>|ae:<where>] = the note leaf the
    right-sidebar panes describe (rLeaf) and where DOM focus is (aeWhere, same codes as
@@ -590,33 +621,41 @@ function sideRow(el, name, create) {
 // Outgoing links: resolved rows navigate, unresolved rows are greyed
 async function rOutgoing(n) {
   const box = $("outlist"), head = $("outhead"), gen = ++outGen;
-  box.textContent = ""; head.textContent = "";
-  const out = n ? await inv("outgoing", { name: n }) : [];
+  let out;                                // #315: fetch first, the painted rows stay until the swap
+  try { out = n ? await inv("outgoing", { name: n }) : []; }
+  catch (e) { if (gen === outGen) rpDrop(box, head); throw e; }
   if (gen !== outGen) return;             // issue #176: a newer render owns the pane
-  head.textContent = "Links"; rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
-  const c = document.createElement("span");
-  c.className = "scount"; c.textContent = out.length; head.appendChild(c);
-  if (!out.length) return rEmpty(box, "No outgoing links.");
-  for (const o of out) {
-    const d = document.createElement("div");
-    d.className = "outrow" + (o.target ? "" : " unresolved"); d.dataset.ol = (o.target ? "o:" + o.target : "u:" + o.text);
-    d.textContent = o.text;
-    sideRow(d, o.target || o.text, !o.target);
-    box.appendChild(d);
-  }
+  rpInfo = "out:" + out.filter(o => o.target).length + "/" + out.filter(o => !o.target).length;
+  rpSwap(box, head, JSON.stringify(["out", n, out]), (box, head) => {
+    head.appendChild(document.createTextNode("Links"));
+    const c = document.createElement("span");
+    c.className = "scount"; c.textContent = out.length; head.appendChild(c);
+    if (!out.length) return rEmpty(box, "No outgoing links.");
+    for (const o of out) {
+      const d = document.createElement("div");
+      d.className = "outrow" + (o.target ? "" : " unresolved"); d.dataset.ol = (o.target ? "o:" + o.target : "u:" + o.text);
+      d.textContent = o.text;
+      sideRow(d, o.target || o.text, !o.target);
+      box.appendChild(d);
+    }
+  });
 }
 // Tags: every vault tag sorted by count desc then name; nested a/b tags fold
 // into a collapsible tree (parent row count = own + kids); click a row ->
 // search pane prefilled "tag:<name>"
 async function rTags() {
-  const box = $("taglist"), head = $("tagshead");
-  box.textContent = ""; head.textContent = "";
-  const counts = await inv("tag_counts").catch(() => ({}));
+  const box = $("taglist"), head = $("tagshead"), gen = ++tagGen;
+  const counts = await inv("tag_counts").catch(() => ({}));   // #315: fetch first, the painted rows stay
+  if (gen !== tagGen) return;             // #315: a newer render owns the pane (two in flight both appended)
   const names = Object.keys(counts);
-  head.textContent = "Tags"; rpInfo = "tags:" + names.length;
-  const c = document.createElement("span");
-  c.className = "scount"; c.textContent = names.length; head.appendChild(c);
-  if (!names.length) return rEmpty(box, "No tags.");
+  rpInfo = "tags:" + names.length;
+  const paint = fill => rpSwap(box, head, JSON.stringify(["tags", counts]), (box, head) => {
+    head.appendChild(document.createTextNode("Tags"));
+    const c = document.createElement("span");
+    c.className = "scount"; c.textContent = names.length; head.appendChild(c);
+    if (!names.length) return rEmpty(box, "No tags.");
+    fill(box);
+  });
   const root = { own: 0, kids: new Map() };
   for (const n of names) {
     let cur = root, path = "";
@@ -652,7 +691,7 @@ async function rTags() {
       row.onclick = () => tagSearch(k.name);
     }
   };
-  build(box, root, 0);
+  paint(b => build(b, root, 0));
 }
 /* #119 the Properties view (stock core plugin "Properties view"): every vault property
    with the number of notes holding it, sorted by name or frequency (ui/props.js
@@ -716,11 +755,13 @@ function tagSearch(tag) {                  // pane row / inline pill -> search "
 // group's view to that heading; the heading at the viewport top is .active
 let tocHeads = [], ulOpen = false;
 async function rOutline(n) {
-  const box = $("toclist");
-  box.textContent = "";
-  tocHeads = n ? await inv("outline", { name: n }) : [];
+  const box = $("toclist"), gen = ++tocGen;
+  let heads;                               // #315: fetch first, the painted rows stay until the swap
+  try { heads = n ? await inv("outline", { name: n }) : []; }
+  catch (e) { if (gen === tocGen) rpDrop(box, null); throw e; }
+  if (gen !== tocGen) return;              // #315: a newer render owns the pane
+  tocHeads = heads;
   rpInfo = "toc:" + tocHeads.length;
-  if (!tocHeads.length) return rEmpty(box, "No headings.");
   // build tree: a heading's children = following headings with a deeper level
   const build = (parent, i, minLv) => {
     while (i < tocHeads.length && tocHeads[i].level > minLv) {
@@ -745,8 +786,11 @@ async function rOutline(n) {
     }
     return i;
   };
-  build(box, 0, 0);
-  tocSync();
+  rpSwap(box, null, JSON.stringify(["toc", n, heads]), b => {
+    if (!tocHeads.length) return rEmpty(b, "No headings.");
+    build(b, 0, 0);
+  });
+  tocSync();                               // (returns at once without headings, as before)
 }
 /* tocjump: the outline belongs to rLeaf (the note leaf rNote() rendered it for),
    NOT to the focused group — with the linked local graph focused, fg() is the
@@ -3859,6 +3903,10 @@ function sbarTok() {
 }
 let ovfT = 0;
 addEventListener("resize", () => {                 // the census must follow the window, not only UI state
+  // #281: a vault window boots HIDDEN, so the boot-time placeRToggle measured #rtoggle in the
+  // unmapped webview's viewport; re-measure once the window is mapped at its real size, or the
+  // [rt:] rect stays stale (the toggle itself is in-flow and always where CSS puts it).
+  placeRToggle();
   requestAnimationFrame(updateTitle);
   clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
 });
@@ -5486,6 +5534,7 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
   if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
+  if (m !== "reading" && typeof Ed !== "undefined" && Ed.lpSrcSync) Ed.lpSrcSync(g);   // #278: source-mode marker decorations follow the flip
   /* plug-top5: plugin code blocks render in lp only. goal mt-fix: not in the lp a reading view keeps laid out either —
      a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
      refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
@@ -8737,6 +8786,11 @@ let CANVAS = null;
         io: (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data }),
         readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
         model: PLGVM,
+        // CodeAnt #262/#283: a media_rename the watcher never reports -> the file model, then the explorer
+        mediaMoved: async (o, n) => {
+          if (PLGMM) try { PLGMM(o, n); } catch (e) { console.error("[plugin] mediaMoved:", e); }
+          try { await refreshTree(); } catch (_) {}
+        },
         notify: m => say(m, "canvas"),
         changed: () => { cvLinkDirty(); updateTitle(); },   // cvf-links: the canvas link model re-reads
         pref: {
@@ -8811,7 +8865,15 @@ let AREC = null;
   const IV = TAURI && TAURI.core && typeof TAURI.core.invoke === "function" ? TAURI.core.invoke : null;
   const call = (c, a) => IV ? IV(c, a) : Promise.reject(new Error("no ipc"));
   const tokP = call("audio_token").then(t => (typeof t === "string" && t ? t : null), () => null);
-  const deny = function getUserMedia() { return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError")); };
+  // devaccess (#295): a camera request — video only — goes to the NATIVE gate (devperm::decide: Settings › Security ›
+  // Device access › Camera; default off = denied there). The constraints are rebuilt here as { video } read ONCE, so
+  // no getter / Proxy can add audio after this check: a page request never carries audio, the mic stays reserved.
+  const deny = function getUserMedia(c) {
+    let v = null;
+    try { if (c && typeof c === "object" && !c.audio) v = c.video; } catch (_) { v = null; }
+    if (gum && v) { const ask = { video: (typeof v === "object" ? v : true) }; return gum(ask); }
+    return Promise.reject(new DOMException("Microphone access is reserved for the Audio recorder core plugin.", "NotAllowedError"));
+  };
   if (md) {
     try { Object.defineProperty(md, "getUserMedia", { value: deny, writable: false, configurable: false, enumerable: true }); } catch (_) {}
     try { if (window.MediaDevices && MediaDevices.prototype) Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: deny, writable: false, configurable: false }); } catch (_) {}
@@ -8860,7 +8922,12 @@ let AREC = null;
       catch (e) {
         const m = errStr(e), n = errName(m);
         if (n === "NotFoundError" || n === "OverconstrainedError" || n === "NotReadableError") msg = "No microphone is connected.";
-        else if (n === "NotAllowedError" || n === "SecurityError") { st.denied++; msg = "Microphone access was denied."; }
+        else if (n === "NotAllowedError" || n === "SecurityError") {
+          st.denied++;
+          // #295: Settings › Security › Microphone off (or lockdown) names the switch; a Cancel in the native consent does not
+          const off = /\((Settings › Security › [^)]*)\)/.exec(m);
+          msg = off ? "Microphone access was denied: the microphone is off (" + off[1] + ")." : "Microphone access was denied.";
+        }
         else if (n === "NotSupportedError") msg = "Audio recording is not available: " + m.slice(n.length + 2);
         else msg = "Audio recorder: " + m;
         return;
@@ -8913,8 +8980,21 @@ let AREC = null;
   const ip = PLG && PLG.app && PLG.app.internalPlugins;
   const sync = () => { if (ip) ip.config["audio-recorder"] = plugin.enabled; };
   if (ip) { ip.plugins["audio-recorder"] = plugin; sync(); }
+  /* #295 (audit F-8) hardening: `start` is NOT on this page-global object any more. The user's
+     routes reach it from this closure only: the ribbon button (above), the status item is stop
+     only, and the command "audio-recorder:start" (palette + hotkeys, CMDS) whose run is wired
+     below once CMDS exists. Whatever route a page script takes, the decision is native:
+     audio_rec_start asks the user in a native consent before EVERY recording (or refuses while
+     Settings › Security › Microphone is off / lockdown), and the native window title carries the
+     recording mark while the microphone is on. */
+  setTimeout(() => {
+    try {
+      const c = typeof CMDS !== "undefined" ? CMDS.find(x => x.id === "audio-recorder:start") : null;
+      if (c) c.run = () => { start(); };
+    } catch (e) { console.error("[audio-recorder] command:", e); }
+  }, 0);
   AREC = Object.freeze({
-    plugin, start, stop,
+    plugin, stop,
     on: () => st.on, recording: () => !!st.rec,
     // census [arec:on=|rec=|busy=|saved=|last=|denied=|tok=|mr=|err=] + [ribbon:audio@x,y] [arind@x,y]
     tok() {
@@ -10162,17 +10242,25 @@ function dropAt(at) {
    answer is: refuse, visibly. Copying the file in anyway and inserting it
    somewhere we guessed is the worse failure — it writes to the vault for an
    action the user cannot see the result of. */
-async function attachDrop(paths, at) {
+/* #280: what is attached is EITHER a real drop's one-shot ticket ({ticket, names}, from the
+   drop-files event: Rust holds the paths, the page never sees them) OR a path the user typed
+   into "Insert attachment" ({path}: Rust asks natively before it touches anything). This is
+   the one place that picks the command for each; canvas-drop.js calls it through host.call. */
+function attachCall(note, src) {
+  return src && src.ticket ? inv("attach_files", { note, ticket: src.ticket })
+    : inv("attach_typed", { note, path: String((src && src.path) || "") });
+}
+async function attachDrop(src, at) {
   // cv-drop CV-101: a board under the drop point (no point: the active leaf) takes the paths as file cards
   const cvb = window.CanvasDrop ? window.CanvasDrop.claim(at) : null;
-  if (cvb) return window.CanvasDrop.attach(cvb, paths, at, { inv, refresh: refreshTree, say: dropSay, update: updateTitle });
+  if (cvb) return window.CanvasDrop.attach(cvb, src, at, { inv, call: attachCall, refresh: refreshTree, say: dropSay, update: updateTitle });
   if (at) dropAt(at);              // osdrop: a real drop inserts at the drop point
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
   if (!t || t.kind) return dropSay("open a note first");
   if (t.mode === "reading") { dropTok = "ro"; dropSay("switch to editing (" + MODNAME + "+E) to attach a file"); return updateTitle(); }
   let a;
-  try { a = await inv("attach_files", { note: t.name, paths }); }
+  try { a = await attachCall(t.name, src); }
   catch (e) { dropTok = "err"; dropSay(errStr(e)); return updateTitle(); }
   // R29.11: both renderers resolve ![[x.png]] against the index list, and the
   // LP engine reads its own copy (imgsCache) — a file copied but not re-listed
@@ -11189,7 +11277,7 @@ const CMDS = [
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
   // #116 Audio recorder (core plugin, off by default): stock offers start only while NOT recording and stop only WHILE
   // recording; neither row exists (palette, hotkeys) while the core plugin is off
-  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => AREC && AREC.start(), () => !!(AREC && AREC.on() && !AREC.recording())],
+  ["audio-recorder:start",     "Audio recorder: Start recording audio", [],                     () => {} /* #295: wired by the Audio recorder block (no page-global start) */, () => !!(AREC && AREC.on() && !AREC.recording())],
   ["audio-recorder:stop",      "Audio recorder: Stop recording audio",  [],                     () => AREC && AREC.stop(), () => !!(AREC && AREC.on() && AREC.recording())],
   ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // issue #115: the Daily notes core plugin's three commands (stock ids + names); offered only while it is on
@@ -11579,7 +11667,7 @@ $("apath").onkeydown = async e => {
   if (e.key !== "Enter") return;
   const p = $("apath").value.trim();
   closeAttach();
-  if (p) await attachDrop([p]);
+  if (p) await attachDrop({ path: p });   // #280: a typed path is no drop: attach_typed asks natively
 };
 
 /* ---------- graph controls card (goals graphparity + graphctx; harness docs/recon-graphpanel,
@@ -12606,31 +12694,21 @@ async function startGraph(g, cfg) {
     gw = null;
   };
   function batch(steps, budget) {
-    const n = N.length, X = new Float64Array(n), Y = new Float64Array(n), VX = new Float64Array(n), VY = new Float64Array(n);
-    const PIN = new Uint8Array(n), FX = new Float64Array(n), FY = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      const p = N[i]; X[i] = p.x; Y[i] = p.y; VX[i] = p.vx; VY[i] = p.vy;
-      if (p.fx != null) { PIN[i] = 1; FX[i] = p.fx; FY[i] = p.fy; }
-    }
+    const o = GraphPhys.nodesOut(N);   // X Y VX VY PIN FX FY (the X..VY buffers are transferred to the worker)
     if (lnkSrc !== links) {             // rebuild() replaces `links`, so its identity is the version
       lnkSrc = links; const L = links.length;
       lnk = { LA: new Int32Array(L), LB: new Int32Array(L), LBI: new Float64Array(L), LK: new Float64Array(L) };
       for (let i = 0; i < L; i++) { const l = links[i]; lnk.LA[i] = l.a; lnk.LB[i] = l.b; lnk.LBI[i] = l.bias; lnk.LK[i] = l.k; }
     }
-    return { gen: nGen, X, Y, VX, VY, PIN, FX, FY, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
+    return { gen: nGen, ...o, links: lnk, steps, budget, trace: !!sTr, first: !settledMark,
              f: { repel: F.repel, repelK: REPEL_K, repelP: REPEL_P, dist: F.dist, center: F.center, centerK: CENTER_K },
              st: { alpha, alphaTarget, seekN, still, calm, kePeak, quiet } };
   }
   // a result: positions and state back, the settle side effects, then the replayed events
-  function land(bgen, r, st, X, Y, VX, VY, PIN) {
+  function land(bgen, r, st, X, Y, VX, VY, bo) {   // bo: the batch as posted (its PIN)
     inflight = false; const q = evq; evq = [];
     if (g.simGen !== gen || bgen !== nGen) return;   // retired, or N[] swapped while the batch was out
-    for (let i = 0; i < N.length; i++) {
-      const p = N[i];
-      if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0; }   // C3: the pointer moved on while the batch was out
-      else if (PIN[i]) { p.vx = 0; p.vy = 0; }   // released while the batch was out: it stays where it was dropped
-      else { p.x = X[i]; p.y = Y[i]; p.vx = VX[i]; p.vy = VY[i]; }
-    }
+    GraphPhys.landNodes(N, bo, X, Y, VX, VY);   // a held node at its pin, one dropped while the batch was out stays put
     ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = st);
     if (sTr && r.tr) {
       const T = r.tr, o = performance.timeOrigin;
@@ -12658,13 +12736,13 @@ async function startGraph(g, cfg) {
     const w = gwGet();
     if (!w) {                           // main thread: the frame budget bounds the batch
       const b = batch(steps, PH_BUDGET_MS);
-      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b.PIN);
+      land(b.gen, (g.__gpe || (g.__gpe = GraphPhys.create())).run(b), b.st, b.X, b.Y, b.VX, b.VY, b);
       return;
     }
     const b = batch(steps, PH_WORKER_MS);
     inflight = true;
     w.onmessage = e => {
-      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b.PIN);
+      const d = e.data; land(b.gen, d.r, d.st, d.X, d.Y, d.VX, d.VY, b);
       if (g.simGen !== gen || quiet) { gwPut(); if (g.simGen === gen) wake(); return; }
       if (!(rcSnap && rcSnap.vraw === undefined)) pump();   // C5: rcPre must see the swap before any step
     };
@@ -12856,7 +12934,8 @@ async function startGraph(g, cfg) {
     if (rcSnap) { rcRecord(); updateTitle(); }   // C5: once, on the first paint after a re-centre
     perf.push("graph_draw", perf.now() - dT0, { renderer: glr ? "gl" : "2d", nodes: N.length, edges: gr.edges.length, ...gpu });
   }
-  let firstFrame = true, running = false, dirty = true, shadeNow = false;
+  let firstFrame = true, running = false, dirty = true, shadeNow = false, glOwed = false;   // glOwed: #279, see the settled branch of step()
+  let drag = null, moved = false;      // the held press (C3, below); declared before step(): its first run is synchronous and holdApply (#279) reads drag
   if (g.gwRelease) g.gwRelease();      // the sim this start retires gives its physics worker back
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
   // gwRelease: a sim retired between batches (cancelAnimationFrame + simGen = 0, nothing in the Worker)
@@ -12906,6 +12985,7 @@ async function startGraph(g, cfg) {
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
     }
     if (rcSnap && rcSnap.vraw === undefined) rcPre();   // C5: before this frame's physics
+    holdApply();                       // #279: the node travel queued since the last frame, before its physics and draw
     // The settle test runs after EVERY physics step (ui/graph-phys.js), not once per frame: counted
     // per frame, "10 calm" meant 10..70 steps depending on how many steps each frame happened to
     // carry (wall clock), so the sim froze at a timing-dependent step and two runs of the same vault
@@ -12914,7 +12994,7 @@ async function startGraph(g, cfg) {
     pump();
     const anim = animT0 >= 0;          // a running timelapse draws every frame, settled or not
     const drew = dirty || anim;
-    if (drew) { draw(); dirty = false; }
+    if (drew) { draw(); dirty = false; glOwed = true; }
     if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
     if (quiet && !inflight && animT0 < 0) {   // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false; gwPut();
@@ -12923,7 +13003,11 @@ async function startGraph(g, cfg) {
       // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
       // a settled GL loop draws the same frame once more on the next animation frame — nothing new to show,
       // it only pushes the real last frame onto the screen.
-      if (drew && glr) requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); });
+      // #279: not only a draw in THIS frame is owed that push: a frame that drew and was followed by
+      // frames that did not (a batch that ran no step, the last one before quiet) left the same unseen
+      // frame — a quick drag's node stayed drawn at its old place under a label already at the new one.
+      // glOwed = a loop frame drew since the last push.
+      if (glOwed && glr) { glOwed = false; requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); }); }
       // graphperf: a ggkeep tab left at rest comes back QUIET, so its very first frame lands here —
       // inside the tab_switch paint. v0.6.1 restarted hot and settled ~2 s later, outside it.
       // State is set now; the title + span flush are published after the next frame (afterPaint).
@@ -13102,7 +13186,7 @@ async function startGraph(g, cfg) {
   // fx/fy only WHILE HELD (R16.6, operator 2026-10-06: a released node is FREE
   // and settles back under the forces, as stock's does); on empty canvas it
   // pans the camera exactly as it always did. Click w/o movement still navigates.
-  let drag = null, moved = false;
+  // (drag, moved: declared above step() — #279 holdApply reads drag from the very first, synchronous step)
   // release: unpin the held node and drop the d3 alphaTarget back to 0, so the
   // sim cools from where it is (alpha ~0.3) instead of freezing the node. Every
   // way a hold can end goes through here: mouseup on the canvas, the pointer
@@ -13111,11 +13195,25 @@ async function startGraph(g, cfg) {
   // Pins exist only while held, so release clears EVERY pin in N: a refresh
   // during the hold (C3 carry) swaps in a new node object that carries fx/fy,
   // and that copy must be freed too.
+  // #279: node travel no frame has applied yet (drag.pdx/pdy, see holdApply) ends with the hold, as
+  // stock's does: a press, one jump and a release inside one frame leave the node at the press point.
+  // A hold that grabbed a node (GraphPhys.releaseHeld: a pin was set, or a node press went past the
+  // slop) leaves the sim re-flowing (GraphPhys.releaseHeat), as stock's: with the move applied but no
+  // physics step run yet, alpha still at its rest value froze the dropped node; a grab no frame
+  // applied ended with alphaTarget still 0 and was never re-flowed at all.
   const release = () => {
+    const d0 = drag;
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
-    for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) ev(() => { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); });
+    let pinned = false;
+    for (const q of N) if (q.fx != null) { q.fx = q.fy = null; pinned = true; }
+    const held = GraphPhys.releaseHeld(d0, moved, pinned);
+    if (alphaTarget !== 0 || held) ev(() => {
+      sTrMark("release");
+      const s = GraphPhys.releaseHeat({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet }, held);
+      ({ alpha, alphaTarget, seekN, still, calm, kePeak, quiet } = s);
+      g.graphSettled = false; if (g.simGen === gen) wake();
+    });
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -13131,36 +13229,45 @@ async function startGraph(g, cfg) {
     drag = { x: e.clientX, y: e.clientY, node: i >= 0 ? N[i] : null };
     moved = false;
   };
-  cv.onmousemove = e => {
-    const r = cv.getBoundingClientRect();
-    if (drag) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (moved || dx * dx + dy * dy > 16) {
-        moved = true;
-        if (drag.node) {
-          // NODE drag. Pin on the first real movement, not on mousedown: a bare
-          // click must not stick a node it never moved. Pointer px -> world
-          // units via the camera scale, so a zoomed-out drag still tracks.
-          let p = drag.node;
-          if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
-            p = drag.node = N.find(q => q.n === p.n);
-            if (!p) { release(); return; }
-          }
-          if (p.fx == null) { p.fx = p.x; p.fy = p.y; }
-          window.__graphHeld = release;
-          p.fx += dx / view.scale; p.fy += dy / view.scale;
-          p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
-          // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
-          // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
-        } else {
-          view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
-        }
-        drag.x = e.clientX; drag.y = e.clientY;
-        redraw();
-      }
+  // one pointer sample of the held press (GraphPhys.dragStep: nothing inside the 4 px click slop)
+  // #279: a NODE sample is only queued (GraphPhys.holdQueue); the next animation frame applies it
+  // (holdApply, top of step(), before that frame's physics and draw), so the disc, its edges and its
+  // label are always drawn from one applied position, and a release before that frame drops it.
+  function holdMove(e) {
+    const m = GraphPhys.dragStep(drag, moved, e.clientX, e.clientY);
+    if (!m) return;
+    const { dx, dy } = m;
+    moved = true;
+    if (drag.node) {
+      window.__graphHeld = release;
+      GraphPhys.holdQueue(drag, dx, dy);
+      wake();
       return;
     }
+    view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
+    redraw();
+  }
+  function holdApply() {
+    if (!drag || !drag.node) return;
+    const m = GraphPhys.holdTake(drag);
+    if (!m) return;
+    // NODE drag. Pin on the first real movement, not on mousedown: a bare
+    // click must not stick a node it never moved. Pointer px -> world
+    // units via the camera scale, so a zoomed-out drag still tracks.
+    let p = drag.node;
+    if (!N.includes(p)) {          // a refresh swapped the node objects mid-hold: follow by name
+      p = drag.node = N.find(q => q.n === p.n);
+      if (!p) { release(); return; }
+    }
+    GraphPhys.holdPlace(p, m.dx / view.scale, m.dy / view.scale);   // pin on the first applied move, node at the pin
+    // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
+    // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
+    if (alphaTarget !== 0.3 || quiet) ev(() => { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; seekN = 0; still = 0; quiet = false; g.graphSettled = false; wake(); });
+    dirty = true;
+  }
+  cv.onmousemove = e => {
+    const r = cv.getBoundingClientRect();
+    if (drag) { holdMove(e); return; }
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const h = hitTest(x, y);
     if (h !== hov) { hov = h; redraw(); gHover(g, e, N[h]); }   // cp-hover-editor: the engine hears every hover change
@@ -13497,6 +13604,12 @@ async function enterVault() {
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
+  // #281 startup reveal: a vault-boot window is HIDDEN until here — layout, vault theme + snippets,
+  // tree and restored tabs are in, so the first frame the user sees is the whole workspace, not
+  // the parts arriving one by one. Unawaited, nothing after it waits on it. Community plugins load
+  // AFTER (below, unawaited): they never hold the reveal, and the backend shows the window anyway
+  // at reveal::FALLBACK if this line is never reached (a throw above, a stalled webview).
+  inv("boot_reveal").catch(() => {});
   // issue #115: the Daily notes core plugin reads the vault's core-plugins.json + daily-notes.json (on/off, options),
   // then autorun opens today's note — after the boot mark and the reveal, before community plugins load (Calendar /
   // Periodic Notes find instance.options filled)
@@ -13664,8 +13777,9 @@ TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // 
 TAURI.event.listen("security-webgl", () => window.opensidianGraphGl());   // #144 toggle 5: security_set moved the effective WebGL value
 TAURI.event.listen("security-clip", e => say(String(e.payload || ""), "secclip"));   // #144 toggle 9: the native gate swallowed a clipboard key / middle-click
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
-// osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
-TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
+// osdrop: the payload is [offer, x, y] (xdnd.rs), x/y physical px in the webview; #280: the
+// offer is {ticket, names} — a one-shot ticket attach_files consumes, never the paths
+TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || {}, { x: p[1], y: p[2] }); });
 /* tab-dataloss: QUIT FLUSHES. The window close (button, Alt+F4, WM) and SIGTERM
    no longer destroy the page with a debounce timer still armed: the backend
    holds the quit and sends "app-quit" (main.rs QUIT_EVENT); this flushes every
@@ -14074,12 +14188,16 @@ const SACT = {
   check_updates: (r, d) => sCheckUpdates(d),
 };
 /* Check for updates (updates.rs update_check): ONE signed-release check per press,
-   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc)
-   and verifies the signature against the embedded pinned key; the page only shows
-   the verdict. The result line sits under the row description; a release link is
-   offered ONLY for status "available" (signed), and its URL is the one Rust built
-   from the validated tag, opened through open_external. [upd:<status>:<latest>]
-   is the census token a phase or a drive asserts on. */
+   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc),
+   verifies the signature against the embedded pinned key(s) AND every release asset
+   against the signed sums (#294), and hands back a verdict already worded in the UI
+   language; the page only shows it. Under the verdict: the SIGNED sha256 of this
+   platform's release file as a sha256sum line (the user checks the download against
+   it; the app downloads nothing), then one line per warning (a higher release that
+   is unsigned or whose assets do not match). A release link is offered ONLY for
+   status "available", and its URL is the one Rust built from the validated tag,
+   opened through open_external. [upd:<status>:<latest>] is the census token a
+   phase or a drive asserts on. */
 let sUpd = null, sUpdBusy = false;
 function sCheckUpdates(d) {
   if (sUpdBusy) return;
@@ -14087,7 +14205,7 @@ function sCheckUpdates(d) {
   if (!info) return;
   let out = info.querySelector(".supd");
   if (!out) { out = document.createElement("div"); out.className = "sdesc supd"; info.appendChild(out); }
-  out.textContent = "Checking GitHub for a signed release…";
+  out.textContent = I18N.tk("update-checking", "Checking GitHub for a signed release…");
   sUpdBusy = true; sUpd = { status: "checking", latest: "" }; updateTitle();
   inv("update_check").then(res => {
     sUpd = { status: String(res.status), latest: String(res.latest || "") };
@@ -14095,13 +14213,22 @@ function sCheckUpdates(d) {
     out.dataset.status = sUpd.status;
     if (res.status === "available" && res.url) {
       const a = document.createElement("span"); a.className = "slink supdlink"; a.tabIndex = 0;
-      a.textContent = " View release";
+      a.textContent = " " + I18N.tk("update-view-release", "View release");
       a.onclick = ev => { ev.stopPropagation(); sOpenExt(String(res.url)); };
       out.appendChild(a);
     }
+    if ((res.status === "available" || res.status === "current") && res.sha256 && res.file) {
+      const h = document.createElement("div"); h.className = "supdsha";
+      h.textContent = String(res.sha256) + "  " + String(res.file);
+      out.appendChild(h);
+    }
+    for (const w of Array.isArray(res.warnings) ? res.warnings : []) {
+      const l = document.createElement("div"); l.className = "supdwarn"; l.textContent = String(w);
+      out.appendChild(l);
+    }
   }).catch(err => {
     sUpd = { status: "error", latest: "" };
-    out.textContent = "Could not check for updates: " + String(err && err.message || err);
+    out.textContent = I18N.tk("update-error", "Could not check for updates: " + String(err && err.message || err), { error: String(err && err.message || err) });
     out.dataset.status = "error";
   }).finally(() => { sUpdBusy = false; updateTitle(); });
 }

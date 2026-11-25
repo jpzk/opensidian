@@ -8,9 +8,11 @@
 #   1. SNAP: the top of the previous full UTC hour (YYYYMMDDTHH0000Z, a past fixed timestamp; never
 #      /latest). Lock: snapshot-resolve.sh (gpgv against the committed keyring, Packages.xz sha256)
 #      -> packaging/ci/appimage-snapshot.lock.tsv; PKGS versions rewritten from the lock in
-#      appimage-build.sh, sbom-local.sh, webkit-apt.sh; old SNAP rewritten where it is pinned.
+#      appimage-build.sh, sbom-local.sh, webkit-apt.sh, packaging/ci/linux-test.sh; old SNAP
+#      rewritten where it is pinned.
 #   2. image: newest docker.io/library/ubuntu resolute-* tag, manifest-list digest from the registry,
-#      must list linux/amd64 and linux/arm64/v8 -> DIGEST (appimage-build.sh) + WK_IMG (sbom-local.sh).
+#      must list linux/amd64 and linux/arm64/v8 -> DIGEST (appimage-build.sh, linux-test.sh) + WK_IMG
+#      (sbom-local.sh).
 #   3. scanners: osv-scanner newest non-prerelease release (API digest == SHA256SUMS per arch) ->
 #      osv-scanner.pins; cargo-audit/deny/vet newest non-yanked stable version (sparse-index cksum ==
 #      sha256 of the downloaded .crate) -> cargo-scanners.pins + the literal in supply-chain.yml;
@@ -25,6 +27,7 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 C=(curl -4 -fsSL --proto '=https' --tlsv1.2 --retry 3 -m 120)
 AB=$R/packaging/ci/appimage-build.sh; SL=$R/scripts/supply-chain/sbom-local.sh; WA=$R/scripts/supply-chain/webkit-apt.sh
 WT=$R/scripts/supply-chain/tests/webkit-apt.test.sh; LOCK=$R/packaging/ci/appimage-snapshot.lock.tsv
+LT=$R/packaging/ci/linux-test.sh   # linux.yml PR test env: the same pins as appimage-build.sh (it checks equality)
 SC=$R/.github/workflows/supply-chain.yml; SG=$R/.github/workflows/semgrep.yml
 OP=$R/scripts/supply-chain/osv-scanner.pins; CP=$R/scripts/supply-chain/cargo-scanners.pins
 sum=$W/summary; : > "$sum"
@@ -67,9 +70,10 @@ repin() { # file var
   cat "$W/re" > "$f"
 }
 cp "$W/lock" "$LOCK"
-repin "$AB" PKGS; repin "$AB" SBOM_PKGS; repin "$WA" PKGS; repin "$SL" PKGS
+repin "$AB" PKGS; repin "$AB" SBOM_PKGS; repin "$WA" PKGS; repin "$SL" PKGS; repin "$LT" PKGS
 [ "$(sed -n 's/^PKGS="\([^"]*\)".*/\1/p' "$AB")" = "$new_pkgs" ] || die "$AB PKGS != resolved set"
-for f in "$AB" "$WA" "$WT"; do sed -i "s/$old_snap/$snap/g" "$f"; done
+for f in "$AB" "$WA" "$WT" "$LT"; do sed -i "s/$old_snap/$snap/g" "$f"; done
+[ "$(sed -n 's/^PKGS="\([^"]*\)".*/\1/p' "$LT")" = "$new_pkgs" ] || die "$LT PKGS != resolved set"
 note "- snapshot.ubuntu.com: $old_snap -> $snap (lock re-resolved, gpgv + Packages.xz sha256)"
 for p in $new_pkgs; do case " $old_pkgs " in *" $p "*) ;; *) note "  - $p (was $(printf '%s\n' $old_pkgs | grep "^${p%%=*}=" | cut -d= -f2-))" ;; esac; done
 
@@ -87,8 +91,9 @@ dig=$(tr -d '\r' < "$W/h" | awk 'tolower($1)=="docker-content-digest:" {print $2
 [ "sha256:$(sha256sum < "$W/idx" | cut -d' ' -f1)" = "$dig" ] || die "ubuntu:$tag index body != docker-content-digest"
 jq -e '[.manifests[].platform | "\(.os)/\(.architecture)\(if .variant then "/"+.variant else "" end)"] | (index("linux/amd64") != null) and (index("linux/arm64/v8") != null)' "$W/idx" >/dev/null \
   || die "ubuntu:$tag manifest list lacks linux/amd64 or linux/arm64/v8"
-sed -i "s/$old_dig/$dig/" "$AB"; sed -i "s|^WK_IMG=docker.io/library/ubuntu@$old_dig|WK_IMG=docker.io/library/ubuntu@$dig|" "$SL"
+sed -i "s/$old_dig/$dig/" "$AB" "$LT"; sed -i "s|^WK_IMG=docker.io/library/ubuntu@$old_dig|WK_IMG=docker.io/library/ubuntu@$dig|" "$SL"
 grep -q "^WK_IMG=docker.io/library/ubuntu@$dig" "$SL" || die "WK_IMG in $SL was not $old_dig"
+grep -q "^DIGEST=$dig$" "$LT" || die "DIGEST in $LT was not $old_dig"
 [ "$old_dig" = "$dig" ] || note "- ubuntu image: $old_dig -> ubuntu:$tag $dig"
 
 # ---- 3. scanners ------------------------------------------------------------------------------

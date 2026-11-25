@@ -1,0 +1,211 @@
+LIBS-SHA-OK
+## imports/strings (file  needle  count-of-lines)
+libsoup-3.0.so.0	gss_init_sec_context	1
+libsoup-3.0.so.0	Negotiate	2
+libsoup-3.0.so.0	NTLM	7
+libsoup-3.0.so.0	sqlite3_open_v2	0
+libsoup-3.0.so.0	soup_cookie_jar_db_new	2
+libsoup-3.0.so.0	soup_hsts_enforcer_db_new	2
+libsoup-3.0.so.0	soup_server_new	1
+libwebkit2gtk-4.1.so.0	sqlite3_open_v2	1
+libwebkit2gtk-4.1.so.0	localstorage.sqlite3	1
+libwebkit2gtk-4.1.so.0	IndexedDB	9
+libwebkit2gtk-4.1.so.0	soup_session_new	1
+libwebkit2gtk-4.1.so.0	gst_init_check	1
+libwebkit2gtk-4.1.so.0	gst_element_factory_make	1
+libwebkit2gtk-4.1.so.0	rtpbin	0
+libwebkit2gtk-4.1.so.0	gst_rtcp	0
+libwebkit2gtk-4.1.so.0	xsltApplyStylesheet	1
+libwebkit2gtk-4.1.so.0	JxlDecoderCreate	1
+libwebkit2gtk-4.1.so.0	gdk_pixbuf_new_from	0
+libwebkit2gtk-4.1.so.0	soup_server_new	1
+libwebkit2gtk-4.1.so.0	soup_auth_domain_digest	0
+libwebkit2gtk-4.1.so.0	webkit_web_context_set_automation_allowed	2
+libwebkit2gtk-4.1.so.0	SkCanvas	2
+libwebkit2gtk-4.1.so.0	SkEmbossMaskFilter	1
+libwebkit2gtk-4.1.so.0	SkBlurMaskFilter	1
+libwebkit2gtk-4.1.so.0	SkDeflate	0
+libwebkit2gtk-4.1.so.0	SkBmpStandardCodec	0
+libwebkit2gtk-4.1.so.0	SkCodec	1
+libwebkit2gtk-4.1.so.0	dng_	0
+libwebkit2gtk-4.1.so.0	ANGLE	20
+libgio-2.0.so.0	mnt_context_mount	0
+libgio-2.0.so.0	mnt_context_	0
+libgio-2.0.so.0	mnt_table_parse	1
+libgio-2.0.so.0	mnt_new_monitor	1
+libgio-2.0.so.0	mnt_monitor	3
+libgio-2.0.so.0	blkid_	0
+libmount.so.1	blkid_	1
+libmount.so.1	mnt_context_mount	2
+libdbus-1.so.3	dbus_connection_open	2
+libdbus-1.so.3	dbus_bus_get	2
+libdbus-1.so.3	dbus_server_listen	2
+libdbus-1.so.3	nonce-tcp	2
+opensidian	dbus_bus_get	1
+opensidian	dbus_connection	1
+opensidian	libdbus	1
+opensidian	webkit_web_context_set_automation_allowed	1
+opensidian	webkit_settings_set_enable_developer_extras	1
+opensidian	soup_session_new	1
+opensidian	gss_	0
+opensidian	sqlite3_	0
+opensidian	webkit_cookie_manager_set_persistent_storage	1
+opensidian	webkit_website_data_manager	1
+libsystemd.so.0	sd_journal_send	2
+libsystemd.so.0	sd_journal_print	2
+libsystemd.so.0	gpt-auto	0
+libsystemd.so.0	journald	1
+libwebkit2gtk-4.1.so.0	sd_journal_send	1
+libjavascriptcoregtk-4.1.so.0	sd_journal_send	1
+libwebkit2gtk-4.1.so.0	sd_journal_print	0
+libjavascriptcoregtk-4.1.so.0	sd_journal_print	0
+libjxl.so.0.11	DecodeImageAPNG	0
+libjxl.so.0.11	APNG	0
+libjxl.so.0.11	acTL	0
+libgstallocators-1.0.so.0	gst_rtcp	0
+libgstapp-1.0.so.0	gst_rtcp	0
+libgstaudio-1.0.so.0	gst_rtcp	0
+libgstbase-1.0.so.0	gst_rtcp	0
+libgstfft-1.0.so.0	gst_rtcp	0
+libgstgl-1.0.so.0	gst_rtcp	0
+libgstpbutils-1.0.so.0	gst_rtcp	0
+libgstreamer-1.0.so.0	gst_rtcp	0
+libgsttag-1.0.so.0	gst_rtcp	0
+libgstvideo-1.0.so.0	gst_rtcp	0
+libgstallocators-1.0.so.0	gst_rtp	0
+libgstapp-1.0.so.0	gst_rtp	0
+libgstaudio-1.0.so.0	gst_rtp	0
+libgstbase-1.0.so.0	gst_rtp	0
+libgstfft-1.0.so.0	gst_rtp	0
+libgstgl-1.0.so.0	gst_rtp	0
+libgstpbutils-1.0.so.0	gst_rtp	0
+libgstreamer-1.0.so.0	gst_rtp	0
+libgsttag-1.0.so.0	gst_rtp	0
+libgstvideo-1.0.so.0	gst_rtp	0
+libgdk_pixbuf-2.0.so.0	io-ico	0
+libgdk_pixbuf-2.0.so.0	io-icns	0
+libgdk_pixbuf-2.0.so.0	ico	5
+libgdk_pixbuf-2.0.so.0	icns	0
+libgdk_pixbuf-2.0.so.0	gdk_pixbuf__	1
+libgdk_pixbuf-2.0.so.0	glycin	4
+libgdk_pixbuf-2.0.so.0	loaders.cache	1
+libgdk_pixbuf-2.0.so.0	gdk-pixbuf-2.0/2.10.0/loaders	0
+libxslt.so.1	xsltApplyStylesheet	5
+libxslt.so.1	xsltParseStylesheetDoc	1
+libjpeg.so.8	jpeg_fdct_16x16	0
+libwebkit2gtk-4.1.so.0	jpeg_fdct_16x16	0
+libjpeg.so.8	jpeg_CreateCompress	1
+libwebkit2gtk-4.1.so.0	jpeg_CreateCompress	1
+libjpeg.so.8	jpeg_start_compress	1
+libwebkit2gtk-4.1.so.0	jpeg_start_compress	1
+## compiled-in plugin/loader dirs
+## bundled tools/binaries (non-.so)
+./AppRun
+./.DirIcon
+./opensidian.desktop
+./opensidian.png
+./usr/bin/opensidian
+./usr/lib/webkit2gtk-4.1/WebKitGPUProcess
+./usr/lib/webkit2gtk-4.1/WebKitNetworkProcess
+./usr/lib/webkit2gtk-4.1/WebKitWebProcess
+./usr/share/glib-2.0/schemas/gschemas.compiled
+## host (Fedora 44) providers for exclusion candidates
+libgssapi_krb5.so.2	/lib64/libgssapi_krb5.so.2	/usr/lib64/libgssapi_krb5.so.2.2
+libkrb5.so.3	/lib64/libkrb5.so.3	/usr/lib64/libkrb5.so.3.3
+libk5crypto.so.3	/lib64/libk5crypto.so.3	/usr/lib64/libk5crypto.so.3.1
+libkrb5support.so.0	/lib64/libkrb5support.so.0	/usr/lib64/libkrb5support.so.0.1
+libsqlite3.so.0	/lib64/libsqlite3.so.0	/usr/lib64/libsqlite3.so.3.51.2
+libdbus-1.so.3	/lib64/libdbus-1.so.3	/usr/lib64/libdbus-1.so.3.38.3
+libmount.so.1	/lib64/libmount.so.1	/usr/lib64/libmount.so.1.1.0
+libblkid.so.1	/lib64/libblkid.so.1	/usr/lib64/libblkid.so.1.1.0
+libsystemd.so.0	/lib64/libsystemd.so.0	/usr/lib64/libsystemd.so.0.42.0
+libudev.so.1	/lib64/libudev.so.1	/usr/lib64/libudev.so.1.7.12
+libharfbuzz.so.0	/lib64/libharfbuzz.so.0	/usr/lib64/libharfbuzz.so.0.61410.0
+libharfbuzz-icu.so.0	MISSING	
+libfribidi.so.0	/lib64/libfribidi.so.0	/usr/lib64/libfribidi.so.0.4.0
+hostdir: ls: cannot access '/usr/lib64/gstreamer-1.0': No such file or directory
+hostdir: /usr/lib64/gdk-pixbuf-2.0
+hostdir: /usr/libexec/glycin-loaders
+## WebKitGTK 2.52.6 source: which Skia files are compiled
+2.52.6: 179a2ea3f8f6edd4be7f31fdc55afc57bd0729f1fba648c61d4181539ac116fc  sums: 179a2ea3f8f6edd4be7f31fdc55afc57bd0729f1fba648c61d4181539ac116fc
+CMakeLists.txt include LICENSE modules src 
+1189
+2.52.6	file-present	SkEmbossMaskFilter.cpp	webkitgtk-2.52.6/Source/ThirdParty/skia/src/effects/SkEmbossMaskFilter.cpp
+2.52.6	file-present	SkBlurMaskFilterImpl.cpp	webkitgtk-2.52.6/Source/ThirdParty/skia/src/core/SkBlurMaskFilterImpl.cpp
+2.52.6	file-present	SkDeflate.cpp	webkitgtk-2.52.6/Source/ThirdParty/skia/src/pdf/SkDeflate.cpp
+2.52.6	file-present	SkBmpStandardCodec.cpp	webkitgtk-2.52.6/Source/ThirdParty/skia/src/codec/SkBmpStandardCodec.cpp
+2.52.6	file-present	dng_misc_opcodes.cpp	
+CMakeLists.txt
+include
+LICENSE
+modules
+src
+2.52.6	CMake-mentions	SkEmbossMaskFilter	1
+2.52.6	CMake-mentions	SkBlurMaskFilterImpl	1
+2.52.6	CMake-mentions	SkDeflate	1
+2.52.6	CMake-mentions	SkBmpStandardCodec	0
+2.52.6	CMake-mentions	SkBmpCodec	0
+2.52.6	CMake-mentions	SkCodec	3
+2.52.6	CMake-mentions	dng_	0
+2.52.6	CMake-mentions	SkPDF	18
+2.52.6	CMake-mentions	SkJpegCodec	1
+2.52.6	CMake-mentions	SkPngCodec	2
+2.52.6	CMake-mentions	SkWebp	2
+62:WEBKIT_OPTION_DEFINE(USE_LIBSECRET "Whether to enable the persistent credential storage using libsecret." PUBLIC ON)
+63:WEBKIT_OPTION_DEFINE(USE_SKIA_OPENTYPE_SVG "Whether to use the Skia built-in support for OpenType SVG fonts." PUBLIC ON)
+64:WEBKIT_OPTION_DEFINE(USE_SYSTEM_SYSPROF_CAPTURE "Whether to use a system-provided libsysprof-capture" PUBLIC ON)
+69:WEBKIT_OPTION_DEPEND(USE_SKIA_OPENTYPE_SVG USE_SKIA)
+75:WEBKIT_OPTION_DEFINE(USE_SYSTEM_UNIFDEF "Whether to use a system-provided unifdef" PRIVATE ON)
+77:WEBKIT_OPTION_DEPEND(USE_SYSTEM_SYSPROF_CAPTURE USE_SYSPROF_CAPTURE)
+113:WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_JPEGXL PUBLIC ON)
+153:    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE ON)
+155:    WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE OFF)
+250:if (USE_SKIA)
+272:if (ENABLE_XSLT)
+276:if (USE_LIBSECRET)
+279:        message(FATAL_ERROR "libsecret is needed for USE_LIBSECRET")
+316:SET_AND_EXPOSE_TO_BUILD(USE_ANGLE ${ENABLE_WEBGL})
+378:if (USE_JPEGXL)
+381:        message(FATAL_ERROR "libjxl is required for USE_JPEGXL")
+392:# Resolve FreeType so WOFF2Checks can detect its builtin WOFF2 support. Skia
+2.54.3: 2779c1b46f88762e8400650271ba14452dc4e30b37059981552d8b562b7d0862  sums: 2779c1b46f88762e8400650271ba14452dc4e30b37059981552d8b562b7d0862
+CMakeLists.txt include LICENSE modules src WebKitSkiaConfig.h 
+1213
+2.54.3	file-present	SkEmbossMaskFilter.cpp	webkitgtk-2.54.3/Source/ThirdParty/skia/src/effects/SkEmbossMaskFilter.cpp
+2.54.3	file-present	SkBlurMaskFilterImpl.cpp	webkitgtk-2.54.3/Source/ThirdParty/skia/src/core/SkBlurMaskFilterImpl.cpp
+2.54.3	file-present	SkDeflate.cpp	webkitgtk-2.54.3/Source/ThirdParty/skia/src/pdf/SkDeflate.cpp
+2.54.3	file-present	SkBmpStandardCodec.cpp	webkitgtk-2.54.3/Source/ThirdParty/skia/src/codec/SkBmpStandardCodec.cpp
+2.54.3	file-present	dng_misc_opcodes.cpp	
+CMakeLists.txt
+include
+LICENSE
+modules
+src
+WebKitSkiaConfig.h
+2.54.3	CMake-mentions	SkEmbossMaskFilter	1
+2.54.3	CMake-mentions	SkBlurMaskFilterImpl	1
+2.54.3	CMake-mentions	SkDeflate	1
+2.54.3	CMake-mentions	SkBmpStandardCodec	0
+2.54.3	CMake-mentions	SkBmpCodec	0
+2.54.3	CMake-mentions	SkCodec	3
+2.54.3	CMake-mentions	dng_	0
+2.54.3	CMake-mentions	SkPDF	18
+2.54.3	CMake-mentions	SkJpegCodec	1
+2.54.3	CMake-mentions	SkPngCodec	2
+2.54.3	CMake-mentions	SkWebp	2
+62:WEBKIT_OPTION_DEFINE(USE_LIBSECRET "Whether to enable the persistent credential storage using libsecret." PUBLIC ON)
+63:WEBKIT_OPTION_DEFINE(USE_SKIA_OPENTYPE_SVG "Whether to use the Skia built-in support for OpenType SVG fonts." PUBLIC ON)
+64:WEBKIT_OPTION_DEFINE(USE_SYSTEM_SYSPROF_CAPTURE "Whether to use a system-provided libsysprof-capture" PUBLIC ON)
+75:WEBKIT_OPTION_DEFINE(USE_SYSTEM_UNIFDEF "Whether to use a system-provided unifdef" PRIVATE ON)
+77:WEBKIT_OPTION_DEPEND(USE_SYSTEM_SYSPROF_CAPTURE USE_SYSPROF_CAPTURE)
+114:WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_JPEGXL PUBLIC ON)
+162:WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA PRIVATE ON)
+272:if (ENABLE_XSLT)
+276:if (USE_LIBSECRET)
+279:        message(FATAL_ERROR "libsecret is needed for USE_LIBSECRET")
+310:SET_AND_EXPOSE_TO_BUILD(USE_ANGLE ${ENABLE_WEBGL})
+373:if (USE_JPEGXL)
+376:        message(FATAL_ERROR "libjxl is required for USE_JPEGXL")
+394:# Resolve FreeType so WOFF2Checks can detect its builtin WOFF2 support. Skia
+REACH-DONE
+

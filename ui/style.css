@@ -456,8 +456,12 @@ body {
    wrote (themelight BEFORE: Minimal's light text and links lost to ours).
    Ours now ties the dark block (body, 0,0,1) and wins it on order; every
    theme rule (.theme-light, body.theme-light, or body after this sheet)
-   beats it. :where() keeps the lint-colors selector shape (^body). */
-body:where(.theme-light) {
+   beats it. :where() keeps the lint-colors selector shape (^body).
+   #281: the second branch is the BOOT state: before main.js runs, body has no mode class
+   and the theme init script (main.rs theme_init_js) has already put the boot decision on
+   <html data-theme>. Without it the pre-JS shell painted dark on a light desktop. Still
+   (0,0,1): everything inside :where() counts zero. */
+body:where(.theme-light, :root[data-theme="light"] > :not(.theme-dark)) {
   /* ---- layer 1: Obsidian's theme names ---- */
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
@@ -1615,6 +1619,9 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .sbtn, .supdlink, #sbox [role=button], #sbox button { cursor: pointer }
 #sbox [aria-disabled="true"], #sbox .srow.dis .sbtn { cursor: default }
 .supd { margin-top: 4px }
+/* #294: the signed sha256 line (copyable, sha256sum format) and one line per warning */
+.supdsha { font-family: var(--font-monospace); user-select: text; overflow-wrap: anywhere; margin-top: 2px }
+.supdwarn { color: var(--text-error); margin-top: 2px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }
@@ -1985,24 +1992,35 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    indent — real text in the row — shifts marker and text together for free.
    Revealing the markers (.cur row / source mode) drops the box: the source
    line then measures exactly as it reads. */
-.lp .li > .mk.lim { display: inline-block; min-width: 23px; position: relative; color: var(--transparent) }
-.lp .li > .mk.lim::before { content: ""; position: absolute; inset-inline-start: 14px; top: 0.6em;
+.lp .li > .lpre > .mk.lim { display: inline-block; min-width: 23px; position: relative; color: var(--transparent) }
+.lp .li > .lpre > .mk.lim::before { content: ""; position: absolute; inset-inline-start: 14px; top: 0.6em;
   width: var(--list-bullet-size); height: var(--list-bullet-size);
   border-radius: var(--list-bullet-radius); background: var(--list-marker-color); border: var(--list-bullet-border, none); transform: var(--list-bullet-transform, none); }
-.lp .li.ord > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
-.lp .li.ord > .mk.lim::before { content: none }
-.lp .tk:not(.ord) > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
-.lp .tk > .mk.lim::before { content: none }
+.lp .li.ord > .lpre > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
+.lp .li.ord > .lpre > .mk.lim::before { content: none }
+.lp .tk:not(.ord) > .lpre > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
+.lp .tk > .lpre > .mk.lim::before { content: none }
 /* the selector must out-specify `.lp input[type=checkbox]` above (0,2,1): an
    attribute selector weighs as much as a class, so a bare `.lp .tbox` loses */
 .lp input[type=checkbox].tbox { margin-inline-start: 9px; margin-inline-end: calc(0.6em - 4px) }   /* box at +7, text at +27 */
 /* markers revealed: the box collapses, the line renders as its raw source.
    Per TOKEN (.rv) now, not per row — the list marker opens only when the
    selection actually touches "- " (R17.6 D6 vs E6). */
-.lp.src .li > .mk.lim, .lp .li > .mk.lim.rv {
+.lp.src .li > .lpre > .mk.lim, .lp .li > .lpre > .mk.lim.rv {
   display: inline; min-width: 0; padding: 0; color: var(--text-chrome-dim) }
-.lp.src .li > .mk.lim::before, .lp .li > .mk.lim.rv::before { content: none }
-.lp.src .li > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
+.lp.src .li > .lpre > .mk.lim::before, .lp .li > .lpre > .mk.lim.rv::before { content: none }
+.lp.src .li > .lpre > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
+/* #272 hanging indent: a list row = span.lpre (indent + marker + checkbox) + span.lbody (text),
+   editor.js Ed.block. Side by side as flex items, the body is its own box, so a WRAPPED line
+   starts under the item text, not at the row edge (stock 1.13.7: continuation x = text x).
+   Baseline-aligned: line 1 keeps its exact x and y; lpre lays its marker/checkbox out inline
+   exactly as before (vertical-align, R15.11 offsets) — only the body is moved into a box.
+   Both boxes must be adjacent, else the row keeps the plain inline flow (fail closed: an
+   overlay-split or embed-only row looks as before), and lpre must open the row: a list inside a
+   quote (span.bq > ">" marker + lpre) keeps its inline flow. Source mode is untouched (raw lines). */
+.lp:not(.src) .li:has(> .lpre:first-child + .lbody) { display: flex; align-items: baseline }
+.lp:not(.src) .li > .lpre:first-child:has(+ .lbody) { flex: none; white-space: pre }
+.lp:not(.src) .li > .lpre:first-child + .lbody { flex: 1 1 0; min-width: 0 }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
    the h1 "H" ink x (+2 from the column), text 11px past it */
 .lp .bq { display: block; margin-inline-start: 2px;
@@ -2296,6 +2314,11 @@ span.is-flashing { background: var(--highlight-yellow) }
   background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
 #ldcard .ldbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 .ssecrestartbtn { margin-left: 6px; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; font-size: 12px; cursor: pointer }
+/* #295 Settings › Security › Microphone: ask | always allow | off (ui/security.js micRow) */
+.ssecmicseg { gap: 4px }
+.ssecmicseg .sbtn { font-size: 13px; color: var(--text-normal) }
+.ssecmicseg .sbtn.acc { color: var(--bg-ribbon) }
+.srow.dis .ssecmicseg .sbtn { opacity: .55 }
 /* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;

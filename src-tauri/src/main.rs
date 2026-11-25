@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::State;
 
 mod appid;
+mod devperm; // devaccess: the ONE decision for every webview permission request (Settings › Security › Device access)
 mod audiorec; // #116: Audio recorder core plugin — the mic gate (audio-only, armed) and the save
 mod webmdur; // #197: a saved recording gets the Duration a live WebM muxer could not write
 mod builtins;
@@ -36,6 +37,7 @@ use opensidian_lib::outline;
 mod pdf;
 mod plugins;
 mod plugin_store;
+mod plugin_pins; // #251: plugin code pinned by sha256 (main.js, manifest.json, styles.css) in ~/.opensidian.json, enforced at load
 mod pasteimg;
 mod qscreate;
 mod perf;
@@ -65,7 +67,9 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
+mod reveal; // #281: a vault-boot window is shown ONCE, when the UI is in (bounded fail-open timer)
 mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
+mod dropticket; // #280: a native drop is a one-shot ticket; attach_files consumes it
 mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
 use index::{link_parts, links_in, resolve, tag_spans, Graph, Index};
 
@@ -135,12 +139,15 @@ fn bind_vault(v: &Vault, p: &Path) -> Result<(), String> {
 enum BindErr {
     Bound(PathBuf, PathBuf),
     Lock(vaultlock::LockErr),
+    /// #293: the sandbox was asked for and is not in force (sandbox::boot_may_bind)
+    Sandbox(String),
 }
 impl std::fmt::Display for BindErr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             BindErr::Bound(cur, p) => write!(f, "this window already has a vault open ({}); open {} in a new window", cur.display(), p.display()),
             BindErr::Lock(e) => write!(f, "{e}"),
+            BindErr::Sandbox(why) => write!(f, "{} {why}", sandbox::REFUSED_HEAD),
         }
     }
 }
@@ -160,6 +167,11 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
 /// The claim half of a bind: everything but the walk + index (refuse if bound,
 /// flock, set-once root, built-in themes, app.json).
 fn claim_vault(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr> {
+    // #293: every bind (boot, picker, create) consults the ONE decision first: asked for and
+    // not in force binds nothing — before the lock, the root or any vault write
+    if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome()) {
+        return Err(BindErr::Sandbox(why));
+    }
     if let Some(cur) = cur_vault(v) {
         return Err(BindErr::Bound(cur, p.to_path_buf()));
     }
@@ -310,10 +322,6 @@ fn note_path_in(root: &Path, name: &str, create: bool) -> Option<PathBuf> {
     Some(p)
 }
 
-fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
-    note_path_in(&cur_vault(v)?, name, create)
-}
-
 /* ---- R29 image embeds: the vault-contained byte server ------------------
    The attacker's input here is a .md file that arrived by sync/clone/share,
    so a rendered document decides which path we read. The containment rule is
@@ -323,15 +331,44 @@ fn note_path(v: &State<Vault>, name: &str, create: bool) -> Option<PathBuf> {
    /etc and /usr for reading and sandbox.rs:94 reports it unsupported on this
    kernel; it is defence in depth that is currently absent.                */
 
-/// R29.8: what v1 serves — Obsidian's list minus `svg` (scriptable, and we have
-/// no sanitizer), `bmp` and `avif` (scope only). ext -> Content-Type.
-const IMG_TYPES: [(&str, &str); 5] = [
+/// R29.8: what is served — Obsidian's list minus `bmp` and `avif` (scope only).
+/// ext -> Content-Type.
+///
+/// `svg` was left out of v1 as scriptable with no sanitizer here. It is served
+/// now WITHOUT a sanitizer, because the page never lets an SVG run as a
+/// document: every place that shows one does it through `<img>` (image_html,
+/// editor.js imgEl, the canvas image card), and an SVG loaded as an image runs
+/// no script and fetches nothing, in WebKit and Chromium alike. Two fences
+/// stand behind that, in case some later code puts the URL somewhere else:
+///   - the page CSP keeps the image scheme out of frame/object/script sources
+///     (default-src 'self'), and navigation to it is refused (nav_allowed);
+///   - the SVG response itself carries `SVG_CSP` (below), a sandbox with no
+///     script and no network, so even opened as a document it is inert.
+const IMG_TYPES: [(&str, &str); 6] = [
     ("png", "image/png"),
     ("jpg", "image/jpeg"),
     ("jpeg", "image/jpeg"),
     ("gif", "image/gif"),
     ("webp", "image/webp"),
+    ("svg", "image/svg+xml"),
 ];
+
+/// The Content-Security-Policy every SVG response carries (see IMG_TYPES): no
+/// script, no network, no frames; only its own inline styles and data: images
+/// and fonts, which Illustrator-style exports embed.
+const SVG_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox";
+
+/// #276: the headers EVERY vault-image response carries, in one place so a
+/// unit test can pin them. `mime` is IMG_TYPES' Content-Type; an SVG (a
+/// document format) additionally gets SVG_CSP, so it stays inert even if it
+/// is ever opened as a document instead of through `<img>`.
+fn img_headers(mime: &'static str) -> Vec<(&'static str, &'static str)> {
+    let mut h = vec![("Content-Type", mime), ("X-Content-Type-Options", "nosniff"), ("Cache-Control", "no-store")];
+    if mime == "image/svg+xml" {
+        h.push(("Content-Security-Policy", SVG_CSP));
+    }
+    h
+}
 
 /// the scheme our images are served on; the CSP names it exactly (R29 / S1)
 const IMG_SCHEME: &str = "opensidian-img";
@@ -404,6 +441,7 @@ fn pct_decode(s: &str) -> Option<String> {
 ///     genuinely symlinked vault (req S2) working;
 ///  5. the LEAF must not be a symlink — that is the symlink-inside-the-vault-
 ///     pointing-out case, which canonicalizing the dir alone would not catch.
+#[cfg_attr(not(test), allow(dead_code))] // the R29.5 rule as a path check (tests); serving is contained_open (#250)
 fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
     contained_in(root, target, |ext| IMG_TYPES.iter().any(|(e, _)| *e == ext), MAX_IMG_BYTES)
 }
@@ -413,21 +451,15 @@ fn img_path_in(root: &Path, target: &str) -> Option<PathBuf> {
 /// and the cap (`pdf::MAX_PDF_BYTES`) differ — so a PDF embed cannot escape by
 /// any route an image embed cannot (README "security design": `../`, `%2e%2e`,
 /// absolute, hidden, symlinked leaf, symlinked dir out of the vault).
+#[cfg_attr(not(test), allow(dead_code))]
 fn pdf_path_in(root: &Path, target: &str) -> Option<PathBuf> {
     contained_in(root, target, |ext| ext == pdf::PDF_EXT, pdf::MAX_PDF_BYTES)
 }
 
 /// the shared body of `img_path_in` / `pdf_path_in` (steps 1-5 above).
+#[cfg_attr(not(test), allow(dead_code))]
 fn contained_in(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u64) -> Option<PathBuf> {
-    let dec = pct_decode(target)?;
-    if dec.contains('\0') {
-        return None;
-    }
-    let rel = safe_rel(&dec)?;
-    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
-    if !ext_ok(&ext) {
-        return None;
-    }
+    let rel = contained_rel(target, ext_ok)?;
     let croot = root.canonicalize().ok()?;
     let cdir = root.join(rel.parent().unwrap_or(Path::new(""))).canonicalize().ok()?;
     if !cdir.starts_with(&croot) {
@@ -441,14 +473,50 @@ fn contained_in(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u
     Some(p)
 }
 
+/// steps 1-3 above: the lexical part of the rule (decode, NUL, `safe_rel`,
+/// extension allowlist) -> the vault-relative path
+fn contained_rel(target: &str, ext_ok: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    let dec = pct_decode(target)?;
+    if dec.contains('\0') {
+        return None;
+    }
+    let rel = safe_rel(&dec)?;
+    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
+    if !ext_ok(&ext) {
+        return None;
+    }
+    Some(rel)
+}
+
+/// #250 (audit F-9): what the app SERVES goes through here, not through the
+/// path check above. Steps 1-3, then the file is OPENED by `vaultfs` (the
+/// openat walk from the vault fd, O_NOFOLLOW at every component and on the
+/// leaf, O_NONBLOCK, regular file by fstat on the fd) and the cap is checked
+/// on that fd. The caller reads (or queues) THAT fd: no path is resolved
+/// again between the check and the read, so a leaf or folder swapped for a
+/// symlink afterwards cannot redirect it. Stricter than step 4 on purpose: a
+/// symlinked folder is refused even when it points back inside the vault
+/// (the note index never lists files below one either).
+fn contained_open(root: &Path, target: &str, ext_ok: impl Fn(&str) -> bool, cap: u64) -> Option<(PathBuf, fs::File)> {
+    let rel = contained_rel(target, ext_ok)?;
+    let f = vaultfs::Vault::open(root).ok()?.open_read(&rel).ok()?;
+    (f.metadata().ok()?.len() <= cap).then_some((rel, f))
+}
+
+/// #250: the opened PDF for an embed target (the `pdf_path_in` rule, fd-based)
+fn pdf_open_in(root: &Path, target: &str) -> Option<fs::File> {
+    contained_open(root, target, |ext| ext == pdf::PDF_EXT, pdf::MAX_PDF_BYTES).map(|(_, f)| f)
+}
+
 /// R29: bytes + Content-Type for a contained image, or None. The type comes
 /// from OUR allowlist, never from the file, and the response is served
 /// `nosniff` so a mislabeled blob cannot be re-interpreted as script.
+/// #250: read from the fd `contained_open` checked, capped on that fd.
 fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
-    let p = img_path_in(root, target)?;
-    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    let (rel, f) = contained_open(root, target, |ext| IMG_TYPES.iter().any(|(e, _)| *e == ext), MAX_IMG_BYTES)?;
+    let ext = rel.extension()?.to_str()?.to_ascii_lowercase();
     let mime = IMG_TYPES.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)?;
-    Some((mime, fs::read(&p).ok()?))
+    Some((mime, vaultfs::read_fd(f, MAX_IMG_BYTES).ok()?))
 }
 
 /// percent-ENCODE a vault-relative path for the `opensidian-img:` URL. Unreserved
@@ -818,9 +886,9 @@ fn is_pdf_target(target: &str) -> bool {
 async fn pdf_info(v: State<'_, Vault>, path: String, otel: Option<perf::Ctx>) -> Result<Option<pdf::Info>, String> {
     // #144 toggle 4: refused BEFORE the path is resolved or the worker queued
     media_allowed("pdf_info")?;
-    let Some(p) = cur_vault(&v).and_then(|r| pdf_path_in(&r, &path)) else { return Ok(None) };
+    let Some(f) = cur_vault(&v).and_then(|r| pdf_open_in(&r, &path)) else { return Ok(None) };
     let (tx, rx) = std::sync::mpsc::channel();
-    pdf::queue_info(p, Box::new(move |i| {
+    pdf::queue_info_file(f, Box::new(move |i| {
         let _ = tx.send(i);
     }));
     span_timed!(otel => "pdf_info", tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten()).await)
@@ -955,7 +1023,7 @@ struct Attached {
 /// root with a visible notice, never silently. Returns (dir, notice).
 fn attach_dir(root: &Path) -> Result<(PathBuf, Option<String>), DropErr> {
     let croot = root.canonicalize().map_err(|_| DropErr::BadAttachDir)?;
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cfg = vcfg_read(root, ".obsidian/app.json").unwrap_or_default();
     let want = serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
         .and_then(|v| v.get("attachmentFolderPath")?.as_str().map(str::to_string))
@@ -1113,22 +1181,61 @@ fn attach_one(vfs: &vaultfs::Vault, dir: &Path, p: &Path) -> Result<(String, Opt
    async runtime instead of the event loop (rule of order: no lag the user can
    feel). The index learns the copied images here because BOTH renderers
    resolve `![[x.png]]` against `Index::images()` (R29.11) — a file copied but
-   not indexed would not paint. */
+   not indexed would not paint.
+   #280: the page no longer names the paths. The native drop transport (xdnd.rs) stored them
+   under a one-shot ticket (dropticket.rs) and the page only got that ticket + the display
+   names; this command takes the ticket and consumes it (attach_ticket). A raw path, an
+   unknown, reused, expired or other-window ticket is refused before anything is touched. */
 #[tauri::command]
 async fn attach_files(
+    win: tauri::Window,
     v: State<'_, Vault>,
     note: String,
-    paths: Vec<PathBuf>,
+    ticket: String,
     otel: Option<perf::Ctx>,
 ) -> Result<Attached, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let n = paths.len();
-    let a = span_timed!(otel => "attach_files", attach_drop(&root, &note, &paths), serde_json::json!({"files": n}))
-        .map_err(|e| e.say())?;
+    let a = span_timed!(otel => "attach_files", attach_ticket(&root, &note, win.label(), &ticket), serde_json::json!({}))?;
+    index_attached(&v, &a);
+    Ok(a)
+}
+
+/// #280 THE gate in front of attach_drop for a drop: the paths come from the ticket the
+/// native drop minted, never from the caller. The ticket is consumed first (single use,
+/// whatever happens next); an Err here has moved, copied and created nothing.
+fn attach_ticket(root: &Path, note: &str, win: &str, ticket: &str) -> Result<Attached, String> {
+    let paths = dropticket::take(win, ticket).map_err(|e| {
+        eprintln!("[osdrop] attach_files refused: {e:?}");
+        e.say()
+    })?;
+    attach_drop(root, note, &paths).map_err(|e| e.say())
+}
+
+/// R29.11: both renderers resolve ![[x.png]] against the index, so it learns what landed
+fn index_attached(v: &Vault, a: &Attached) {
     let mut ix = v.index.lock().unwrap();
     for rel in &a.copied {
         ix.add_image(rel);
     }
+}
+
+/* #280 R31.7 "Insert attachment" (the typed path, the keyboard road for people and probes
+   with no pointer) names its path in the PAGE, so it cannot be told apart from a script
+   calling it. It is therefore no drop and gets no ticket: the user confirms the exact path
+   in a NATIVE dialog (consent::Kind::Attach, default answer Cancel) before attach_drop
+   runs; every rule after that is the drop's. No dialog = nothing attached (fail closed). */
+#[tauri::command]
+async fn attach_typed(win: tauri::Window, v: State<'_, Vault>, note: String, path: String) -> Result<Attached, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if path.trim().is_empty() {
+        return Err(DropErr::Empty.say());
+    }
+    let slot = consent::admit()?;
+    if !consent::ask(slot, win, consent::Kind::Attach, consent::attach_question(&path, &note)).await? {
+        return Err("attach cancelled".into());
+    }
+    let a = attach_drop(&root, &note, &[PathBuf::from(&path)]).map_err(|e| e.say())?;
+    index_attached(&v, &a);
     Ok(a)
 }
 
@@ -1189,6 +1296,14 @@ const REC_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 fn rec_close(app: &tauri::AppHandle, parent: &str) {
     use tauri::Manager;
     audiorec::sess_drop(parent);
+    if audiorec::indicator_on(parent) {
+        match app.get_webview_window(parent) {
+            Some(w) => rec_indicator(&w, false),
+            None => {
+                audiorec::indicator_set(parent, false);
+            }
+        }
+    }
     if let Some(rw) = app.get_webview_window(&audiorec::rec_label(parent)) {
         let _ = audiorec::mic_off(&rw); // reason: the webview is destroyed next either way
         audiorec::rec_offscreen_drop(&rw);
@@ -1196,6 +1311,89 @@ fn rec_close(app: &tauri::AppHandle, parent: &str) {
             eprintln!("[audiorec] recorder webview not closed: {e}");
         }
     }
+}
+
+/* #295 (audit F-8) the recording indicator the page cannot hide: while app window <label>
+   records, its NATIVE window title starts with audiorec::REC_MARK ("● Recording — "). Chosen over
+   a tray icon / desktop notification because the app has neither (no tray-icon feature, no
+   notification plugin: adding one = a new dependency), while the title is what the window manager,
+   the taskbar and the window switcher show on both platforms and is set from Rust here.
+   - Linux (GTK): a notify::title handler on the GtkWindow re-applies the mark on EVERY title change,
+     synchronously, so the page's own setTitle (pushTitle, or a plugin's) cannot drop it; removed
+     with the mark when the recording ends (rec_close).
+   - macOS / other: no title-change hook in our code, so a thread re-applies the mark every
+     audiorec::REC_MARK_TICK while the recording lasts; macOS also shows its own system
+     microphone-in-use indicator (menu bar), which no app code can hide. */
+#[cfg(target_os = "linux")]
+thread_local! {
+    static REC_TITLE_HOOK: std::cell::RefCell<std::collections::HashMap<String, gtk::glib::SignalHandlerId>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+#[cfg(target_os = "linux")]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    audiorec::indicator_set(win.label(), on);
+    let w2 = win.clone();
+    let r = win.run_on_main_thread(move || {
+        use gtk::glib::prelude::ObjectExt;
+        use gtk::prelude::GtkWindowExt;
+        let Ok(gw) = w2.gtk_window() else {
+            eprintln!("[audiorec] indicator: no GTK window for {}", w2.label());
+            return;
+        };
+        // devaccess: both marks in one fixed order (audiorec::title_with), so this hook and the
+        // camera hook (audiorec::cam_hook) always aim at the same title
+        let lab = w2.label().to_string();
+        let fix = move |gw: &gtk::ApplicationWindow, on: bool| {
+            let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(&lab)) {
+                gw.set_title(&t);
+            }
+        };
+        let label = w2.label().to_string();
+        REC_TITLE_HOOK.with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some(id) = h.remove(&label) {
+                gw.disconnect(id);
+            }
+            fix(&gw, on);
+            if on {
+                let id = gw.connect_notify_local(Some("title"), move |gw, _| fix(gw, true));
+                h.insert(label, id);
+            }
+        });
+        eprintln!("[audiorec] indicator {}: {}", w2.label(), if on { "on" } else { "off" });
+    });
+    if let Err(e) = r {
+        eprintln!("[audiorec] indicator not applied: {e}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rec_indicator(win: &tauri::WebviewWindow, on: bool) {
+    let gen = audiorec::indicator_set(win.label(), on);
+    let fix = |w: &tauri::WebviewWindow, on: bool| {
+        if let Ok(cur) = w.title() {
+            if let Some(t) = audiorec::title_with(&cur, on, audiorec::cam_on(w.label())) {
+                let _ = w.set_title(&t); // reason: a window being destroyed takes its title with it
+            }
+        }
+    };
+    fix(win, on);
+    if let Some(gen) = gen {
+        let w = win.clone();
+        std::thread::spawn(move || {
+            while audiorec::indicator_live(w.label(), gen) {
+                fix(&w, true);
+                std::thread::sleep(audiorec::REC_MARK_TICK);
+            }
+            // a re-apply that raced the off: take the mark down again (unless a new recording runs)
+            if !audiorec::indicator_on(w.label()) {
+                fix(&w, false);
+            }
+        });
+    }
+    eprintln!("[audiorec] indicator {}: {}", win.label(), if on { "on" } else { "off" });
 }
 
 /// block (off the async runtime) on a hand-off from the recorder page
@@ -1207,11 +1405,36 @@ async fn rec_recv<T: Send + 'static>(rx: std::sync::mpsc::Receiver<T>, wait: std
 /// Err("<DOMException name>: <message>") when it could not (the webview is closed again)
 #[tauri::command]
 async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token: String) -> Result<(), String> {
+    use tauri::Manager;
     let parent = win.label().to_string();
     audiorec::authorized(&parent, &token)?;
     if audiorec::is_rec(&parent) {
         return Err("SecurityError: not an app window".into());
     }
+    /* #295 (audit F-8): the decision is NATIVE. Settings › Security › Microphone off (or lockdown)
+       refuses before any dialog; otherwise EVERY start asks the user in the native consent
+       (Record / Cancel, default Cancel) and only Record mints the one-shot grant that
+       audiorec::start_check consumes below. A page script driving the core recorder gets the
+       dialog, never a silent recording. */
+    security::mic_check(security::mic_effective(&cfg_value())).inspect_err(|e| eprintln!("[audiorec] start refused: {e}"))?;
+    /* #295 follow-up: Microphone = always allow (app-wide, set only through the native Security
+       confirm) skips THIS question and nothing else: the token above, the setting re-read by
+       start_check below and the native recording indicator (rec_indicator after the recorder
+       runs) apply to every start alike. Lockdown has already turned it into off above. */
+    if security::mic_asks(security::mic_effective(&cfg_value())) {
+        let vault = cur_vault(&app.state::<Vault>()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let slot = consent::admit()?;
+        if !consent::ask(slot, win.as_ref().window(), consent::Kind::Mic, consent::mic_question(&vault)).await? {
+            eprintln!("[audiorec] start: cancelled in the native consent, nothing started");
+            return Err(audiorec::NO_GRANT.into());
+        }
+    } else {
+        eprintln!("[audiorec] start: Microphone = always allow, no per-start consent (token, setting and the recording indicator still apply)");
+    }
+    audiorec::grant(&parent, std::time::Instant::now());
+    // the setting is read AGAIN after the dialog (turned off / lockdown meanwhile = refused);
+    // the grant is consumed here, whatever the outcome
+    audiorec::start_check(&parent, &token, security::mic_check(security::mic_effective(&cfg_value())), std::time::Instant::now())?;
     rec_close(&app, &parent);
     let (gtx, grx) = std::sync::mpsc::channel();
     let (stx, srx) = std::sync::mpsc::channel();
@@ -1248,6 +1471,7 @@ async fn audio_rec_start(app: tauri::AppHandle, win: tauri::WebviewWindow, token
     match rec_recv(srx, REC_START_WAIT).await {
         Some(Ok(())) => {
             eprintln!("[audiorec] recording in {}", rw.label());
+            rec_indicator(&win, true);
             Ok(())
         }
         r => {
@@ -1370,14 +1594,47 @@ fn audio_save(v: &Vault, note: &str, data: &str, tm: &datefmt::Tm) -> Result<pas
     })(), serde_json::json!({"b64": data.len()}))
 }
 
-/// S5: read a note off disk, "" when it is oversized (never part of the vault)
+/// S5: read the file `p` off disk, None when it is oversized (never part of
+/// the vault). #250: through vaultfs with `p`'s directory as the root — the
+/// leaf is opened O_NOFOLLOW|O_NONBLOCK, must be a regular file by fstat on
+/// that fd, and the cap is checked on the fd. Vault callers use
+/// `read_capped_in(root, rel)`, which also walks every parent no-follow.
 fn read_capped(p: &Path) -> Option<String> {
-    let m = fs::symlink_metadata(p).ok()?;
-    if m.len() > index::MAX_NOTE_BYTES {
-        index::warn_oversized(p);
-        return None;
+    read_capped_in(p.parent()?, Path::new(p.file_name()?))
+}
+
+/// #250: the vault file `rel` (note or config) through `vaultfs::read_string`
+/// with MAX_NOTE_BYTES on the opened fd. None: absent, refused (a symlink at
+/// any component, FIFO, device, directory), over the cap, or not UTF-8.
+fn read_capped_in(root: &Path, rel: &Path) -> Option<String> {
+    match vaultfs::read_string(root, rel, index::MAX_NOTE_BYTES) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::FileTooLarge {
+                index::warn_oversized(&root.join(rel));
+            }
+            None
+        }
     }
-    fs::read_to_string(p).ok()
+}
+
+/// #250 (audit F-3): a `.obsidian/*.json` (or other vault config file) for
+/// READING: vaultfs fd read, vaultfs::CFG_MAX on the fd. None = absent,
+/// refused or unreadable, which every caller treats as "the default".
+fn vcfg_read(root: &Path, rel: &str) -> Option<String> {
+    vaultfs::read_string(root, Path::new(rel), vaultfs::CFG_MAX).ok()
+}
+
+/// #250: the same for a read-MODIFY-WRITE. Absent = "" (the first write
+/// creates it); anything else that cannot be read (a symlinked or
+/// non-regular leaf or parent, over the cap, not UTF-8) is an Err, so the
+/// merge never overwrites a file it could not read.
+fn vcfg_read_rmw(root: &Path, rel: &str) -> Result<String, String> {
+    match vaultfs::read_string(root, Path::new(rel), vaultfs::CFG_MAX) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(format!("{rel}: {e} — refusing to overwrite it")),
+    }
 }
 
 // folder tree for the sidebar. vaultfs::walk_real_dirs never descends a
@@ -1452,8 +1709,9 @@ fn canvas_attach(v: State<Vault>, path: String, data_b64: String, otel: Option<p
 fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
     span_timed!(otel =>
         "read_note",
-        note_path(&v, &name, false)
-            .and_then(|p| read_capped(&p))
+        cur_vault(&v)
+            .zip(note_rel(&name))
+            .and_then(|(root, rel)| read_capped_in(&root, &rel))
             .unwrap_or_default()
     )
 }
@@ -1633,7 +1891,7 @@ fn move_note_in(root: &Path, ix: &mut Index, old: &str, new: &str) -> Result<(us
         })?;
     // index==disk invariant: if the key is somehow missing, seed it from the
     // moved file rather than dropping the note
-    let fallback = if ix.content(&okey).is_none() { fs::read_to_string(&np).ok() } else { None };
+    let fallback = if ix.content(&okey).is_none() { read_capped_in(root, &nfr) } else { None };
     ix.move_key(&okey, &nkey, fallback);
     // R9.8: the note's name changed, so its BOOKMARK follows it — here, after
     // the rename is a fact on disk, and never before: everything above this
@@ -1713,7 +1971,7 @@ fn link_consent_in(root: &Path) -> bool {
 /// not a bool = false, which is Obsidian's default for every key read this way
 /// (alwaysUpdateLinks, strictLineBreaks).
 fn app_bool_in(root: &Path, key: &str) -> bool {
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cfg = vcfg_read(root, ".obsidian/app.json").unwrap_or_default();
     serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
         .and_then(|v| v.get(key).and_then(|b| b.as_bool()))
@@ -1734,7 +1992,7 @@ fn set_link_consent_in(root: &Path, on: bool) -> Result<(), String> {
 /// merge ONE boolean key into app.json — the refusal and temp+fsync+rename
 /// rules above hold for every key written through here
 fn set_app_bool_in(root: &Path, key: &str, on: bool) -> Result<(), String> {
-    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cur = vcfg_read_rmw(root, ".obsidian/app.json")?;
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -1805,7 +2063,7 @@ fn set_strict_line_breaks(v: State<Vault>, on: bool) -> Result<(), String> {
    on every ask (a hand edit or another window shows on the next settings open /
    note open); written by the same merge as the boolean keys above. */
 fn app_value_in(root: &Path, key: &str) -> Option<serde_json::Value> {
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).ok()?;
+    let cfg = vcfg_read(root, ".obsidian/app.json")?;
     serde_json::from_str::<serde_json::Value>(&cfg).ok()?.get(key).cloned()
 }
 
@@ -1817,7 +2075,7 @@ fn set_props_mode_in(root: &Path, mode: &str) -> Result<(), String> {
     if !props::MODES.contains(&mode) {
         return Err(format!("unknown Properties in document mode {mode:?}"));
     }
-    let cur = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cur = vcfg_read_rmw(root, ".obsidian/app.json")?;
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -1850,7 +2108,7 @@ fn props_types(v: State<Vault>) -> std::collections::BTreeMap<String, String> {
 #[tauri::command]
 fn set_prop_type(v: State<Vault>, name: String, ty: Option<String>) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let cur = fs::read_to_string(root.join(props::TYPES_REL)).unwrap_or_default();
+    let cur = vcfg_read_rmw(&root, props::TYPES_REL)?;
     let body = props::types_merged(&cur, &name, ty.as_deref())?;
     vaultfs::write_atomic(&root, Path::new(props::TYPES_REL), body.as_bytes()).map_err(|e| e.to_string())
 }
@@ -1878,7 +2136,7 @@ fn props_index(v: State<Vault>) -> Vec<props::PropStat> {
    `is-readable-line-width` class on every note view, which is the class the
    themes (Minimal 9.0.2) key their column width and file margins on. */
 fn readable_line_length_in(root: &Path) -> bool {
-    let cfg = fs::read_to_string(root.join(".obsidian/app.json")).unwrap_or_default();
+    let cfg = vcfg_read(root, ".obsidian/app.json").unwrap_or_default();
     serde_json::from_str::<serde_json::Value>(&cfg)
         .ok()
         .and_then(|v| v.get("readableLineLength").and_then(|b| b.as_bool()))
@@ -1926,7 +2184,7 @@ fn graph_groups_ok(v: &serde_json::Value) -> bool {
 
 /// the whole graph.json object; absent / unreadable / unparsable / not an object = {}
 fn graph_settings_in(root: &Path) -> serde_json::Value {
-    read_capped(&root.join(GRAPH_REL))
+    vcfg_read(root, GRAPH_REL)
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .filter(|v| v.is_object())
         .unwrap_or_else(|| serde_json::json!({}))
@@ -1952,7 +2210,7 @@ fn set_graph_settings_in(root: &Path, patch: &serde_json::Value) -> Result<(), S
             return Err(format!("graph.json: bad value for {k:?}"));
         }
     }
-    let cur = read_capped(&root.join(GRAPH_REL)).unwrap_or_default();
+    let cur = vcfg_read_rmw(root, GRAPH_REL)?;
     let mut v = if cur.trim().is_empty() {
         serde_json::json!({})
     } else {
@@ -2098,12 +2356,17 @@ fn cfg_value() -> serde_json::Value {
    rename. A call site names the key it changes, never a whole Value it read
    earlier (that read is stale by the time another window has written). */
 fn cfg_update(ops: &[cfgstore::Op]) {
-    let r = match spawner::client() {
+    if let Err(e) = cfg_try_update(ops) {
+        eprintln!("config write failed: {e}");
+    }
+}
+
+/// the same write, the error returned: for a caller that must not go on when it failed
+/// (#288 review: uninstall refuses when the pin could not be forgotten)
+pub(crate) fn cfg_try_update(ops: &[cfgstore::Op]) -> Result<(), String> {
+    match spawner::client() {
         Some(c) => c.cfg(ops), // confined: the unconfined spawner applies the Ops
         None => cfgstore::update_in(&vaultlock::env_lock_dir(), &cfg_path(), ops).map(|_| ()),
-    };
-    if let Err(e) = r {
-        eprintln!("config write failed: {e}");
     }
 }
 
@@ -2211,7 +2474,7 @@ fn read_workspace(v: State<Vault>) -> Option<serde_json::Value> {
     span_timed!(
         "read_workspace",
         cur_vault(&v)
-            .and_then(|root| fs::read_to_string(workspace_path(&root)).ok())
+            .and_then(|root| vcfg_read(&root, ".obsidian/workspace.json"))
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     )
 }
@@ -2240,8 +2503,7 @@ fn insert_datetime(v: State<Vault>, kind: String, tm: datefmt::Tm) -> Result<Str
 
 /// read-only lookup of one string key in <vault>/.obsidian/templates.json
 fn templates_format(root: &Path, key: &str) -> Option<String> {
-    let p = root.join(".obsidian").join("templates.json");
-    let s = read_capped(&p)?;
+    let s = vcfg_read(root, ".obsidian/templates.json")?;
     let j: serde_json::Value = serde_json::from_str(&s).ok()?;
     j.get(key)?.as_str().map(str::to_owned)
 }
@@ -2595,9 +2857,15 @@ static SWITCH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /* goal winsize (winsize.rs has the rules and the stock evidence pointers).
    WIN_REC: this vault's saved record + the config default size, read in main()
    before the Builder; set => the window is created hidden and winsize_restore
-   places + shows it in setup. A switch-started window never reads it (the old
-   window's rect wins). WIN_TRACK: the last normal (not maximized) bounds. */
+   places it in setup (#281: the SHOW is boot_show's). A switch-started window never reads it
+   (the old window's rect wins). WIN_TRACK: the last normal (not maximized) bounds. */
 static WIN_REC: OnceLock<(serde_json::Value, (f64, f64))> = OnceLock::new();
+/* #281 startup reveal (reveal.rs): every window that boots INTO a vault (not a switch, not the
+   picker) is created hidden and shown once — by boot_reveal (the UI: layout + theme + tree +
+   tabs in) or by the reveal::FALLBACK timer, whichever is first. BOOT_MAX: the restored record
+   is maximized; applied before the show, so the first mapped frame is already the final size. */
+static BOOT_GATE: reveal::Gate = reveal::Gate::new();
+static BOOT_MAX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static WIN_TRACK: Mutex<winsize::Track> = Mutex::new(winsize::Track::new());
 
 /// the record's key: the canonical vault path
@@ -2605,8 +2873,10 @@ fn winsize_key(p: &Path) -> String {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).display().to_string()
 }
 
-/// setup: sanitise the record against the monitors' work areas, then size,
-/// place (or centre), show, maximize — before the user sees a frame.
+/// setup: sanitise the record against the monitors' work areas, then size and
+/// place (or centre) the HIDDEN window. #281: no show here — boot_show maps it
+/// once (maximized first when the record says so): the user never watches the
+/// window resize, and never sees it before the UI is in.
 fn winsize_restore(w: &tauri::WebviewWindow, rec: &serde_json::Value, default: (f64, f64), wayland: bool) {
     let mut ms = w.available_monitors().unwrap_or_default();
     if let Ok(Some(p)) = w.primary_monitor() {
@@ -2631,10 +2901,7 @@ fn winsize_restore(w: &tauri::WebviewWindow, rec: &serde_json::Value, default: (
             let _ = w.center();
         }
     }
-    let _ = w.show();
-    if plan.max {
-        let _ = w.maximize();
-    }
+    BOOT_MAX.store(plan.max, std::sync::atomic::Ordering::SeqCst);
     eprintln!("[winsize] restore pid={} why={} rect={}x{}@{:?} max={} mons={:?}", std::process::id(), plan.why, plan.w, plan.h, plan.pos, plan.max, mons);
 }
 
@@ -2722,6 +2989,40 @@ fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
         Some(Err(e)) => eprintln!("[vaultwin] switch: ready not written ({e}); the old window exits on its timeout"),
         None => eprintln!("[vaultwin] switch: no vault lock held; the old window exits on its timeout"),
     }
+}
+
+/// #281: map the vault-boot window (once; the caller won BOOT_GATE). Maximize first
+/// when the restored record says so, so no resize is ever on screen. The log line carries
+/// wall-clock ms (call / after show) so a startup trace can split boot time from map latency.
+fn boot_show(app: &tauri::AppHandle, why: reveal::Why) {
+    use tauri::Manager;
+    let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let t0 = ms();
+    if let Some(w) = app.webview_windows().values().next() {
+        if BOOT_MAX.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = w.maximize();
+        }
+        let _ = w.show();
+    }
+    let t1 = ms();
+    match why {
+        reveal::Why::Ready => eprintln!("[reveal] pid={} shown: UI ready t_call_ms={} t_shown_ms={}", std::process::id(), t0, t1),
+        reveal::Why::Timeout => eprintln!(
+            "[reveal] pid={} UI did not report ready in {:?}; showing anyway (fail open) t_call_ms={} t_shown_ms={}",
+            std::process::id(),
+            reveal::FALLBACK,
+            t0,
+            t1
+        ),
+    }
+}
+
+/// #281: the UI has the vault in (enterVault: layout, vault theme + snippets, tree,
+/// restored tabs, the first note rendered). A switch-started window keeps its own
+/// path (switch_show / switch_ready); the picker's window was never hidden.
+#[tauri::command]
+fn boot_reveal(app: tauri::AppHandle) {
+    reveal::ready(&BOOT_GATE, |why| boot_show(&app, why));
 }
 
 /// vault_rules + the lock probe + spawn: the ONE path that starts a window on
@@ -4785,6 +5086,8 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
     // #220: translations are ready before the first script runs (ui/i18n.js)
     let b = b.initialization_script(&i18n_init_js());
+    // #281: the boot theme is on <html> before the first paint (style.css keys the pre-JS palette on it)
+    let b = b.initialization_script(&theme_init_js(get_theme().as_deref()));
     // census-gate: the title census exists only when opted in (census.rs); off = no script, no flag
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
@@ -4870,7 +5173,81 @@ fn plugins_state_of(root: &Path) -> serde_json::Value {
         "lockdown": security::trust_blocked(),
         "enabled": plugins::enabled_ids(root),
         "installed": plugins::installed(root),
+        // #251: per installed plugin "ok" | "new" | "changed" | "damaged" | "unreadable" (plugin_pins::Status)
+        "pins": pins_state_of(root),
     })
+}
+
+/// #251: {status: {id: word}, changed: {id: [file]}, error: null | text} — re-measured from disk
+fn pins_state_of(root: &Path) -> serde_json::Value {
+    let cfg = cfg_value();
+    let vid = plugins::trust_key(root).id;
+    let mut status = serde_json::Map::new();
+    let mut changed = serde_json::Map::new();
+    for p in plugins::installed(root) {
+        let Some(id) = p["id"].as_str() else { continue };
+        let s = plugin_pins::status(&cfg, vid.as_deref(), root, id);
+        if let plugin_pins::Status::Changed(d) = &s {
+            changed.insert(id.into(), serde_json::json!(d));
+        }
+        status.insert(id.into(), serde_json::json!(s.word()));
+    }
+    let error = match (plugin_pins::table(&cfg, vid.as_deref()), &vid) {
+        (Err(e), _) => serde_json::json!(e),
+        (Ok(_), None) => serde_json::json!(plugin_pins::NO_IDENTITY),
+        _ => serde_json::Value::Null,
+    };
+    serde_json::json!({ "status": status, "changed": changed, "error": error })
+}
+
+/* #251 (F-40): the ONLY page-reachable way to pin a plugin found on disk. The page names ids;
+   Rust keeps those that are installed in this vault and not matching a pin now (new / changed /
+   damaged store), measures their files, and asks ONE native question listing all of them (on the
+   first start after the upgrade that is every enabled plugin of a trusted vault, in one dialog).
+   Allow = exactly the measured pins are written (cfgstore Op::PluginPinSet); a file that changes
+   after the measurement does not match and stays refused. Cancel / any failure = nothing written.
+   Restricted mode and lockdown: refused before anything is asked (no plugin runs there anyway). */
+#[tauri::command]
+async fn plugins_pin_ack(win: tauri::Window, v: State<'_, Vault>, ids: Vec<String>) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("restricted mode is on: no plugin code runs in this vault, nothing to allow".into());
+    }
+    let slot = consent::admit()?;
+    let tk = plugins::trust_key(&root);
+    let vid = tk.id.clone().ok_or(plugins::NO_IDENTITY)?;
+    let cfg = cfg_value();
+    let damaged = plugin_pins::table(&cfg, Some(&vid)).is_err();
+    let installed: Vec<String> = plugins::installed(&root).iter().filter_map(|p| p["id"].as_str().map(String::from)).collect();
+    let mut items: Vec<plugin_pins::AckItem> = Vec::new();
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    for id in ids {
+        if items.len() >= plugin_pins::MAX_ACK || !installed.contains(&id) || items.iter().any(|i| i.id == id) {
+            continue;
+        }
+        let Ok(f) = plugin_pins::read_files(&root, &id) else { continue };
+        let was = plugin_pins::status_of(&cfg, Some(&vid), &id, &f);
+        if was == plugin_pins::Status::Ok {
+            continue;
+        }
+        let old_version = plugin_pins::pin(&cfg, Some(&vid), &id).ok().flatten().map(|p| p.version);
+        items.push(plugin_pins::AckItem { pin: plugin_pins::pin_of(&f, "ack", at), id, was, old_version });
+    }
+    if items.is_empty() {
+        return Ok(plugins_state_of(&root));
+    }
+    let text = plugin_pins::ack_text(&tk.path, &items, damaged);
+    if !consent::ask(slot, win, consent::Kind::PluginAck, consent::plugin_ack_question(text)).await? {
+        eprintln!("[plugin-pins] {} plugin(s) not allowed (cancelled), nothing written", items.len());
+        return Ok(plugins_state_of(&root));
+    }
+    let ops: Vec<cfgstore::Op> =
+        items.iter().map(|i| cfgstore::Op::PluginPinSet { vault: vid.clone(), plugin: i.id.clone(), pin: i.pin.clone() }).collect();
+    cfg_update(&ops);
+    for i in &items {
+        eprintln!("[plugin-pins] allowed {} {} (main.js {})", i.id, i.pin.version, &i.pin.main[..16]);
+    }
+    Ok(plugins_state_of(&root))
 }
 
 /// {trusted, enabled:[id], installed:[{id, manifest, hasMain, hasStyles}]}
@@ -4983,7 +5360,9 @@ fn plugin_io(
         "load" => plugins::read_data(&root, &id),
         "save" => plugins::write_data(&root, &id, data.as_ref().unwrap_or(&serde_json::Value::Null))
             .map(|_| serde_json::Value::Null),
-        "styles" => plugins::read_styles(&root, &id).map(|s| s.map_or(serde_json::Value::Null, serde_json::Value::String)),
+        // #251: a plugin's css is applied only while the plugin matches its pin
+        "styles" => plugins::read_styles_pinned(&root, &id, &cfg_value(), plugins::trust_key(&root).id.as_deref())
+            .map(|s| s.map_or(serde_json::Value::Null, serde_json::Value::String)),
         _ => Err(format!("plugin_io: unknown op {op:?}")),
     })
 }
@@ -5074,7 +5453,10 @@ async fn spawn_allow_revoke(vault: String, plugin: String, program: String) -> R
    raises a protection is written at once. Only Op::SecuritySet writes the key. */
 #[tauri::command]
 fn security_get() -> serde_json::Value {
-    security::report(&cfg_value())
+    let mut r = security::report(&cfg_value());
+    // #293: the sandbox state of THIS process (off / enforced / not-enforced), shown read-only
+    r["sandbox"] = sandbox::state_json();
+    r
 }
 
 /* #144 toggle 12 "Restart now" (also JIT / canvas "Applies after restart"): a switch onto THIS
@@ -5156,6 +5538,59 @@ async fn security_set(win: tauri::Window, field: String, on: bool) -> Result<ser
             Some(w) => sec_clip(&w, clip),
             None => eprintln!("[sec] appClipboard={clip}: no webview window {}", win.label()),
         }
+    }
+    Ok(security::report(&cfg_value()))
+}
+
+/// #295 Settings › Security › Microphone = "ask" | "always" | "off": validated; a change that lowers
+/// a protection (off -> ask, off / ask -> always) asks the native Security confirm first and is
+/// written only after Lower protection (security::mic_decide); a revoke (always -> ask / off,
+/// ask -> off) is written at once with no dialog; only Op::SecurityMic writes it
+#[tauri::command]
+async fn security_mic_set(win: tauri::Window, value: String) -> Result<serde_json::Value, String> {
+    let m = security::mic_validate(&value)?;
+    let stored = security::mic_stored(&cfg_value());
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_mic_question(m)).await?;
+    }
+    let Some(m) = security::mic_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set microphone={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityMic(m.as_str().into())]);
+    eprintln!("[sec] set microphone={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", security::MIC_FIELD);
+    }
+    Ok(security::report(&cfg_value()))
+}
+
+/// devaccess: one Settings › Security › Device access row (security::DEV_ROWS) = "ask" | "always" |
+/// "off": validated (known row, known value); a weakening change (off -> ask, off / ask -> always)
+/// asks the native Security confirm first and is written only after Lower protection
+/// (security::dev_decide); a revoke is written at once with no dialog; only Op::SecurityDev writes it.
+/// Keyed by the row alone: nothing the page reports (plugin id, vault, origin) enters the decision.
+#[tauri::command]
+async fn security_dev_set(win: tauri::Window, field: String, value: String) -> Result<serde_json::Value, String> {
+    let (f, m) = security::dev_validate(&field, &value)?;
+    let stored = security::dev_stored(&cfg_value(), f);
+    let mut confirmed = false;
+    if security::mic_weakens(stored, m) {
+        let slot = consent::admit()?;
+        confirmed = consent::ask(slot, win.clone(), consent::Kind::Security, consent::security_dev_question(f, m)).await?;
+    }
+    let Some(m) = security::dev_decide(stored, m, confirmed) else {
+        eprintln!("[sec] set {f}={}: cancelled in the confirm, nothing written", m.as_str());
+        return Ok(security::report(&cfg_value()));
+    };
+    cfg_update(&[cfgstore::Op::SecurityDev(f.into(), m.as_str().into())]);
+    eprintln!("[sec] set {f}={}", m.as_str());
+    {
+        use tauri::Emitter;
+        let _ = win.emit("security-changed", f);
     }
     Ok(security::report(&cfg_value()))
 }
@@ -6131,7 +6566,7 @@ fn bm_graph_spec(title: Option<&str>, x: &BmExtra) -> serde_json::Value {
 }
 
 fn read_bm_tree(root: &Path) -> Vec<BmNode> {
-    match fs::read_to_string(root.join(BM_FILE)) {
+    match vaultfs::read_string(root, Path::new(BM_FILE), vaultfs::CFG_MAX) {
         // Obsidian's file exists: it is THE store, and every dotfile is ignored
         Ok(body) => parse_bm_tree(&body),
         // no Obsidian file yet: a vault that only ever saw v0.12..v0.15 bookmarks
@@ -6141,7 +6576,8 @@ fn read_bm_tree(root: &Path) -> Vec<BmNode> {
         // Nothing is written to .obsidian/ here — the first bookmark EDIT
         // writes Obsidian's file, and from then on Obsidian's file wins.
         Err(_) => migrate::vault_bookmarks(root)
-            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|p| vaultfs::rel_of(root, &p).ok())
+            .and_then(|r| vaultfs::read_string(root, &r, vaultfs::CFG_MAX).ok())
             .map(|b| parse_legacy_bm(&b))
             .unwrap_or_default(),
     }
@@ -6269,7 +6705,7 @@ fn bm_emit(tree: &[BmNode], top: &[(String, serde_json::Value)]) -> String {
 /// write preserves them. Obsidian DROPS these (recon §5); we keep them — the
 /// strictly more conservative choice — re-emitted after `items`.
 fn bm_top_extra(root: &Path) -> Vec<(String, serde_json::Value)> {
-    let body = fs::read_to_string(root.join(BM_FILE)).unwrap_or_default();
+    let body = vcfg_read(root, BM_FILE).unwrap_or_default();
     match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(serde_json::Value::Object(o)) => o.into_iter().filter(|(k, _)| k != "items").collect(),
         _ => Vec::new(),
@@ -6688,6 +7124,27 @@ fn bm_add_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, name:
    come out in stock's order (type, ctime, title, then the rest as sent); the ctime is
    minted here. A graph always carries a title (stock D1: "Untitled Graph" when none typed);
    anything the model would carry as Opaque is refused — the pane could not paint it. */
+/// #250 (audit F-3 B): a graph bookmark's `options` / `local` keep only the
+/// graph option keys (graph.json's own: GRAPH_NUM_KEYS, GRAPH_BOOL_KEYS,
+/// scale, search, colorGroups; plus the local graph's depth / link toggles,
+/// and the local graph's `file`). The UI builds `options` from the whole
+/// graph_settings() object, so without this any foreign key in graph.json
+/// would be copied into bookmarks.json, a file that leaves with the next sync.
+const BM_GRAPH_LOCAL_KEYS: [&str; 4] = ["localJumps", "localBacklinks", "localForelinks", "localInterlinks"];
+fn bm_graph_keep(k: &str, v: &serde_json::Value) -> serde_json::Value {
+    let known = |x: &str| {
+        GRAPH_NUM_KEYS.contains(&x) || GRAPH_BOOL_KEYS.contains(&x) || BM_GRAPH_LOCAL_KEYS.contains(&x) || matches!(x, "scale" | "search" | "colorGroups")
+    };
+    let keep = |o: &serde_json::Map<String, serde_json::Value>, file: bool| {
+        serde_json::Value::Object(o.iter().filter(|(x, _)| known(x) || (file && *x == "file")).map(|(x, y)| (x.clone(), y.clone())).collect())
+    };
+    match (k, v) {
+        ("options", serde_json::Value::Object(o)) => keep(o, false),
+        ("local", serde_json::Value::Object(o)) => keep(o, true),
+        _ => v.clone(),
+    }
+}
+
 fn bm_view_node(item: &serde_json::Value, title: Option<&str>) -> Result<BmNode, String> {
     use serde_json::{Map, Value};
     let o = item.as_object().ok_or("a bookmark item is an object")?;
@@ -6713,7 +7170,7 @@ fn bm_view_node(item: &serde_json::Value, title: Option<&str>) -> Result<BmNode,
     }
     for (k, v) in o {
         if !matches!(k.as_str(), "type" | "ctime" | "title") {
-            m.insert(k.clone(), v.clone());
+            m.insert(k.clone(), if ty == "graph" { bm_graph_keep(k, v) } else { v.clone() });
         }
     }
     let n = bm_node_of(&Value::Object(m));
@@ -7226,7 +7683,11 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
             } else {
                 vault_hook("watch_tick:pre_lock");
                 let mut ix = v.index.lock().unwrap();
-                span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+                let c = span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix));
+                // #289 review: an added note whose read failed is retried next tick (no log:
+                // a note that stays unreadable would print on every tick)
+                watcher::forget_unread(&d, &ix, &mut cur);
+                c
             };
             // GHOSTS (media CVR-B-063): our own create that an outside delete
             // removed before any walk listed it is in no Diff; ask the Index.
@@ -8251,6 +8712,25 @@ fn i18n_set(setting: String) -> Result<(), String> {
     Ok(())
 }
 
+/* #281 (startup flicker): style.css paints body DARK until main.js applyTheme() adds
+   body.theme-light, and main.js is the LAST of ~45 scripts at the end of <body>, so on a
+   light desktop a launch painted a dark shell first (frame timeline vs boot marks: see the
+   #281 PR). This init script runs at document start, before any stylesheet or page script,
+   and puts the SAME decision bootTheme() makes onto <html data-theme>: the stored choice
+   when there is one, else prefers-color-scheme. style.css paints the light palette from that
+   attribute until body carries its own class. `stored` is matched against a closed set
+   (get_theme: "dark" | "light" | None), so no file text ever reaches the script. */
+fn theme_init_js(stored: Option<&str>) -> String {
+    let s = match stored {
+        Some("dark") => "\"dark\"",
+        Some("light") => "\"light\"",
+        _ => "null",
+    };
+    format!(
+        "(function(){{var s={s};var t=s||(window.matchMedia&&matchMedia(\"(prefers-color-scheme: dark)\").matches?\"dark\":\"light\");document.documentElement.setAttribute(\"data-theme\",t);}})();"
+    )
+}
+
 /// #220: the window's i18n boot data, run before any page script (ui/i18n.js): the
 /// setting, the env's language, the list, and the English + resolved .ftl sources,
 /// so the first paint is already translated without an IPC round trip.
@@ -8357,9 +8837,11 @@ fn main() {
             // vaultbleed D: the unconfined spawner, started BEFORE the ruleset
             // closes (an exec after enforce() is confined for life)
             let helper = spawner::start();
-            match sandbox::enforce(p) {
-                Ok(s) => eprintln!("landlock: {s:?}"),
-                Err(e) => eprintln!("landlock: off ({e})"),
+            // #293: the answer is published (sandbox::outcome) and decides the bind below
+            let o = sandbox::record(sandbox::enforce(p));
+            eprintln!("{}", o.log_line());
+            if let sandbox::Outcome::Partial { dropped } = o {
+                eprintln!("[sandbox] partially enforced: this kernel lacks {dropped:?}");
             }
             match helper {
                 // only a CONFINED window routes through it; otherwise the
@@ -8387,6 +8869,11 @@ fn main() {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
         let restart = switched.as_ref().and_then(|s| spawn::restart_of(&s.token));
+        // #293 (audit F-7): fail closed. The sandbox was asked for and is not in force => the
+        // vault is NOT bound: a native dialog says why, the process exits non-zero.
+        if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome()) {
+            sandbox::refuse_and_exit(&why, p);
+        }
         match bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart) {
             Ok(()) => {}
             Err(BindErr::Lock(e @ vaultlock::LockErr::Busy(_))) => {
@@ -8417,10 +8904,15 @@ fn main() {
     } else if let Some(p) = &init {
         // goal winsize: a saved record for this vault => start hidden, setup
         // places it (winsize_restore). No record => the config default, as before.
+        // #281: hidden in EITHER case — the window is shown once, when the UI is in
+        // (boot_reveal) or at reveal::FALLBACK (setup arms the timer), never filling in on screen.
         let rec = cfg_value()[winsize::KEY].get(winsize_key(p)).cloned();
-        if let (Some(rec), Some(wc)) = (rec, ctx.config_mut().app.windows.first_mut()) {
+        if let Some(wc) = ctx.config_mut().app.windows.first_mut() {
             wc.visible = false;
-            let _ = WIN_REC.set((rec, (wc.width, wc.height)));
+            BOOT_GATE.arm();
+            if let Some(rec) = rec {
+                let _ = WIN_REC.set((rec, (wc.width, wc.height)));
+            }
         }
     }
     // cp-unrestricted: the window is built in setup (page_window), not by Tauri
@@ -8452,6 +8944,12 @@ fn main() {
             install_term(app.handle().clone()); // tab-dataloss: SIGTERM flushes, bounded
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
+            // #281: the vault-boot window is hidden until boot_reveal; fail open after
+            // reveal::FALLBACK so a hung plugin / a stalled UI can never keep it blank
+            if BOOT_GATE.armed() {
+                let h = app.handle().clone();
+                reveal::arm_fallback(&BOOT_GATE, reveal::FALLBACK, move |why| boot_show(&h, why));
+            }
             if SWITCHED.get().is_some() {
                 let h = app.handle().clone();
                 std::thread::spawn(move || {
@@ -8554,11 +9052,11 @@ fn main() {
             if is_pdf_target(&target) {
                 let not_found = || tauri::http::Response::builder().status(404).body(Vec::new()).expect("pdf 404");
                 let q = pdf::parse_query(req.uri().query());
-                let p = root.as_deref().and_then(|r| pdf_path_in(r, &target));
+                let p = root.as_deref().and_then(|r| pdf_open_in(r, &target));
                 let (Some((page, w)), Some(p)) = (q, p) else {
                     return responder.respond(not_found());
                 };
-                return pdf::queue_render(p, page, w, Box::new(move |png| {
+                return pdf::queue_render_file(p, page, w, Box::new(move |png| {
                     responder.respond(match png {
                         Some(b) => tauri::http::Response::builder()
                             .status(200)
@@ -8572,12 +9070,14 @@ fn main() {
                 }));
             }
             let res = match root.as_deref().and_then(|r| serve_image(r, &target)) {
-                Some((mime, body)) => tauri::http::Response::builder()
-                    .status(200)
-                    .header("Content-Type", mime)
-                    .header("X-Content-Type-Options", "nosniff")
-                    .header("Cache-Control", "no-store")
-                    .body(body),
+                Some((mime, body)) => {
+                    // an SVG is a document format: inert even if opened as one (img_headers)
+                    let mut b = tauri::http::Response::builder().status(200);
+                    for (k, v) in img_headers(mime) {
+                        b = b.header(k, v);
+                    }
+                    b.body(body)
+                }
                 None => tauri::http::Response::builder().status(404).body(Vec::new()),
             }
             .expect("img response");
@@ -8589,9 +9089,12 @@ fn main() {
         .register_uri_scheme_protocol(plugins::SCHEME, |ctx, req| {
             use tauri::Manager;
             let root = cur_vault(&ctx.app_handle().state::<Vault>());
-            let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
+            // #251: ONE config read for the trust flag and the pins; the folder identity keys the pins
+            let cfg = cfg_value();
+            let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg, r));
+            let vid = root.as_deref().and_then(|r| plugins::trust_key(r).id);
             let b = tauri::http::Response::builder();
-            let served = plugins::serve(root.as_deref(), req.uri().path(), trusted);
+            let served = plugins::serve_pinned(root.as_deref(), req.uri().path(), trusted, &cfg, vid.as_deref());
             // #144 toggles 8 + 9: community code is about to enter this page's realm — tainted
             // until the next HTML page (page_csp clears it); set BEFORE the body leaves
             if matches!(served, plugins::Served::Js(_)) && !security::REALM_PLUGIN.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -8615,20 +9118,20 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_rec_start, audio_rec_go, audio_rec_log, audio_rec_started, audio_rec_data, audio_rec_stop, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
-            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_reveal, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            plugins_state, plugins_set, plugins_pin_ack, plugin_io, plugin_vfs, desk_proc_spawn, spawn_allow_list, spawn_allow_revoke, security_get, security_set, security_restart, security_mic_set, security_dev_set, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             desk_http_request, desk_shell,
             plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
             updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
-            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
+            get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files, attach_typed, clip::clip_text, clip::clip_has_text, clip::clip_set_text, mdtable::table_op,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, i18n_state, i18n_load, i18n_set, pdf_info,
@@ -9672,7 +10175,7 @@ mod tests {
         }
         symlink(outside.join("secret.png"), root.join("link.png")).unwrap();
         let ix = Index::build(&root);
-        assert_eq!(ix.images(), ["UP.JPG", "pic.png", "sub/nested.webp"], "{:?}", ix.images());
+        assert_eq!(ix.images(), ["UP.JPG", "doc.svg", "pic.png", "sub/nested.webp"], "{:?}", ix.images());
         assert_eq!(ix.names(), ["A"], "images must never become notes");
         let _ = fs::remove_dir_all(&outside);
     }
@@ -10080,6 +10583,89 @@ mod tests {
         }
     }
 
+    /// #281: the boot theme decision is on <html> before the first paint
+    #[test]
+    fn theme_init_js_puts_the_boot_theme_on_html() {
+        let d = theme_init_js(Some("dark"));
+        assert!(d.contains("var s=\"dark\";"), "{d}");
+        let l = theme_init_js(Some("light"));
+        assert!(l.contains("var s=\"light\";"), "{l}");
+        // no stored choice -> the system signal decides, exactly as bootTheme()/systemTheme()
+        let n = theme_init_js(None);
+        assert!(n.contains("var s=null;"), "{n}");
+        assert!(n.contains("matchMedia(\"(prefers-color-scheme: dark)\").matches?\"dark\":\"light\""), "{n}");
+        for js in [&d, &l, &n] {
+            assert!(js.contains("document.documentElement.setAttribute(\"data-theme\",t)"), "{js}");
+            assert!(js.starts_with("(function(){") && js.ends_with("})();"), "not one self-contained statement: {js}");
+            assert!(!js.contains("document.body"), "body does not exist at document start: {js}");
+        }
+    }
+
+    /// #281 negative: junk / hostile stored values never reach the script text (closed set)
+    #[test]
+    fn theme_init_js_ignores_non_mode_values() {
+        let none = theme_init_js(None);
+        for junk in ["", "Dark", "LIGHT", "system", "\"};alert(1);//", "</script><script>x()</script>", "light ", " dark"] {
+            let js = theme_init_js(Some(junk));
+            assert_eq!(js, none, "stored {junk:?} was not treated as 'no choice'");
+            // the equality above is the guarantee; this names a leak directly. Skip values that
+            // are already text of the no-choice script (" dark" is in "prefers-color-scheme: dark").
+            assert!(junk.is_empty() || none.contains(junk) || !js.contains(junk), "stored {junk:?} leaked into the init script");
+        }
+    }
+
+    /// #281 startup reveal, the wiring around reveal.rs (whose own tests prove the gate + timer):
+    /// a vault boot starts hidden AND arms the fail-open timer; the UI reveals after the tabs are
+    /// in and BEFORE the community plugins load, unawaited — so a hung plugin cannot hold it.
+    #[test]
+    fn boot_reveal_wiring_fails_open_and_precedes_plugins() {
+        let src = include_str!("main.rs");
+        let m = &src[src.find(concat!("} else if let Some(p) = ", "&init {")).expect("vault-boot branch")..];
+        let m = &m[..m.find("\n    }\n").expect("end")];
+        assert!(m.contains("wc.visible = false;") && m.contains("BOOT_GATE.arm();"), "a vault boot window is not created hidden + armed");
+        assert!(src.contains(concat!("reveal::arm_fallback(&BOOT_GATE, reveal::", "FALLBACK,")), "no fail-open timer armed in setup");
+        let wr = &src[src.find("fn winsize_restore(").expect("winsize_restore")..];
+        let wr = &wr[..wr.find("\n}\n").expect("end")];
+        assert!(!wr.contains(concat!("w.sh", "ow()")), "winsize_restore maps the window before the UI is in");
+        let ui = include_str!("../../ui/main.js");
+        let ev = &ui[ui.find("async function enterVault()").expect("enterVault")..];
+        let ev = &ev[..ev.find("\n}\n").expect("end")];
+        let r = ev.find(concat!("inv(\"boot_", "reveal\").catch(")).expect("enterVault never reveals (unawaited)");
+        assert!(!ev[..r].trim_end().ends_with("await"), "the reveal is awaited");
+        let tabs = ev.find("await wsApply(").expect("restore");
+        let plg = ev.find("__osPluginHost.boot(").expect("plugin boot");
+        assert!(tabs < r && r < plg, "reveal must come after the restored tabs and before plugins load");
+        assert!(!ev[..r].contains("__osPluginHost"), "plugin code runs before the reveal");
+        // the boot layout is measured while the window is hidden: a resize (the map at the real
+        // size) must re-measure the #rtoggle rect, or the census keeps the unmapped viewport's rect
+        let rs = &ui[ui.find(concat!("addEventListener(\"re", "size\", () => {")).expect("resize handler")..];
+        let rs = &rs[..rs.find("\n});\n").expect("end")];
+        assert!(rs.contains(concat!("placeRTo", "ggle();")), "resize does not re-measure #rtoggle after the hidden boot");
+    }
+
+    /// #281: page_window adds the theme init script at creation, from the stored choice
+    #[test]
+    fn page_window_adds_theme_init_before_build() {
+        let src = include_str!("main.rs");
+        let a = src.find("fn page_window(").expect("page_window");
+        let pw = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let init = pw.find(concat!("initialization_script(&theme_init_", "js(get_theme().as_deref()))")).expect("no theme init script at creation");
+        assert!(init < pw.find(".build()?").expect("build"), "the theme init script is added after the window is built");
+    }
+
+    /// #281: style.css paints the light palette in the BOOT state (html data-theme=light, no
+    /// body mode class yet) and keeps the explicit-class precedence (0,0,1)
+    #[test]
+    fn style_css_light_palette_covers_the_boot_state() {
+        let css = include_str!("../../ui/style.css");
+        let sel = "body:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {";
+        assert_eq!(css.matches(sel).count(), 1, "the light palette block does not cover the boot state");
+        let blk = &css[css.find(sel).unwrap()..];
+        assert!(blk[..blk.find('}').unwrap()].contains("--background-primary: var(--color-base-00, #ffffff);"), "the boot branch is not on the light palette block");
+        // a stored DARK choice on a light desktop: html says dark -> the light branch cannot match
+        assert!(!sel.contains("data-theme=\"dark\""), "{sel}");
+    }
+
     /// #144 toggle 6: canvas off at creation = an ALL-FRAMES init script added before the
     /// window is built; each main-frame load records whether its document got the stubs; the
     /// live half adds / removes only OUR script (never remove_all_scripts: Tauri's IPC init
@@ -10146,6 +10732,114 @@ mod tests {
             }
         }
         assert_eq!(src.matches(concat!("security::", "spawn_check(")).count(), 1, "toggle 10 has one reader");
+    }
+
+    /// #295 (audit F-8): audio_rec_start decides natively before it builds the recorder webview —
+    /// token, then Microphone off refuses (before any dialog), then the native Kind::Mic consent,
+    /// then the grant (only after a yes), then start_check consumes it; the grant is minted
+    /// nowhere else; the indicator goes on with the recording and off in rec_close
+    #[test]
+    fn mic295_audio_rec_start_asks_natively_before_the_recorder_exists() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let order = [
+            "audiorec::authorized(&parent, &token)?",
+            "security::mic_check(security::mic_effective(&cfg_value())).inspect_err(",
+            "consent::admit()?",
+            concat!("consent::Kind::", "Mic, consent::mic_question(&vault)"),
+            "return Err(audiorec::NO_GRANT.into())",
+            concat!("audiorec::", "grant(&parent,"),
+            "audiorec::start_check(&parent, &token,",
+            "rec_close(&app, &parent);",
+            "tauri::WebviewWindowBuilder::new(",
+            "rec_indicator(&win, true)",
+        ];
+        for w in order.windows(2) {
+            assert!(at(w[0]) < at(w[1]), "audio_rec_start: {} must come before {}", w[0], w[1]);
+        }
+        assert_eq!(src.matches(concat!("audiorec::", "grant(")).count(), 1, "a grant is minted only after the native consent");
+        assert_eq!(src.matches(concat!("consent::Kind::", "Mic")).count(), 1, "one mic question");
+        let rc = src.find("fn rec_close(").expect("rec_close");
+        assert!(src[rc..rc + src[rc..].find("\n}\n").expect("end")].contains("rec_indicator(&w, false)"), "the indicator outlives the recording");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_mic_set,"), "not registered");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (w, c) = (mb.find("security::mic_weakens(").expect("weakens"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(w < c && mb[w..c].contains("consent::Kind::Security"), "off -> ask written without the native confirm");
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityMic(")).count(), 1, "one writer of the microphone");
+    }
+
+    /// #295 follow-up, Microphone = always allow: it skips ONLY the per-start question. The token
+    /// check and the off/lockdown refusal come before the branch, the grant / start_check (token +
+    /// setting again) / recorder / indicator after it, outside it: an always-allow start still
+    /// needs the token and still turns the native indicator on. The setting is written only by
+    /// security_mic_set, behind mic_decide (a weakening change needs the native confirm's yes).
+    #[test]
+    fn mic295_always_allow_skips_only_the_question() {
+        let src = include_str!("main.rs");
+        let a = src.find("async fn audio_rec_start(").expect("audio_rec_start");
+        let b = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let at = |s: &str| b.find(s).unwrap_or_else(|| panic!("audio_rec_start lacks {s}"));
+        let branch = at(concat!("if security::mic_", "asks(security::mic_effective(&cfg_value())) {"));
+        let other = at("} else {\n        eprintln!(\"[audiorec] start: Microphone = always allow");
+        let join = branch + b[branch..].find("\n    }\n").expect("branch end");
+        assert!(at("audiorec::authorized(&parent, &token)?") < branch, "the token check must come before the always branch");
+        assert!(at("security::mic_check(security::mic_effective(&cfg_value())).inspect_err(") < branch, "off / lockdown must refuse before the always branch");
+        assert!(branch < at(concat!("consent::Kind::", "Mic,")) && at(concat!("consent::Kind::", "Mic,")) < other, "the question sits in the ask branch");
+        assert!(other < join, "branch shape");
+        for after in [concat!("audiorec::", "grant(&parent,"), "audiorec::start_check(&parent, &token,", "tauri::WebviewWindowBuilder::new(", "rec_indicator(&win, true)"] {
+            assert!(at(after) > join, "{after} must run for EVERY start (after the always branch), not inside it");
+        }
+        assert!(!b[branch..join].contains("rec_indicator") && !b[branch..join].contains("audiorec::start_check"), "the branch must not hold the token / indicator steps");
+        assert_eq!(b.matches("rec_indicator(&win, true)").count(), 1, "one indicator-on, for every recording");
+        let ms = src.find("async fn security_mic_set(").expect("security_mic_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        let (d, c) = (mb.find("security::mic_decide(stored, m, confirmed)").expect("decide"), mb.find(concat!("cfgstore::Op::", "SecurityMic(")).expect("write"));
+        assert!(d < c && mb[..d].contains("confirmed = consent::ask(") && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind mic_decide + the native confirm");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+    }
+
+    /// devaccess: the app page's getUserMedia rejector (ui/main.js) forwards ONLY a rebuilt
+    /// { video } request to the native gate (devperm::decide); anything carrying audio, or with no
+    /// video, is still refused in the page. The audio key is never copied into the forwarded object.
+    #[test]
+    fn devacc_page_forwards_only_video_to_the_native_gate() {
+        let ui = include_str!("../../ui/main.js");
+        let a = ui.find("const deny = function getUserMedia(c) {").expect("rejector");
+        let body = &ui[a..a + ui[a..].find("\n  };").expect("rejector end")];
+        assert!(body.contains("!c.audio) v = c.video;"), "audio must exclude the forward: {body}");
+        assert!(body.contains("const ask = { video: (typeof v === \"object\" ? v : true) }; return gum(ask);"), "forward must be a rebuilt video-only object");
+        assert_eq!(body.matches("gum(").count(), 1, "one forward only");
+        assert!(!body.contains("gum(c"), "the caller's constraints object must never reach WebKit");
+        assert!(!body.contains("audio:"), "no audio key in the forwarded request");
+        assert!(body.contains("reserved for the Audio recorder core plugin.\", \"NotAllowedError\""), "everything else refused");
+        // both bindings still the rejector, non-writable
+        assert!(ui.contains("Object.defineProperty(md, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+        assert!(ui.contains("Object.defineProperty(MediaDevices.prototype, \"getUserMedia\", { value: deny, writable: false, configurable: false"));
+    }
+
+    /// devaccess: a Device access row is written only by security_dev_set, behind dev_decide and
+    /// the native Security confirm (confirmed defaults to NO); the setter takes only (field, value),
+    /// nothing page-reported (no plugin id / vault / origin) enters it; one writer of Op::SecurityDev
+    #[test]
+    fn devacc_row_written_only_behind_the_native_confirm() {
+        let src = include_str!("main.rs");
+        assert!(src[src.find("generate_handler![").unwrap()..].contains("security_dev_set,"), "not registered");
+        let ms = src.find("async fn security_dev_set(").expect("security_dev_set");
+        let mb = &src[ms..ms + src[ms..].find("\n}\n").expect("end")];
+        assert!(mb.starts_with("async fn security_dev_set(win: tauri::Window, field: String, value: String) ->"), "the setter must take only the row and the value");
+        let at = |s: &str| mb.find(s).unwrap_or_else(|| panic!("security_dev_set lacks {s}"));
+        assert!(at("security::dev_validate(&field, &value)?") < at("security::mic_weakens(stored, m)"));
+        assert!(at("security::mic_weakens(stored, m)") < at("consent::Kind::Security, consent::security_dev_question(f, m)"));
+        let (d, c) = (at("security::dev_decide(stored, m, confirmed)"), at(concat!("cfgstore::Op::", "SecurityDev(")));
+        assert!(d < c && mb[d..c].contains("else {") && mb[d..c].contains("return Ok("), "the write is not behind dev_decide");
+        assert!(mb.contains("let mut confirmed = false;"), "confirmed must default to NO");
+        for page in ["plugin", "vault", "origin"] {
+            assert!(!mb.contains(page), "security_dev_set must not be keyed by page-reported {page}");
+        }
+        assert_eq!(src.matches(concat!("cfgstore::Op::", "SecurityDev(")).count(), 1, "one writer of the Device access rows");
     }
 
     /// #144 toggle 7: the JIT env is applied in main() right after the boot latch, BEFORE the
@@ -12343,6 +13037,146 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /// SVG is served on one condition (IMG_TYPES): it is only ever shown as an
+    /// image. Pinned here: the embed is an <img>, nothing else; and the policy the
+    /// response carries runs no script, opens no connection and sandboxes it.
+    #[test]
+    fn svg_embeds_are_images_and_their_response_policy_is_inert() {
+        let root = tmp_vault("svg-embed");
+        fs::write(root.join("logo.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>").unwrap();
+        let ix = Index::build(&root);
+        assert_eq!(ix.images(), ["logo.svg"]);
+        let h = image_html(ix.images(), "logo.svg", "");
+        assert!(h.starts_with("<img ") && h.contains(&format!("src=\"{IMG_SCHEME}://localhost/logo.svg\"")), "{h}");
+        for tag in ["<object", "<iframe", "<embed", "<svg", "<script"] {
+            assert!(!h.contains(tag), "{tag} in {h}");
+        }
+        let d: Vec<&str> = SVG_CSP.split(';').map(str::trim).collect();
+        assert!(d.contains(&"default-src 'none'") && d.contains(&"sandbox"), "{SVG_CSP}");
+        assert!(!SVG_CSP.contains("script-src") && !SVG_CSP.contains("connect-src") && !SVG_CSP.contains("http"), "{SVG_CSP}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #276: both stock embed syntaxes of a vault SVG render as ONE <img> on our
+    /// scheme, in reading view and in the editing render, and the URL round-trips
+    /// to the SVG bytes with Content-Type image/svg+xml. Case of the extension
+    /// does not matter (as for png); a sizing suffix keeps it an <img>.
+    #[test]
+    fn svg_embeds_render_as_img_in_both_syntaxes_and_round_trip() {
+        let root = tmp_vault("svg276");
+        fs::create_dir_all(root.join("art")).unwrap();
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'><rect width='100' height='100' fill='#1971c2'/></svg>";
+        for p in ["logo.svg", "art/UP.SVG"] {
+            fs::write(root.join(p), svg).unwrap();
+        }
+        let ix = Index::build(&root);
+        assert_eq!(ix.images(), ["art/UP.SVG", "logo.svg"], "{:?}", ix.images());
+        for reading in [true, false] {
+            for md in ["![[logo.svg]]", "![](logo.svg)", "![[logo.svg|120]]", "![[UP.SVG]]", "![](art/UP.SVG)"] {
+                let h = render_with(md, &[], ix.images(), reading);
+                assert_eq!(h.matches("<img ").count(), 1, "{md} reading={reading}: {h}");
+                assert!(!h.contains("could not be found"), "{md}: {h}");
+                for tag in ["<svg", "<object", "<iframe", "<embed", "<script"] {
+                    assert!(!h.contains(tag), "{md}: {tag} in {h}");
+                }
+                let i = h.find("src=\"").unwrap() + 5;
+                let url = h[i..].split('"').next().unwrap();
+                let target = url.strip_prefix(&format!("{IMG_SCHEME}://localhost/")).expect(url);
+                let (mime, bytes) = serve_image(&root, target).unwrap_or_else(|| panic!("{md} -> {url} served nothing"));
+                assert_eq!((mime, bytes.as_slice()), ("image/svg+xml", &svg[..]), "{md}");
+            }
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #276 negative half: an SVG is served only as a vault member. A missing
+    /// one is R29.4's banner (no URL); traversal, a symlink out of the vault and
+    /// look-alike extensions (svgz, svg.html, a note named x.svg.md) serve nothing.
+    #[test]
+    fn svg_serving_stays_vault_confined_and_exact() {
+        use std::os::unix::fs::symlink;
+        let root = tmp_vault("svg276neg");
+        let outside = std::env::temp_dir().join(format!("opensidian-svgout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.svg"), b"<svg/>").unwrap();
+        symlink(outside.join("secret.svg"), root.join("link.svg")).unwrap();
+        for p in ["z.svgz", "page.svg.html", "n.svg.md"] {
+            fs::write(root.join(p), b"<svg/>").unwrap();
+        }
+        let ix = Index::build(&root);
+        assert!(ix.images().is_empty(), "{:?}", ix.images());
+        let h = image_html(ix.images(), "missing.svg", "");
+        assert!(h.contains("could not be found") && !h.contains(IMG_SCHEME), "{h}");
+        for t in ["link.svg", "z.svgz", "page.svg.html", "n.svg.md", "../secret.svg", "%2e%2e/secret.svg", "missing.svg"] {
+            assert!(serve_image(&root, t).is_none(), "{t} was served");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /// #276: the response headers. Every image gets its exact type + nosniff +
+    /// no-store; an SVG additionally gets SVG_CSP (no script, no network, sandbox).
+    /// Raster types keep exactly the three headers they had.
+    #[test]
+    fn img_headers_make_svg_inert_and_leave_raster_unchanged() {
+        let svg = img_headers("image/svg+xml");
+        assert!(svg.contains(&("Content-Type", "image/svg+xml")) && svg.contains(&("X-Content-Type-Options", "nosniff")), "{svg:?}");
+        assert!(svg.contains(&("Content-Security-Policy", SVG_CSP)), "{svg:?}");
+        for (_, mime) in IMG_TYPES.iter().filter(|(e, _)| *e != "svg") {
+            assert_eq!(
+                img_headers(mime),
+                vec![("Content-Type", *mime), ("X-Content-Type-Options", "nosniff"), ("Cache-Control", "no-store")]
+            );
+        }
+        let d: Vec<&str> = SVG_CSP.split(';').map(str::trim).collect();
+        for need in ["default-src 'none'", "sandbox"] {
+            assert!(d.contains(&need), "{need} missing: {SVG_CSP}");
+        }
+        for bad in ["script", "connect", "http", "*", "'self'", "unsafe-eval", "frame", "object"] {
+            assert!(!SVG_CSP.contains(bad), "{bad} in {SVG_CSP}");
+        }
+    }
+
+    /// #276 root cause guard: live preview (ui/editor.js Ed.IMG_EXTS) and the
+    /// reading view / byte server (index::IMG_EXTS) must name the SAME image set,
+    /// or one view draws an embed the other calls missing.
+    #[test]
+    fn live_preview_image_exts_match_the_index() {
+        let js = include_str!("../../ui/editor.js");
+        let line = js.lines().find(|l| l.trim_start().starts_with("IMG_EXTS: [")).expect("Ed.IMG_EXTS");
+        let inner = line.split('[').nth(1).and_then(|s| s.split(']').next()).expect(line);
+        let exts: Vec<&str> = inner.split(',').map(|s| s.trim().trim_matches('"')).filter(|s| !s.is_empty()).collect();
+        assert_eq!(exts, index::IMG_EXTS.to_vec(), "ui/editor.js Ed.IMG_EXTS vs index::IMG_EXTS");
+        assert!(exts.contains(&"svg"));
+    }
+
+    /// CodeAnt #262 (ui/editor.js:478): `![[https://host/logo.svg]]` is a REMOTE
+    /// image in reading view (image_html checks url_scheme before any vault
+    /// lookup), so it is the remote banner, never "<url> could not be found" —
+    /// for svg exactly as for png. Live preview must take the same decision: its
+    /// wikilink image branch hands imgEl the remote flag (as the `![](…)` branch
+    /// does), and imgEl mirrors image_html's other-scheme banner. Phase svgrender
+    /// pins the painted result in both views on the box.
+    #[test]
+    fn remote_wikilink_image_embed_is_the_remote_banner_in_both_views() {
+        for t in ["https://host/logo.svg", "https://host/logo.png", "HTTPS://HOST/LOGO.SVG", "http://host/logo.svg"] {
+            for reading in [true, false] {
+                let h = render_with(&format!("![[{t}]]"), &[], &["logo.svg".into(), "logo.png".into()], reading);
+                assert!(h.contains("data-sec=\"remoteMedia\"") && h.contains("\u{201c}remote image\u{201d} was blocked."), "{t} reading={reading}: {h}");
+                assert!(!h.contains("could not be found") && !h.contains("<img") && !h.contains("host/"), "{t} reading={reading}: {h}");
+            }
+        }
+        let h = render_with("![[ftp://host/logo.svg]]", &[], &["logo.svg".into()], true);
+        assert!(h.contains("\u{201c}remote image\u{201d} could not be found.") && !h.contains("<img"), "{h}");
+        let js = include_str!("../../ui/editor.js");
+        let wl = js.lines().find(|l| l.contains("eadd(Ed.imgEl(target,")).expect("live preview wikilink image branch");
+        assert!(wl.contains("/^https?:/i.test(target)"), "live preview ![[url]] does not pass image_html's remote decision: {wl}");
+        let body = js.split("  imgEl(target, alt, remote) {").nth(1).and_then(|s| s.split("\n  },").next()).expect("Ed.imgEl");
+        let (sch, src) = (body.find("/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)"), body.find("Ed.imgSrc(target)"));
+        assert!(sch.is_some() && sch < src, "Ed.imgEl looks a scheme target up in the vault before image_html's banner");
+    }
+
     /// R29 images, POSITIVE half: the shapes that MUST serve bytes. Kept next
     /// to the traversal test because a containment check that refuses
     /// everything also passes the negative one.
@@ -12363,8 +13197,9 @@ mod tests {
         assert_eq!(serve_image(&root, "UPPER.PNG").unwrap().0, "image/png");
         assert_eq!(serve_image(&root, "sub/nested.jpeg").unwrap().0, "image/jpeg");
         assert_eq!(serve_image(&root, "pic.png").unwrap().1, px.to_vec());
-        // R29.8: svg is NOT in v1 (scriptable, no sanitizer here); non-images never
-        assert_eq!(img_path_in(&root, "vec.svg"), None);
+        // R29.8: svg is served, as svg (IMG_TYPES says why that is safe); non-images never
+        assert_eq!(img_path_in(&root, "vec.svg"), Some(croot.join("vec.svg")));
+        assert_eq!(serve_image(&root, "vec.svg").unwrap().0, "image/svg+xml");
         assert_eq!(img_path_in(&root, "doc.md"), None);
         assert_eq!(img_path_in(&root, "pic"), None);
         // R29.4: a missing file serves nothing — same None as an escape, no leak
@@ -12474,9 +13309,9 @@ mod tests {
     fn media_rename_refuses_an_extension_change_or_non_media() {
         let (root, outside) = media_vault("mren-ext");
         fs::write(root.join("n.md"), b"#").unwrap();
-        fs::write(root.join("v.svg"), b"<svg/>").unwrap();
+        fs::write(root.join("v.html"), b"<html/>").unwrap();
         fs::write(root.join("pic.png"), b"png").unwrap();
-        for (a, b) in [("tone.mp3", "tone.wav"), ("tone.mp3", "tone.md"), ("tone.mp3", "tone"), ("n.md", "n.mp3"), ("n.md", "m.md"), ("pic.png", "pic.jpg"), ("v.svg", "w.svg")] {
+        for (a, b) in [("tone.mp3", "tone.wav"), ("tone.mp3", "tone.md"), ("tone.mp3", "tone"), ("n.md", "n.mp3"), ("n.md", "m.md"), ("pic.png", "pic.jpg"), ("v.html", "w.html"), ("pic.png", "pic.svg")] {
             assert!(media_rename_in(&root, a, b).is_err(), "{a} -> {b}");
         }
         assert!(root.join("tone.mp3").is_file() && root.join("n.md").is_file());
@@ -13281,6 +14116,105 @@ mod tests {
         let _ = fs::remove_dir_all(&srcd);
     }
 
+    /// the vault's entries (names), sorted: "the attachment folder is unchanged"
+    fn vault_names(root: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(root).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        v.sort();
+        v
+    }
+
+    /// #280: attach_files no longer takes a path. A path the page names (no drop registered
+    /// it) is refused: nothing lands in the vault and the source (an image, which a drop
+    /// would MOVE) and a PDF (which a drop would copy) both stay exactly where they were.
+    #[test]
+    fn attach_ticket_refuses_a_raw_path_and_touches_nothing() {
+        let (root, srcd) = drop_vault("tk-raw");
+        let img = src_file(&srcd, "secret.png", b"\x89PNG\r\n\x1a\nSECRET");
+        let pdf = src_file(&srcd, "secret.pdf", b"%PDF-1.4\nSECRET");
+        let before = vault_names(&root);
+        for raw in [img.to_string_lossy().to_string(), format!("file://{}", img.display()), pdf.to_string_lossy().to_string(), String::new()] {
+            let e = attach_ticket(&root, "Note", "main", &raw).unwrap_err();
+            assert!(e.contains("not a path"), "{raw:?} -> {e}");
+        }
+        assert_eq!(fs::read(&img).unwrap(), b"\x89PNG\r\n\x1a\nSECRET", "the image source must stay in place");
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4\nSECRET", "the pdf source must stay in place");
+        assert_eq!(vault_names(&root), before, "the attachment folder (vault root) must be unchanged");
+        assert_eq!(fs::read_to_string(root.join("Note.md")).unwrap(), "# Note\n\nEND\n");
+        // an id-shaped string nobody minted is refused the same way
+        let e = attach_ticket(&root, "Note", "main", &"0".repeat(32)).unwrap_err();
+        assert!(e.contains("unknown"), "{e}");
+        assert!(img.exists() && pdf.exists());
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: a REAL drop (what xdnd mints) still imports exactly as before — the image is
+    /// MOVED, the pdf COPIED — and the same ticket is refused on its second use
+    #[test]
+    fn a_dropped_ticket_imports_once_and_is_refused_on_reuse() {
+        let (root, srcd) = drop_vault("tk-real");
+        let img = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT");
+        let pdf = src_file(&srcd, "doc.pdf", b"%PDF-1.4\nDOC");
+        let o = xdnd::offer("main", &[img.clone(), pdf.clone()]).expect("urandom");
+        assert_eq!(o.names, vec!["cat.png", "doc.pdf"]);
+        let a = attach_ticket(&root, "Note", "main", &o.ticket).unwrap();
+        assert_eq!(a.text, "![[cat.png]]\n![[doc.pdf]]");
+        assert_eq!(a.copied, vec!["cat.png".to_string(), "doc.pdf".to_string()]);
+        assert!(!img.exists(), "osdrop: a dropped image is still MOVED");
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4\nDOC", "pdfdrop: a dropped pdf is still COPIED");
+        assert_eq!(fs::read(root.join("cat.png")).unwrap(), b"\x89PNG\r\n\x1a\nCAT");
+        // reuse: refused, nothing new in the vault, the (re-seeded) source untouched
+        let img2 = src_file(&srcd, "cat.png", b"\x89PNG\r\n\x1a\nCAT2");
+        let before = vault_names(&root);
+        let e = attach_ticket(&root, "Note", "main", &o.ticket).unwrap_err();
+        assert!(e.contains("already used"), "{e}");
+        assert_eq!(vault_names(&root), before);
+        assert_eq!(fs::read(&img2).unwrap(), b"\x89PNG\r\n\x1a\nCAT2");
+        // another window cannot spend this window's drop
+        let o2 = xdnd::offer("main", std::slice::from_ref(&img2)).expect("urandom");
+        assert!(attach_ticket(&root, "Note", "other", &o2.ticket).unwrap_err().contains("another window"));
+        assert!(img2.exists());
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: an expired ticket is refused and moves nothing (the table's own clock is
+    /// unit-tested in dropticket.rs; here the refusal is checked end to end through
+    /// attach_ticket with a ticket minted TTL ago)
+    #[test]
+    fn an_expired_ticket_is_refused_end_to_end() {
+        let (root, srcd) = drop_vault("tk-exp");
+        let img = src_file(&srcd, "old.png", b"\x89PNG\r\n\x1a\nOLD");
+        let then = std::time::Instant::now().checked_sub(dropticket::TTL + std::time::Duration::from_secs(1));
+        let Some(then) = then else { return }; // a monotonic clock younger than the TTL: nothing to test
+        let k = dropticket::mint_at_for_test("main", std::slice::from_ref(&img), then);
+        let before = vault_names(&root);
+        let e = attach_ticket(&root, "Note", "main", &k).unwrap_err();
+        assert!(e.contains("expired"), "{e}");
+        assert_eq!(fs::read(&img).unwrap(), b"\x89PNG\r\n\x1a\nOLD");
+        assert_eq!(vault_names(&root), before);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&srcd);
+    }
+
+    /// #280: the typed "Insert attachment" path asks natively first; the question names the
+    /// path and the move, and its title is the one the harness finds the dialog by
+    #[test]
+    fn the_typed_attach_question_names_the_path_and_the_move() {
+        let t = consent::attach_text("/home/u/Pictures/a.png", "Note");
+        assert!(t.contains("\"/home/u/Pictures/a.png\""), "{t}");
+        assert!(t.contains("MOVED"), "{t}");
+        assert_eq!(consent::ATTACH_TITLE, "opensidian: attach file?");
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let i = src.find("async fn attach_typed(").expect("attach_typed");
+        let body = &src[i..i + src[i..].find("\n}\n").unwrap()];
+        let ask = body.find("consent::ask(").expect("attach_typed must ask natively");
+        let att = body.find("attach_drop(").expect("attach_typed attaches");
+        assert!(ask < att, "the question comes BEFORE the attach");
+    }
+
     /// R31.4 + S5: three drops of the SAME name give `cat.png`, `cat 1.png`,
     /// `cat 2.png` (Obsidian's convention, verified against 1.13.7), and the
     /// earlier files are BYTE-IDENTICAL afterwards. A drop that overwrites a
@@ -13355,7 +14289,7 @@ mod tests {
     fn drop_refuses_everything_outside_img_types() {
         let (root, srcd) = drop_vault("drop-ext");
         let mut paths = Vec::new();
-        for n in ["doc.pdf", "arch.zip", "vec.svg", "pic.bmp", "note.md", "noext", "script.png.sh"] {
+        for n in ["doc.pdf", "arch.zip", "page.html", "pic.bmp", "note.md", "noext", "script.png.sh"] {
             paths.push(src_file(&srcd, n, b"\x89PNGdisguised-as-an-image"));
         }
         let a = attach_drop(&root, "Note", &paths).unwrap();
@@ -14213,6 +15147,81 @@ fn psg_probe() -> bool {
     std::env::var("OPENSIDIAN_PSGPROBE").as_deref() == Ok("1")
 }
 
+/// #293 (audit F-7): no bind without the fail-closed decision — SOURCE SHAPE, since the
+/// refusal itself (a kernel that cannot enforce) is not reachable from a unit test
+#[cfg(test)]
+mod ll293_tests {
+    /// main.rs without its #[cfg(test)] modules: what ships
+    fn prod_src() -> String {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let mut out = String::new();
+        let mut rest = src.as_str();
+        while let Some(i) = rest.find("#[cfg(test)]\nmod ") {
+            let eol = i + rest[i + 13..].find('\n').expect("line end") + 13;
+            if !rest[i..eol].ends_with('{') {
+                // `mod x;` — a file module, nothing inline to cut
+                out.push_str(&rest[..eol]);
+                rest = &rest[eol..];
+                continue;
+            }
+            out.push_str(&rest[..i]);
+            let end = rest[i..].find("\n}\n").expect("test module end");
+            rest = &rest[i + end + 3..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let i = src.find(sig).unwrap_or_else(|| panic!("{sig}"));
+        &src[i..i + src[i..].find("\n}\n").expect("end")]
+    }
+
+    const DECIDE: &str = "sandbox::boot_may_bind(sandbox::landlock_enabled(), sandbox::outcome())";
+
+    #[test]
+    fn ll293_main_consults_the_decision_between_enforce_and_the_boot_bind() {
+        let src = prod_src();
+        let m = body(&src, "\nfn main() {");
+        let enforce = m.find("sandbox::record(sandbox::enforce(p))").expect("enforce's answer is recorded");
+        let decide = m.find(DECIDE).expect("main consults boot_may_bind");
+        let refuse = m.find("sandbox::refuse_and_exit(&why, p)").expect("a refusal exits");
+        let bind = m.find("bind_vault_boot_after(&vault, p, &vaultlock::env_lock_dir(), restart)").expect("boot bind");
+        assert!(enforce < decide && decide < refuse && refuse < bind, "enforce -> decide -> refuse -> bind");
+        assert_eq!(m.matches("bind_vault_boot_after(").count(), 1, "one boot bind");
+        assert_eq!(m.matches("sandbox::enforce(").count(), 1, "one enforce, its answer recorded");
+    }
+
+    #[test]
+    fn ll293_every_bind_goes_through_claim_vault_which_decides_first() {
+        let src = prod_src();
+        let c = body(&src, "\nfn claim_vault(");
+        let decide = c.find(DECIDE).expect("claim_vault consults boot_may_bind");
+        for later in ["vaultlock::acquire_in(", "v.root.set(", "builtins::seed_and_record(", "ensure_app_json("] {
+            assert!(decide < c.find(later).unwrap_or_else(|| panic!("{later}")), "{later} before the sandbox decision");
+        }
+        let first = c.lines().skip(2).map(str::trim).find(|t| !t.is_empty() && !t.starts_with("//")).expect("a statement");
+        assert!(first.starts_with("if let sandbox::BootBind::Refuse(why) = sandbox::boot_may_bind("), "the decision is the first statement: {first}");
+        // the root is assigned in claim_vault only, and claim_vault is called by the two binders only
+        assert_eq!(src.matches(".root.set(").count(), 1, "one place assigns a vault root");
+        assert_eq!(src.matches("claim_vault(").count(), 3, "definition + bind_vault_locked + bind_vault_boot");
+        assert!(body(&src, "\nfn bind_vault_locked(").contains("claim_vault(v, p, lock_dir)?;"));
+        assert!(body(&src, "\nfn bind_vault_boot(").contains("claim_vault(v, p, lock_dir)?;"));
+        // and nothing else in main.rs consults or skips it
+        assert_eq!(src.matches("boot_may_bind(").count(), 2, "main() and claim_vault");
+        for f in ["sandbox.rs", "spawn.rs", "spawner.rs", "security.rs"] {
+            let s = std::fs::read_to_string(format!("{}/src/{f}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            assert!(!s.contains(".root.set("), "{f} assigns a vault root");
+        }
+    }
+
+    #[test]
+    fn ll293_security_get_reports_the_sandbox_state() {
+        let src = prod_src();
+        assert!(body(&src, "\nfn security_get(").contains("r[\"sandbox\"] = sandbox::state_json();"));
+    }
+}
+
 /* vaultbleed (operator 2026-10-03, SEVERE): "i see tags from another vault in
    my sidebar that has been opened before". These tests land a vault switch at
    the exact instant a root+index critical path is between "I read the root"
@@ -14769,5 +15778,420 @@ mod callout_render_tests {
         assert!(r("```\n==x==\n```").contains("==x=="));
         assert!(r("a == b").contains("a == b"));
         assert!(r("====").contains("===="));
+    }
+}
+
+/* #250: every READ of a vault path is fd-based and never follows a symlink
+   (vaultfs::Vault::open_read / read). These tests plant, per call-site class,
+   the hostile leaves the audit names (F-3 F-9 F-10 F-27 F-46 F-47): a symlink
+   to a file outside the temp vault, a symlink to /dev/zero, a FIFO, a regular
+   file one byte over the cap, a symlinked directory component, and a leaf
+   swapped for a symlink between the check and the read (the vaultfs hook
+   seam "open_read:checked"). Each reader must return its default / refuse,
+   within a time bound, and still read a normal file. */
+#[cfg(test)]
+mod read250_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    const SECRET: &str = "LEAKED-SECRET-250";
+
+    fn vault(tag: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("opensidian-r250-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, out) = (base.join("vault"), base.join("outside"));
+        fs::create_dir_all(root.join(".obsidian/snippets")).unwrap();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        (root, out)
+    }
+
+    fn fifo(p: &Path) {
+        let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", p.display());
+    }
+
+    /// `f` on a worker, Err unless it returns within 5 s (a read that followed
+    /// a FIFO blocks, one that followed /dev/zero runs until OOM)
+    fn bounded<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!("{what}: did not return within 5 s"))
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Plant {
+        Outside,
+        DevZero,
+        Fifo,
+        OverCap,
+        DirLink,
+    }
+    const PLANTS: [Plant; 5] = [Plant::Outside, Plant::DevZero, Plant::Fifo, Plant::OverCap, Plant::DirLink];
+
+    /// the .obsidian files the config readers read, each with a body that
+    /// would change the reader's answer (and carries SECRET) if it were read
+    fn cfg_files() -> Vec<(&'static str, String)> {
+        vec![
+            ("app.json", format!(r#"{{"attachmentFolderPath":"{SECRET}","useMarkdownLinks":true,"readableLineLength":false,"strictLineBreaks":true,"propertiesInDocument":"hidden"}}"#)),
+            ("graph.json", format!(r#"{{"search":"{SECRET}","auths":{{"token":"{SECRET}"}}}}"#)),
+            ("templates.json", format!(r#"{{"dateFormat":"{SECRET}"}}"#)),
+            ("bookmarks.json", format!(r#"{{"items":[{{"type":"file","ctime":1,"path":"{SECRET}.md"}}]}}"#)),
+            ("types.json", format!(r#"{{"types":{{"{SECRET}":"text"}}}}"#)),
+            ("appearance.json", format!(r#"{{"cssTheme":"{SECRET}"}}"#)),
+            ("workspace.json", format!(r#"{{"main":{{"id":"{SECRET}"}}}}"#)),
+            ("canvas.json", format!(r#"{{"snapToGrid":false,"x":"{SECRET}"}}"#)),
+            ("community-plugins.json", r#"["leakedplugin"]"#.to_string()),
+        ]
+    }
+
+    /// plant `how` at every cfg file of `root` (the outside copies live in `out`)
+    fn plant_cfg(root: &Path, out: &Path, how: Plant) {
+        let obs = root.join(".obsidian");
+        if let Plant::DirLink = how {
+            fs::remove_dir_all(&obs).unwrap();
+            for (f, body) in cfg_files() {
+                fs::write(out.join(f), body).unwrap();
+            }
+            symlink(out, &obs).unwrap();
+            return;
+        }
+        for (f, body) in cfg_files() {
+            let p = obs.join(f);
+            let o = out.join(f);
+            fs::write(&o, &body).unwrap();
+            match how {
+                Plant::Outside => symlink(&o, &p).unwrap(),
+                Plant::DevZero => symlink("/dev/zero", &p).unwrap(),
+                Plant::Fifo => fifo(&p),
+                // a VALID document one byte over the largest config cap (trailing JSON whitespace)
+                Plant::OverCap => {
+                    let mut b = body.into_bytes();
+                    b.resize(vaultfs::CFG_MAX as usize + 1, b' ');
+                    fs::write(&p, b).unwrap();
+                }
+                Plant::DirLink => unreachable!(),
+            }
+        }
+    }
+
+    /// every config reader's answer, as one string (Debug of each result)
+    fn cfg_answers(root: &Path) -> Vec<(&'static str, String)> {
+        let vc = settings::VaultCfg { file: "canvas".into(), patch: None };
+        vec![
+            ("app_bool_in", format!("{:?}", app_bool_in(root, "strictLineBreaks"))),
+            ("readable_line_length_in", format!("{:?}", readable_line_length_in(root))),
+            ("app_value_in", format!("{:?}", app_value_in(root, "propertiesInDocument"))),
+            ("attach_dir", format!("{:?}", attach_dir(root).ok().map(|d| d.0 == root.canonicalize().unwrap()))),
+            ("graph_settings_in", format!("{:?}", graph_settings_in(root))),
+            ("templates_format", format!("{:?}", templates_format(root, "dateFormat"))),
+            ("read_bm_tree", bm_emit(&read_bm_tree(root), &[])),
+            ("bm_top_extra", format!("{:?}", bm_top_extra(root))),
+            ("read_workspace", format!("{:?}", vcfg_read(root, ".obsidian/workspace.json"))),
+            ("pasteimg::app_cfg", format!("{:?}", pasteimg::app_cfg(root))),
+            ("props::types_in", format!("{:?}", props::types_in(root))),
+            ("themefs::read_appearance", format!("{:?}", themefs::read_appearance(root).ok())),
+            ("settings::vcfg_in", format!("{:?}", settings::vcfg_in(root, &vc).ok())),
+            ("plugins::enabled_ids", format!("{:?}", plugins::enabled_ids(root))),
+        ]
+    }
+
+    /// F-3 / F-27: every .obsidian config reader returns its default for every
+    /// hostile leaf, in bounded time, and nothing of the outside file reaches it
+    #[test]
+    fn read250_config_readers_return_defaults_for_hostile_leaves() {
+        let (clean, _o) = vault("cfg-clean");
+        let want = cfg_answers(&clean);
+        for how in PLANTS {
+            let (root, out) = vault(&format!("cfg-{how:?}"));
+            plant_cfg(&root, &out, how);
+            let r = root.clone();
+            let got = bounded(&format!("{how:?}"), move || cfg_answers(&r));
+            for ((name, g), (_, w)) in got.iter().zip(&want) {
+                assert!(!g.contains(SECRET) && !g.contains("leakedplugin"), "{how:?} {name}: outside content reached the reader: {g}");
+                // the readers whose caller WRITES the file back (appearance, the vcfg
+                // merge) refuse (Err -> None) rather than default: an unreadable file is
+                // never written over. Every other reader returns its default.
+                let refuses = matches!(*name, "themefs::read_appearance" | "settings::vcfg_in") && g == "None";
+                assert!(g == w || refuses, "{how:?} {name}: not the default (nor a refusal): {g} vs {w}");
+            }
+            // a read-MODIFY-write refuses rather than overwrite what it could not read
+            assert!(set_app_bool_in(&root, "alwaysUpdateLinks", true).is_err(), "{how:?}: app.json merge");
+            assert!(set_graph_settings_in(&root, &serde_json::json!({"scale": 2})).is_err(), "{how:?}: graph.json merge");
+            if !matches!(how, Plant::DirLink) {
+                assert_eq!(fs::read_to_string(out.join("graph.json")).unwrap(), cfg_files()[1].1, "{how:?}: outside file untouched");
+            }
+        }
+        // POSITIVE control: the same bodies as regular files are read
+        let (root, out) = vault("cfg-regular");
+        for (f, body) in cfg_files() {
+            fs::write(root.join(".obsidian").join(f), body).unwrap();
+        }
+        let _ = out;
+        assert!(app_bool_in(&root, "strictLineBreaks"));
+        assert!(!readable_line_length_in(&root));
+        assert_eq!(templates_format(&root, "dateFormat").as_deref(), Some(SECRET));
+        assert_eq!(graph_settings_in(&root)["search"], SECRET);
+        assert_eq!(pasteimg::app_cfg(&root), (SECRET.to_string(), true));
+        assert_eq!(plugins::enabled_ids(&root), vec!["leakedplugin".to_string()]);
+        assert!(set_app_bool_in(&root, "alwaysUpdateLinks", true).is_ok());
+    }
+
+    /// F-3 B: a graph bookmark keeps only graph option keys
+    #[test]
+    fn read250_bm_view_node_keeps_only_graph_option_keys() {
+        let item = serde_json::json!({"type": "graph",
+            "options": {"auths": {"token": SECRET}, "scale": 2, "search": "q", "repelStrength": 3, "showTags": true, "colorGroups": []},
+            "local": {"file": "B.md", "localJumps": 2, "secret": SECRET}});
+        let n = bm_view_node(&item, None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bm_emit(&[n], &[])).unwrap();
+        let g = &v["items"][0];
+        assert_eq!(g["options"], serde_json::json!({"scale": 2, "search": "q", "repelStrength": 3, "showTags": true, "colorGroups": []}));
+        assert_eq!(g["local"], serde_json::json!({"file": "B.md", "localJumps": 2}));
+        assert!(!v.to_string().contains(SECRET), "{v}");
+    }
+
+    /// arm the vaultfs seam: when `leaf` (an absolute path) has just passed the
+    /// leaf check, replace it with a symlink to `target` (once)
+    fn swap_at_check(leaf: PathBuf, target: PathBuf) {
+        let mut done = false;
+        vaultfs::set_hook(Some(Box::new(move |at| {
+            if at == "open_read:checked" && !done && fs::symlink_metadata(&leaf).is_ok_and(|m| m.is_file()) {
+                done = true;
+                fs::remove_file(&leaf).unwrap();
+                symlink(&target, &leaf).unwrap();
+            }
+        })));
+    }
+
+    /// F-46: read_note's core (read_capped_in) for every hostile leaf + the swap
+    #[test]
+    fn read250_read_note_refuses_hostile_leaves_and_the_swap() {
+        let (root, out) = vault("note");
+        fs::write(out.join("id_ed25519"), SECRET).unwrap();
+        fs::write(root.join("A.md"), "mine").unwrap();
+        assert_eq!(read_capped_in(&root, Path::new("A.md")).as_deref(), Some("mine"));
+        symlink(out.join("id_ed25519"), root.join("L.md")).unwrap();
+        symlink("/dev/zero", root.join("Z.md")).unwrap();
+        fifo(&root.join("F.md"));
+        fs::File::create(root.join("Big.md")).unwrap().set_len(index::MAX_NOTE_BYTES + 1).unwrap();
+        fs::write(out.join("n.md"), SECRET).unwrap();
+        symlink(&out, root.join("dirlink")).unwrap();
+        let r = root.clone();
+        let got = bounded("read_note", move || {
+            ["L.md", "Z.md", "F.md", "Big.md", "dirlink/n.md"].map(|n| read_capped_in(&r, Path::new(n)))
+        });
+        assert_eq!(got, [None, None, None, None, None]);
+        // swapped for a symlink between the check and the open
+        swap_at_check(root.join("A.md"), out.join("id_ed25519"));
+        let r = read_capped_in(&root, Path::new("A.md"));
+        vaultfs::set_hook(None);
+        assert_eq!(r, None, "the swapped note must not be read");
+    }
+
+    /// F-9: the image server, for every hostile leaf + the swap; the PDF worker
+    /// reads the inode that was checked, however the path changes while queued
+    #[test]
+    fn read250_image_server_and_pdf_worker_read_the_checked_fd() {
+        let (root, out) = vault("img");
+        let png = b"\x89PNG\r\n\x1a\nmine".to_vec();
+        fs::write(out.join("secret.png"), SECRET).unwrap();
+        fs::write(root.join("pic.png"), &png).unwrap();
+        symlink(out.join("secret.png"), root.join("l.png")).unwrap();
+        symlink("/dev/zero", root.join("z.png")).unwrap();
+        fifo(&root.join("f.png"));
+        fs::File::create(root.join("big.png")).unwrap().set_len(MAX_IMG_BYTES + 1).unwrap();
+        fs::write(out.join("n.png"), SECRET).unwrap();
+        symlink(&out, root.join("dl")).unwrap();
+        let r = root.clone();
+        let got = bounded("serve_image", move || ["l.png", "z.png", "f.png", "big.png", "dl/n.png"].map(|t| serve_image(&r, t).is_none()));
+        assert_eq!(got, [true; 5]);
+        assert_eq!(serve_image(&root, "pic.png").unwrap().1, png);
+        swap_at_check(root.join("pic.png"), out.join("secret.png"));
+        let s = serve_image(&root, "pic.png");
+        vaultfs::set_hook(None);
+        assert!(s.is_none(), "served the swapped leaf");
+        // PDF: open (= check) now, swap the path for a link to another PDF, then queue
+        fs::write(root.join("d.pdf"), pdf::tests::mini_pdf(2)).unwrap();
+        fs::write(out.join("other.pdf"), pdf::tests::mini_pdf(3)).unwrap();
+        let f = pdf_open_in(&root, "d.pdf").expect("a regular PDF opens");
+        fs::remove_file(root.join("d.pdf")).unwrap();
+        symlink(out.join("other.pdf"), root.join("d.pdf")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        pdf::queue_info_file(f, Box::new(move |i| tx.send(i.map(|i| i.pages)).unwrap()));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap(), Some(2), "the queued job read the checked inode");
+        assert!(pdf_open_in(&root, "d.pdf").is_none(), "the symlinked PDF itself is refused");
+    }
+
+    /// F-10: the index build and the watcher read through the fd primitive
+    #[test]
+    fn read250_index_build_and_watcher_never_read_a_swapped_note() {
+        let (root, out) = vault("ix");
+        fs::write(out.join("key"), SECRET).unwrap();
+        fs::write(root.join("n.md"), "old").unwrap();
+        fs::write(root.join("sub/m.md"), "m").unwrap();
+        swap_at_check(root.join("n.md"), out.join("key"));
+        let ix = Index::build(&root);
+        vaultfs::set_hook(None);
+        assert!(!ix.content("n").unwrap_or("").contains(SECRET), "the index read the swapped note");
+        assert_eq!(ix.content("sub/m"), Some("m"));
+        // the watcher: n.md changes on disk, then is swapped right at the read
+        fs::remove_file(root.join("n.md")).unwrap();
+        fs::write(root.join("n.md"), "old").unwrap();
+        let mut ix = Index::build(&root);
+        let before = watcher::snapshot(&root);
+        fs::write(root.join("n.md"), "changed, longer").unwrap();
+        let d = watcher::diff(&before, &watcher::snapshot(&root));
+        assert_eq!(d.modified, vec!["n".to_string()]);
+        swap_at_check(root.join("n.md"), out.join("key"));
+        watcher::reconcile(&root, &d, &mut ix);
+        vaultfs::set_hook(None);
+        assert_eq!(ix.content("n"), Some("old"), "the watcher read the swapped note");
+        // a FIFO note never hangs the build
+        fifo(&root.join("p.md"));
+        let r = root.clone();
+        let names = bounded("Index::build with a FIFO", move || Index::build(&r).names().to_vec());
+        assert!(!names.contains(&"p".to_string()));
+    }
+
+    /// F-47: plugin files are read from the checked fd (main.js / data.json /
+    /// styles.css swapped between plugin_file_in and the read is refused)
+    #[test]
+    fn read250_plugin_files_refuse_the_swap() {
+        let (root, out) = vault("plug");
+        let pd = root.join(".obsidian/plugins/p");
+        fs::create_dir_all(&pd).unwrap();
+        fs::write(out.join("evil.js"), SECRET).unwrap();
+        for f in ["main.js", "data.json", "styles.css", "manifest.json"] {
+            fs::write(pd.join(f), if f.ends_with("json") { "{\"id\":\"p\",\"name\":\"p\"}" } else { "x" }).unwrap();
+        }
+        for f in ["main.js", "data.json", "styles.css", "manifest.json"] {
+            assert!(plugins::plugin_read_in(&root, "p", f, 1 << 20).unwrap().is_some(), "{f}");
+            swap_at_check(pd.join(f), out.join("evil.js"));
+            let r = plugins::plugin_read_in(&root, "p", f, 1 << 20);
+            vaultfs::set_hook(None);
+            assert!(r.is_err(), "{f}: read the swapped file: {r:?}");
+            fs::remove_file(pd.join(f)).unwrap();
+            fs::write(pd.join(f), "{}").unwrap();
+        }
+        swap_at_check(pd.join("data.json"), out.join("evil.js"));
+        let r = plugins::read_data(&root, "p");
+        vaultfs::set_hook(None);
+        assert!(r.is_err() || r.as_ref().is_ok_and(|v| !v.to_string().contains(SECRET)), "{r:?}");
+    }
+
+    /// F-27: a symlinked / FIFO / oversized snippet or theme is not listed / not loaded
+    #[test]
+    fn read250_snippets_and_themes_refuse_hostile_leaves() {
+        let (root, out) = vault("css");
+        let sn = root.join(".obsidian/snippets");
+        fs::write(out.join("s.css"), format!("body{{color:red}} /* {SECRET} */")).unwrap();
+        fs::write(sn.join("ok.css"), "body{color:blue}").unwrap();
+        symlink(out.join("s.css"), sn.join("link.css")).unwrap();
+        symlink("/dev/zero", sn.join("zero.css")).unwrap();
+        fifo(&sn.join("fifo.css"));
+        fs::File::create(sn.join("big.css")).unwrap().set_len(vaultfs::CSS_MAX + 1).unwrap();
+        let r = root.clone();
+        let (listed, loads) = bounded("snippets", move || {
+            (themefs::list_snippets(&r), ["link", "zero", "fifo", "big"].map(|l| themefs::load_snippet(&r, l).is_err()))
+        });
+        assert_eq!(listed, vec!["big".to_string(), "ok".to_string()], "only regular files are listed");
+        assert_eq!(loads, [true; 4]);
+        assert!(themefs::load_snippet(&root, "ok").unwrap().0.contains("blue"));
+        // a theme whose theme.css is a symlink out of the vault
+        let td = root.join(".obsidian/themes/T");
+        fs::create_dir_all(&td).unwrap();
+        fs::write(td.join("manifest.json"), "{\"name\":\"T\"}").unwrap();
+        symlink(out.join("s.css"), td.join("theme.css")).unwrap();
+        let e = themefs::load_theme(&root, "T").unwrap_err();
+        assert!(!e.contains(SECRET), "{e}");
+        // a theme DIR that is a symlink is not a candidate
+        fs::create_dir_all(out.join("U")).unwrap();
+        fs::write(out.join("U/manifest.json"), "{\"name\":\"U\"}").unwrap();
+        fs::write(out.join("U/theme.css"), "body{}").unwrap();
+        symlink(out.join("U"), root.join(".obsidian/themes/U")).unwrap();
+        let s = themefs::themes_scan(&root);
+        assert!(!s.listed.contains(&"U".to_string()), "{:?}", s.listed);
+        assert!(themefs::load_theme(&root, "U").is_err());
+    }
+
+    /// THE GUARD (#250), like every_outbound_path_goes_through_the_choke_point:
+    /// outside vaultfs.rs, production code may not open, read or list a file by
+    /// PATH (fs::read / read_to_string / File::open / read_dir / OpenOptions
+    /// .read(true)), because a path re-resolves every symlink at the moment of
+    /// use. Vault reads go through vaultfs (Vault::open_read / read / read_fd,
+    /// walk_tree, p_list). The only exceptions are paths that are NOT in a vault,
+    /// each listed with its reason; a stale entry fails too.
+    #[test]
+    fn vault_reads_go_through_vaultfs() {
+        // production code only: drop every top-level `#[cfg(test)] mod x { … }` block
+        fn code(s: &str) -> Vec<(usize, String)> {
+            let (mut out, mut skip, mut prev_test) = (Vec::new(), false, false);
+            for (i, l) in s.lines().enumerate() {
+                let bare = l.split("//").next().unwrap_or("").trim_end();
+                if skip {
+                    if l == "}" {
+                        skip = false;
+                    }
+                } else if prev_test && (bare.starts_with("mod ") || bare.starts_with("pub mod ") || bare.starts_with("pub(crate) mod ")) {
+                    skip = !bare.ends_with(';');
+                } else {
+                    out.push((i + 1, l.to_string()));
+                }
+                prev_test = l.trim() == "#[cfg(test)]";
+            }
+            out
+        }
+        let reads = ["fs::read(", "read_to_string(", "File::open(", "read_dir("];
+        let allowed: [(&str, &str, &str); 18] = [
+            ("audiorec.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG"),
+            ("main.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG"),
+            ("dropticket.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG (#280 drop ticket)"),
+            ("cfgstore.rs", ".open(lock_file(lock_dir, cfg))", "~/.opensidian.json lock file (user config dir)"),
+            ("cfgstore.rs", "fs::read_to_string(cfg)", "~/.opensidian.json (user config)"),
+            ("cfgstore.rs", "File::open(dir).and_then(|d| d.sync_all())", "fsync of the user config dir"),
+            ("cfgstore.rs", "fs::read_to_string(&t)", "~/.opensidian.json (user config)"),
+            ("vaultlock.rs", "fs::read_to_string(lock_file(dir, canon))", "vault lock files in the user config dir"),
+            ("desk_proc.rs", "File::open(format!(\"/proc/self/fd/", "own process fd via /proc"),
+            ("spawn.rs", "read_to_string(format!(\"/proc/{pid}/stat\"))", "/proc process status"),
+            ("devui.rs", "std::fs::read(&f)", "DEV-ONLY UI hot reload from the source tree, never in a release build"),
+            ("devui.rs", "std::fs::read_dir(&d)", "DEV-ONLY UI hot reload from the source tree"),
+            ("i18n.rs", "std::fs::read_to_string(&p)", "UI translation override dir, not a vault"),
+            ("main.rs", "std::fs::read_to_string(&path).ok()", "smoke_css: an operator-chosen absolute path from an env var (test rig)"),
+            ("main.rs", "fs::read_dir(path)", "the vault picker lists folders BEFORE a vault exists (S4 picker_allows)"),
+            ("main.rs", "std::fs::read_dir(&dir)", "vb_probe: test-rig probe of an env-named dir"),
+            ("migrate.rs", "fs::read_dir(from)", "per-user config/data dir migration (home), not a vault"),
+            ("plugin_store.rs", "s.read_to_string(&mut e)", "a child process's stderr pipe"),
+        ];
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let (mut files, mut bad, mut used) = (0, Vec::new(), vec![0usize; allowed.len()]);
+        for ent in fs::read_dir(dir).unwrap().flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name == "vaultfs.rs" {
+                continue;
+            }
+            files += 1;
+            for (n, l) in code(&fs::read_to_string(ent.path()).unwrap()) {
+                let t = l.trim_start();
+                if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") || l.contains("vaultfs::") {
+                    continue;
+                }
+                let hit = reads.iter().any(|r| l.contains(r)) || (l.contains("OpenOptions::new()") && l.contains(".read(true)"));
+                if !hit {
+                    continue;
+                }
+                match allowed.iter().position(|(f, needle, _)| *f == name && l.contains(needle)) {
+                    Some(i) => used[i] += 1,
+                    None => bad.push(format!("{name}:{n}: {}", l.trim())),
+                }
+            }
+        }
+        assert!(files > 30, "scanned {files} files");
+        assert!(bad.is_empty(), "path-based reads outside vaultfs (route them through vaultfs::Vault::read / open_read, or allow-list a NON-vault path with a reason):\n{}", bad.join("\n"));
+        for (i, (f, needle, why)) in allowed.iter().enumerate() {
+            assert!(used[i] > 0, "stale allow-list entry {f}: {needle:?} ({why})");
+        }
     }
 }
