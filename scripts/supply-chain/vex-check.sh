@@ -9,6 +9,9 @@
 #     src-tauri/.cargo/audit.toml [advisories].ignore are not the same set (or have duplicates).
 # Non-RustSec VEX entries (GHSA/CVE for npm/deb, consumed by osv-scanner) are checked for
 # shape + expiry only; cargo tools never see them.
+#   - an "exploitable" entry (= VEX status affected) lacks opensidian:vex-status=affected or an
+#     opensidian:action_statement, or an operator-decided affected id (VEX_DECIDED_AFFECTED) is
+#     missing, not exploitable, or its action_statement lacks the decided terms.
 # usage: vex-check.sh [repo-root]      (default: this checkout; tests pass a scratch copy)
 # env:   VEX_TODAY=YYYY-MM-DD overrides today (tests only)
 set -euo pipefail
@@ -59,6 +62,37 @@ jq -r --arg today "$today" '.vulnerabilities[] | .id as $i
   | .properties[]? | select(.name=="opensidian:expires") | select(.value < $today)
   | "entry \($i): expired on \(.value) (today \($today)); fix or re-triage"' "$vex" >"$t/exp"
 while IFS= read -r l; do err "$l"; done <"$t/exp"
+
+
+# affected (operator decisions): CycloneDX 1.6 has no "affected" analysis.state; "exploitable" is
+# its encoding of VEX status affected. Every exploitable entry must say so (opensidian:vex-status =
+# affected) and carry an opensidian:action_statement (what we do about it); vex-osv-config.sh never
+# ignores it, so it stays a visible finding. Decided entries (id + required action_statement
+# substrings) must stay affected: re-labelling one not_affected/resolved is a red build.
+#   UBUNTU-CVE-2024-43091: operator 2026-11-24 "dont handroll webkitgtk yourself, note it to vex"
+VEX_DECIDED_AFFECTED=${VEX_DECIDED_AFFECTED:-"UBUNTU-CVE-2024-43091|2026-11-24|2.54.0|no self-built WebKitGTK"}
+jq -r '.vulnerabilities[] | . as $v
+  | ([.properties[]? | select(.name=="opensidian:vex-status") | .value] | first // "") as $s
+  | ([.properties[]? | select(.name=="opensidian:action_statement") | .value] | first // "") as $a
+  | if .analysis.state == "exploitable" then
+      (if $s != "affected" then "entry \(.id): state exploitable needs opensidian:vex-status = affected" else empty end),
+      (if ($a | length) < 20 then "entry \(.id): state exploitable needs an opensidian:action_statement" else empty end)
+    elif $s == "affected" then "entry \(.id): opensidian:vex-status affected but analysis.state is \(.analysis.state) (must be exploitable)"
+    else empty end' "$vex" >"$t/aff"
+while IFS= read -r l; do err "$l"; done <"$t/aff"
+IFS=';' read -r -a decided <<<"$VEX_DECIDED_AFFECTED"
+for d in "${decided[@]}"; do
+  [ -n "$d" ] || continue
+  IFS='|' read -r -a p <<<"$d"; id=${p[0]}
+  n=$(jq --arg i "$id" '[.vulnerabilities[] | select(.id==$i)] | length' "$vex")
+  [ "$n" -eq 1 ] || { err "decided-affected $id: want exactly 1 VEX entry, found $n"; continue; }
+  st=$(jq -r --arg i "$id" '.vulnerabilities[] | select(.id==$i) | .analysis.state' "$vex")
+  [ "$st" = "exploitable" ] || err "decided-affected $id: analysis.state is '$st', operator decision says affected (exploitable)"
+  a=$(jq -r --arg i "$id" '.vulnerabilities[] | select(.id==$i) | [.properties[]? | select(.name=="opensidian:action_statement") | .value] | first // ""' "$vex")
+  for s in "${p[@]:1}"; do
+    case "$a" in *"$s"*) ;; *) err "decided-affected $id: action_statement lacks '$s'" ;; esac
+  done
+done
 
 # id sets
 # "resolved" = fixed in what we ship (glib-fix: path-patched crate, invisible to cargo audit/deny), so it

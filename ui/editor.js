@@ -85,6 +85,10 @@ const Ed = {
     const ind = s.match(/^[ \t]*/)[0], t = s.slice(ind.length);
     const h = /^(#{1,6}) /.exec(t);
     if (h && !ind) {
+      // #319: a top-level heading LINE carries stock 1.13.7's line classes (DOM: "cm-line HyperMD-header
+      // HyperMD-header-N"), so theme rules keyed on them (Minimal .cm-s-obsidian .cm-line.HyperMD-header) reach it.
+      // d > 0 (a heading inside a quote): `row` is the quote box, not the line -> no line class.
+      if (d === 0) row.classList.add("HyperMD-header", "HyperMD-header-" + h[1].length);
       const box = Ed.el("span", "h h" + h[1].length);
       const m0 = Ed.mk(h[1]), m1 = Ed.mk(" ");
       box.appendChild(m0);
@@ -122,14 +126,29 @@ const Ed = {
     const lm = /^([-*+]|\d+\.) /.exec(t);
     if (lm) {
       const rest = t.slice(lm[0].length);
-      if (ind) row.appendChild(Ed.t(ind));
+      // #272: the item is TWO boxes, span.lpre (indent + marker [+ checkbox + "[ ] "]) and
+      // span.lbody (the text). style.css lays a row holding both side by side (flex), so a
+      // wrapped continuation line starts under the item TEXT (hanging indent), as stock does;
+      // without the split every wrapped line restarted at the row's left edge. Wrapping
+      // changes no textContent (token ranges, caret mapping and the census are per character).
+      const pre = Ed.el("span", "lpre");
+      if (ind) pre.appendChild(Ed.t(ind));
       // the marker glyphs and their trailing space are SEPARATE hidden spans:
       // R15.10 gives .lim a fixed marker advance as a box (bullet drawn
       // inside it), and the space must not sit in that box or a wide "10."
       // would push the text right by its width. textContent is unchanged.
       const li0 = Ed.mk(lm[1], "lim"), li1 = Ed.mk(" ", "lisp");
-      row.appendChild(li0);
-      row.appendChild(li1);
+      pre.appendChild(li0);
+      pre.appendChild(li1);
+      row.appendChild(pre);
+      // the body box; a body that renders no text (an embed-only item) stays unwrapped: a
+      // text-less span would become a CM6 widget leaf (lpParse), so that row keeps today's flow
+      const body = s => {
+        const b = Ed.el("span", "lbody");
+        Ed.inline(g, b, s);
+        if (b.textContent.length) row.appendChild(b);
+        else while (b.firstChild) row.appendChild(b.firstChild);
+      };
       row.classList.add("li");
       if (/\d/.test(lm[1])) row.classList.add("ord");
       // deep-tasks: any one status character is a task (Obsidian Tasks "[/]" "[-]" ...); only a BULLET
@@ -144,9 +163,9 @@ const Ed = {
         cb.type = "checkbox"; cb.checked = task[1] !== " ";
         cb.contentEditable = "false";
         Ed.taskBox(cb);
-        row.appendChild(cb);
+        pre.appendChild(cb);
         const tm = Ed.mk("[" + task[1] + "] ", "task");
-        row.appendChild(tm);
+        pre.appendChild(tm);
         // R17.6 lists "- [ ] " as ONE token: the bullet marker and the
         // checkbox are the same widget, so they reveal together.
         Ed.tok([li0, li1, cb, tm], [li0, li1, tm], "task");
@@ -158,12 +177,19 @@ const Ed = {
         // ln.from + t.e, side 1). Without it the caret at the marker end (#46 keeps the box
         // there) only maps into the hidden "[ ] " marker, which has no box, and WebKit paints
         // it at the row start, LEFT of the checkbox.
-        const body = rest.slice(4);
-        if (body) { const tt = Ed.el("span", "tkt"); Ed.inline(g, tt, body); row.appendChild(tt); }
+        const tb = rest.slice(4);
+        if (tb) {
+          // #272: the strike span IS the body box (one element, not two marks over the
+          // same range, whose nesting CM6 would be free to pick); text-less: plain tkt
+          const tt = Ed.el("span", "tkt");
+          Ed.inline(g, tt, tb);
+          if (tt.textContent.length) tt.classList.add("lbody");
+          row.appendChild(tt);
+        }
         else row.appendChild(Ed.el("span", "tcar"));
       } else {
         Ed.tok([li0, li1], [li0, li1], "li");
-        Ed.inline(g, row, rest);
+        body(rest);
       }
       return;
     }
@@ -274,7 +300,9 @@ const Ed = {
           eadd(Ed.mk("![["), true);
           eadd(Ed.mk(raw, "img"), true);                          // the whole inner text, folded
           eadd(Ed.mk("]]"), true);
-          eadd(Ed.imgEl(target, bar >= 0 ? label : target), false);  // alias is the alt (image_html)
+          // CodeAnt #262: image_html decides remote by url_scheme FIRST, so ![[https://h/x.svg]] is the
+          // remote banner in reading view; pass the same flag, or live preview looked it up locally
+          eadd(Ed.imgEl(target, bar >= 0 ? label : target, /^https?:/i.test(target)), false);  // alias is the alt (image_html)
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
@@ -466,7 +494,7 @@ const Ed = {
      R29.7: reading view (Rust/pulldown-cmark) and live preview are separate
      engines, so every decision below mirrors ONE named function in
      src-tauri/src/main.rs and nothing else:
-       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 5 extensions)
+       Ed.isImg     <- is_img_target        (index::IMG_EXTS, 6 extensions)
        Ed.pctDec    <- pct_decode           (strict: %XX or nothing)
        Ed.pctEnc    <- pct_encode           (unreserved + '/' survive)
        Ed.imgRel    <- index::resolve       (exact, else basename suffix)
@@ -476,7 +504,7 @@ const Ed = {
      non-symlinked vault members, so a traversal target resolves to nothing
      and gets no URL at all (the byte server re-checks containment anyway).
      An unresolved target is R29.4's banner in both engines. */
-  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp"],
+  IMG_EXTS: ["png", "jpg", "jpeg", "gif", "webp", "svg"],
   IMG_SCHEME: "opensidian-img",
   isImg(t) {                                   // is this target an IMAGE embed, not a note embed?
     const i = t.lastIndexOf(".");
@@ -579,6 +607,12 @@ const Ed = {
       s.dataset.sec = "remoteMedia";
       s.dataset.why = on ? "(Settings › Security › Load external resources: only https:// addresses load)"
                          : "(Settings › Security › Load external resources is off)";
+      s.contentEditable = "false";
+      return s;
+    }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) {   // image_html: any other url_scheme -> "remote image" could not be found
+      const s = Ed.el("span", "imgmiss");
+      s.dataset.miss = "remote image";
       s.contentEditable = "false";
       return s;
     }
@@ -983,7 +1017,8 @@ const Ed = {
     let c = 0, n;
     while ((n = w.nextNode())) {
       const m = n.parentElement.closest(".mk");
-      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") });
+      // #278: source mode (.lp.src) reveals every marker without the .rv class (Ed.lpMk)
+      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") && !(m.closest && m.closest(".lp.src")) });
       c += n.nodeValue.length;
     }
     return out;
@@ -1023,15 +1058,100 @@ const Ed = {
     const m = /^(\s*(?:> )*(?:[-*+] \[[ xX]\] |[-*+] |\d+\. ))/.exec(t) || /^(\s*(?:> )+)/.exec(t);
     return m ? m[0].length : 0;
   },
-  // one RAW column left/right, crossing the line edge (R17.5 M69-M71). Pure:
-  // covered by Ed.selfTest. null = the document edge, leave it to the browser.
+  /* #274: the next USER-PERCEIVED character boundary in line text t from column c
+     (a UTF-16 index), going back or forward. One step crosses a whole grapheme
+     cluster — a ZWJ emoji sequence (🤦‍♂️ is 5 code units), a flag (two regional
+     indicators), a skin-tone modifier, a base + combining marks — as stock 1.13.7
+     does. Intl.Segmenter (UAX #29) when the engine has it; otherwise one CODE
+     POINT, never half a surrogate pair. seg === null forces that fallback (selfTest).
+     Returns c itself only at the text edge. Pure. */
+  _gseg: undefined,
+  gseg() {
+    if (Ed._gseg === undefined) {
+      try { Ed._gseg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null; }
+      catch (_) { Ed._gseg = null; }
+    }
+    return Ed._gseg;
+  },
+  cluster(t, c, back, seg) {
+    t = String(t || "");
+    const n = t.length;
+    c = Math.max(0, Math.min(c, n));
+    if (back ? c === 0 : c === n) return c;
+    const S = seg === undefined ? Ed.gseg() : seg;
+    if (S) {
+      try {
+        // #274 review: ask for the LOW half when the index is the high half of a pair (same code
+        // point, so the same segment by UAX #29). JSC's containing(i) for a high surrogate i
+        // reports the PREVIOUS cluster's start (box census [edt:fail3:inside:2:7]): a caret just
+        // after the high half then stepped back past the cluster and Backspace split it.
+        let q = back ? c - 1 : c;
+        const u0 = t.charCodeAt(q), u1 = t.charCodeAt(q + 1);
+        if (u0 >= 0xd800 && u0 <= 0xdbff && u1 >= 0xdc00 && u1 <= 0xdfff) q++;
+        const cur = S.segment(t).containing(q);
+        if (cur) {
+          const k = back ? cur.index : cur.index + cur.segment.length;
+          if (back ? k < c : k > c) return k;
+        }
+      } catch (_) { /* fall through to code points */ }
+    }
+    const hi = u => u >= 0xd800 && u <= 0xdbff, lo = u => u >= 0xdc00 && u <= 0xdfff;
+    if (back) return c >= 2 && lo(t.charCodeAt(c - 1)) && hi(t.charCodeAt(c - 2)) ? c - 2 : c - 1;
+    return c + 1 < n && hi(t.charCodeAt(c)) && lo(t.charCodeAt(c + 1)) ? c + 2 : c + 1;
+  },
+  /* #274: where ONE Backspace at column c stops. Stock 1.13.7 (black-box, goal
+     fix-274 evidence logs stock-1/4/5): the cluster goes whole (🤦‍♂️, family, flag,
+     ❤️, 🏳️‍🌈, 😀) UNLESS it carries a "stop" extender after its first code point — a
+     combining/enclosing mark (U+0301, keycap U+20E3) or a skin-tone modifier
+     (U+1F3FB..1F3FF); then Backspace removes from the LAST such extender to c
+     (é -> e, 👍🏽 -> 👍, 🤦🏽‍♂️ -> 🤦, 1️⃣ -> 1️). Variation selectors (U+FE00..FE0F)
+     and the joiner are not stops. Delete / arrows / Shift+arrows still take the
+     whole cluster (Ed.cluster). Never splits a surrogate pair. Pure. */
+  _mark: undefined,
+  isStop(u) {
+    if (u >= 0x1f3fb && u <= 0x1f3ff) return true;            // skin-tone modifier
+    if (u >= 0xfe00 && u <= 0xfe0f) return false;             // variation selector: never a stop
+    if (Ed._mark === undefined) {
+      try { Ed._mark = new RegExp("^\\p{M}$", "u"); } catch (_) { Ed._mark = null; }
+    }
+    if (Ed._mark) return Ed._mark.test(String.fromCodePoint(u));
+    return (u >= 0x300 && u <= 0x36f) || (u >= 0x1ab0 && u <= 0x1aff) || (u >= 0x1dc0 && u <= 0x1dff) ||
+           (u >= 0x20d0 && u <= 0x20ff) || (u >= 0xfe20 && u <= 0xfe2f);   // engines without \p{}: the common mark blocks
+  },
+  backDel(t, c, seg) {
+    t = String(t || "");
+    c = Math.max(0, Math.min(c, t.length));
+    const k = Ed.cluster(t, c, true, seg);
+    if (k >= c) return k;
+    let stop = -1;
+    for (let i = k, first = true; i < c; first = false) {
+      const u = t.codePointAt(i), w = u > 0xffff ? 2 : 1;
+      if (!first && Ed.isStop(u)) stop = i;
+      i += w;
+    }
+    return stop > k ? stop : k;
+  },
+  /* #274 review (CodeAnt 4654882322): a caret the editor API placed INSIDE a
+     cluster (setCursor accepts any UTF-16 ch). Returns [s, e] of the cluster that
+     strictly contains c (s < c < e), else null. Backspace and Delete then remove
+     that whole cluster instead of a part of it. Same segmenter / code-point
+     fallback as Ed.cluster, so the fallback only reports a split surrogate pair. Pure. */
+  inside(t, c, seg) {
+    t = String(t || "");
+    if (c <= 0 || c >= t.length) return null;
+    const s = Ed.cluster(t, c, true, seg), e = Ed.cluster(t, s, false, seg);
+    return s < c && e > c ? [s, e] : null;
+  },
+  // one CHARACTER left/right (a grapheme cluster, #274), crossing the line edge
+  // (R17.5 M69-M71). Pure: covered by Ed.selfTest. null = the document edge,
+  // leave it to the browser.
   step(g, l, c, back) {
-    const L = Ed.lines(g);
+    const L = Ed.lines(g), t = L[l] || "";
     if (back) {
-      if (c > 0) return { l, c: c - 1 };
+      if (c > 0) return { l, c: Ed.cluster(t, c, true) };
       return l > 0 ? { l: l - 1, c: L[l - 1].length } : null;
     }
-    if (c < (L[l] || "").length) return { l, c: c + 1 };
+    if (c < t.length) return { l, c: Ed.cluster(t, c, false) };
     return l < L.length - 1 ? { l: l + 1, c: 0 } : null;
   },
   /* R17.6 / R17.7 REVEAL — PER TOKEN, not per row.
@@ -1218,9 +1338,11 @@ const Ed = {
   del(g, s, forward, word) {                     // Backspace / Delete
     if (!s.empty) return Ed.replace(g, s, "", "del");
     const L = Ed.lines(g), { l, c } = s.a;
+    const ins = word ? null : Ed.inside(L[l], c);       // #274 review: never leave part of a cluster
+    if (ins) return Ed.replace(g, { a: { l, c: ins[0] }, b: { l, c: ins[1] }, empty: false }, "", "del");
     if (!forward) {
       if (c > 0) {
-        let k = c - 1;
+        let k = Ed.backDel(L[l], c);                      // #274: a whole character, not one code unit
         if (word) { k = c; while (k > 0 && /\s/.test(L[l][k - 1])) k--; while (k > 0 && !/\s/.test(L[l][k - 1])) k--; }
         return Ed.replace(g, { a: { l, c: k }, b: { l, c }, empty: false }, "", "del");
       }
@@ -1228,7 +1350,7 @@ const Ed = {
       return Ed.replace(g, { a: { l: l - 1, c: L[l - 1].length }, b: { l, c: 0 }, empty: false }, "", "del");
     }
     if (c < L[l].length) {
-      let k = c + 1;
+      let k = Ed.cluster(L[l], c, false);                 // #274
       if (word) { k = c; while (k < L[l].length && /\s/.test(L[l][k])) k++; while (k < L[l].length && !/\s/.test(L[l][k])) k++; }
       return Ed.replace(g, { a: { l, c }, b: { l, c: k }, empty: false }, "", "del");
     }
@@ -1569,6 +1691,9 @@ const Ed = {
     // paints at the row start = LEFT of the box) whose left edge is >= the box's right edge.
     const c75 = Ed.caret75();
     if (c75) fail("dom75:" + c75);
+    // theme DOM classes on a live CM6 view (#333 active line ...): "" = every case holds
+    const thd = Ed.themeDom();
+    if (thd) fail("thdom:" + thd);
     // R17.7 link destinations: balanced parens survive whole (CommonMark), a
     // backslash escape stays literal, whitespace is still not a link, an empty
     // destination still is, and a bare URL leaves the enclosing prose's ')' out.
@@ -1590,6 +1715,53 @@ const Ed = {
     for (const [l, c, back, want] of sw) {
       const n = Ed.step(sg, l, c, back);
       if ((n ? n.l + "." + n.c : "-") !== want) fail("step:" + l + "." + c + (back ? "<" : ">"));
+    }
+    // #274: a step crosses a whole grapheme cluster. [text, col, back, want, seg]:
+    // seg null = the code-point fallback (no Intl.Segmenter), which never splits a
+    // surrogate pair; the cluster rows run only where the engine has a segmenter.
+    const FP = "\u{1F926}‍♂️", FAM = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    const gc = [["a\u{1F600}b", 3, true, 1, null], ["a\u{1F600}b", 1, false, 3, null],
+                ["a\uD83Db", 2, true, 1, null], ["a\uDE00b", 1, false, 2, null],          // lone surrogates: one unit
+                ["a" + FP + "b", 6, true, 5, null], ["ab", 0, true, 0, null], ["ab", 2, false, 2, null], ["", 0, false, 0, null]];
+    if (Ed.gseg()) gc.push(
+      ["a" + FP + "b", 6, true, 1], ["a" + FP + "b", 1, false, 6], ["a" + FP + "b", 3, true, 1], ["a" + FP + "b", 3, false, 6],
+      ["x" + FAM, 9, true, 1], ["x" + FAM, 1, false, 9],
+      ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, true, 4], ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, false, 4],
+      ["\u{1F44D}\u{1F3FD}", 4, true, 0], ["éx", 0, false, 2], ["éx", 2, true, 0],
+      ["ab", 0, true, 0], ["ab", 2, false, 2], ["ab", 1, false, 2],
+      // #274 review: c - 1 is the HIGH half of a pair (a caret inside it): still that cluster's edge
+      ["a\u{1F600}b", 2, true, 1], ["a" + FP + "b", 2, true, 1], ["x" + FAM, 8, true, 1]);
+    for (const [t, c, back, want, seg] of gc)
+      if (Ed.cluster(t, c, back, seg) !== want) fail("cluster:" + c + (back ? "<" : ">") + (seg === null ? "cp" : "") + ":" + t.length);
+    // #274 Backspace stop [text, col, want, seg] (stock 1.13.7 oracle): a cluster goes whole unless it
+    // carries a mark / skin-tone modifier, then from the last one; a surrogate pair whole on any engine
+    const bd = [["a\u{1F600}b", 3, 1, null], ["a" + FP + "b", 6, 5, null], ["ab", 0, 0, null], ["", 0, 0, null], ["a\uDE00", 2, 1, null]];
+    if (Ed.gseg()) bd.push(["a" + FP + "b", 6, 1], ["x" + FAM, 9, 1], ["a\u{1F1E9}\u{1F1EA}b", 5, 1],
+      ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 8, 4], ["a\u{1F44D}\u{1F3FD}b", 5, 3], ["a\u{1F44D}\u{1F3FD}b", 3, 1],
+      ["a\u{1F600}b", 3, 1], ["ab", 1, 0],
+      ["a\u2764\uFE0Fb", 3, 1], ["a\u{1F926}\u{1F3FD}\u200D\u2642\uFE0Fb", 8, 3], ["ae\u0301b", 3, 2],
+      ["a1\uFE0F\u20E3b", 4, 3], ["a1\uFE0Fb", 3, 1], ["a\u{1F3F3}\uFE0F\u200D\u{1F308}b", 7, 1], ["ae\u0301\u0323b", 4, 3]);
+    bd.push(["ae\u0301b", 3, 2, null], ["a\u{1F44D}\u{1F3FD}b", 5, 3, null]);   // fallback: one code point
+    for (const [u, want] of [[0x1F3FB, true], [0x1F3FF, true], [0x0301, true], [0x20E3, true], [0xFE0F, false],
+                             [0xFE00, false], [0x200D, false], [0x41, false], [0x1F44D, false]])
+      if (Ed.isStop(u) !== want) fail("isStop:" + u.toString(16));
+    // #274 review: Ed.inside [text, col, want "s,e" | "-", seg] — only a caret strictly inside a cluster
+    const ia = [["a\u{1F600}b", 2, "1,3", null], ["a\u{1F600}b", 1, "-", null], ["a\u{1F600}b", 3, "-", null],
+                ["a\u{1F600}b", 0, "-", null], ["a\u{1F600}b", 4, "-", null], ["", 0, "-", null], ["ab", 1, "-", null]];
+    if (Ed.gseg()) ia.push(["a" + FP + "b", 3, "1,6"], ["a" + FP + "b", 2, "1,6"], ["a" + FP + "b", 5, "1,6"],
+      ["a" + FP + "b", 1, "-"], ["a" + FP + "b", 6, "-"], ["x" + FAM, 4, "1,9"], ["aéb", 2, "1,3"], ["ab", 1, "-"]);
+    for (const [t, c, want, seg] of ia) {
+      const r = Ed.inside(t, c, seg);
+      if ((r ? r.join(",") : "-") !== want) fail("inside:" + c + (seg === null ? "cp" : "") + ":" + t.length);
+    }
+    for (const [t, c, want, seg] of bd)
+      if (Ed.backDel(t, c, seg) !== want) fail("backDel:" + c + (seg === null ? "cp" : "") + ":" + t.length);
+    const eg2 = { view: { lines: ["a" + FP, "b"] } };
+    const sw2 = Ed.gseg() ? [[1, 0, true, "0.6"], [0, 6, true, "0.1"], [0, 1, false, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]]
+                          : [[1, 0, true, "0.6"], [0, 6, false, "1.0"], [0, 0, true, "-"], [1, 1, false, "-"]];
+    for (const [l, c, back, want] of sw2) {
+      const n = Ed.step(eg2, l, c, back);
+      if ((n ? n.l + "." + n.c : "-") !== want) fail("step274:" + l + "." + c + (back ? "<" : ">"));
     }
     // R17.1 Enter / Shift+Enter, asserted on the MODEL (no DOM, no view): each
     // case is [before, caret l.c, op, after, caret l.c] straight off the MUST
@@ -1673,6 +1845,26 @@ const Ed = {
         ["1. a", 0, 4, "ctrl-l", "1. [ ] a", 0, 8],                                      // M51 ordered marker kept
         ["- [/] doing", 0, 11, "ctrl-l", "- [ ] doing", 0, 11],                          // #153 custom status resets
         ["- [>] a", 0, 7, "ctrl-l", "- [ ] a", 0, 7],                                    // #153
+        // #274: Backspace / Delete remove a whole character, never one code unit of it
+        ...(Ed.gseg() ? [
+          ["a\u{1F926}‍♂️b", 0, 6, "bs", "ab", 0, 1],                     // ZWJ + VS16, 5 units
+          ["a\u{1F926}‍♂️b", 0, 1, "del", "ab", 0, 1],
+          ["\u{1F1E9}\u{1F1EA}\u{1F1EB}\u{1F1F7}", 0, 8, "bs", "\u{1F1E9}\u{1F1EA}", 0, 4], // one flag of two
+          ["\u{1F44D}\u{1F3FD}!", 0, 0, "del", "!", 0, 0],                               // skin tone
+          ["a\u{1F44D}\u{1F3FD}b", 0, 5, "bs", "a\u{1F44D}b", 0, 3],                     // Backspace: only the modifier (stock)
+        ] : []),
+        ["a\u{1F600}b", 0, 3, "bs", "ab", 0, 1],                                         // a surrogate pair, any engine
+        ["a\u{1F600}b", 0, 1, "del", "ab", 0, 1],
+        ["a\n\u{1F600}", 1, 0, "bs", "a\u{1F600}", 0, 1],                                // line join unchanged
+        // #274 review (CodeAnt 4654882322): a caret INSIDE a cluster (editor API) removes the whole cluster
+        ["a\u{1F600}b", 0, 2, "bs", "ab", 0, 1],                                         // inside a surrogate pair, any engine
+        ["a\u{1F600}b", 0, 2, "del", "ab", 0, 1],
+        ...(Ed.gseg() ? [
+          ["a\u{1F926}‍♂️b", 0, 3, "bs", "ab", 0, 1],                     // inside the ZWJ sequence
+          ["a\u{1F926}‍♂️b", 0, 3, "del", "ab", 0, 1],
+          ["a\u{1F926}‍♂️b", 0, 5, "bs", "ab", 0, 1],                     // before the VS16
+          ["x\u{1F468}‍\u{1F469}‍\u{1F467}y", 0, 4, "del", "xy", 0, 1],     // family
+        ] : []),
       ];
       for (const [src, l, c, op, want, wl, wc] of kc) {
         const eg = { view: { lines: src.split("\n") }, editor: {} };
@@ -1752,6 +1944,56 @@ const Ed = {
       cm.destroy(); w.remove();
       if (ae && ae !== document.body && ae.isConnected && ae.focus) ae.focus(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     }
+  },
+  // theme DOM selfTest case: a throwaway, invisible live-preview CM6 view; reads back the line classes stock 1.13.7's
+  // DOM carries and theme selectors key on. "" = all hold, else a short token-safe reason.
+  //   #333 the caret line, and ONLY it, is .cm-line.cm-active (stock: "cm-line cm-active"); it follows the caret
+  //   #319 the editor root is .cm-s-obsidian; a top-level "# " line, and only it, is .HyperMD-header + .HyperMD-header-N
+  //   #324 a live-preview callout widget's p/ul/ol/... carry --p-spacing block margins (a list item's p does not)
+  themeDom() {
+    if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
+    const w = Ed.el("div", "lp");
+    w.style.cssText = "position:fixed;left:0;top:0;width:480px;opacity:0;pointer-events:none;z-index:-1";
+    const v = { lp: w }, g = { view: v, lp: w };
+    const doc = "alpha\nbeta\n# Head\ngamma";
+    const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc, extensions: [Ed.lpExt(v, () => g)] }) });
+    w.appendChild(cm.dom);
+    document.body.appendChild(w);
+    const lines = () => [...cm.contentDOM.querySelectorAll(":scope > .cm-line")];
+    const act = () => lines().map((e, i) => e.classList.contains("cm-active") ? i : -1).filter(i => i >= 0).join(".") || "none";
+    try {
+      if (lines().length !== 4) return "rows" + lines().length;
+      // #324: a live-preview callout widget (stock DOM div.cm-embed-block.markdown-rendered.cm-callout) spaces its
+      // blocks by --p-spacing like the reading view; a list item's p, a plain LP row and the widget root stay 0
+      const co = Ed.el("div", "cm-embed-block markdown-rendered cm-callout"), pr = Ed.el("div", "");
+      co.innerHTML = '<div class="callout" data-callout="note"><div class="callout-title"><div class="callout-title-inner">N</div></div>' +
+        '<div class="callout-content"><p>a</p><p>b</p><ul><li><p>c</p></li></ul></div></div>';
+      pr.style.marginTop = "var(--p-spacing)";
+      w.appendChild(co); w.appendChild(pr);
+      const mt = e => getComputedStyle(e).marginTop, mb = e => getComputedStyle(e).marginBottom;
+      const ps = mt(pr), cp = co.querySelectorAll("p");
+      if (!ps || ps === "0px") return "cosp:" + ps;
+      if (mt(cp[0]) !== ps || mb(cp[1]) !== ps) return "cop:" + mt(cp[0]) + "-" + ps;
+      if (mt(co.querySelector("ul")) !== ps) return "coul";
+      if (mt(cp[2]) !== "0px") return "colip";                       // negatives
+      if (mt(co) !== "0px" || mt(lines()[0]) !== "0px") return "coneg";
+      // #319: the editor root is .cm-s-obsidian; ONLY the heading line is .HyperMD-header + .HyperMD-header-1
+      if (!cm.dom.classList.contains(Ed.EDITOR_ROOT)) return "root";
+      const hd = lines().map((e, i) => e.classList.contains("HyperMD-header") ? i + ":" + [...e.classList].filter(c => /^HyperMD-header-\d$/.test(c)).join("") : "").filter(Boolean).join(".");
+      if (hd !== "2:HyperMD-header-1") return "hdr:" + (hd || "none");
+      for (const [s, n] of [["###### six", "6"]]) if (!Ed.row(g, s, 0).classList.contains("HyperMD-header-" + n)) return "hdr" + n;
+      for (const s of ["> # quoted", "  # indented", "#nospace", "####### seven", "plain"])   // negatives: not a heading LINE
+        if (/HyperMD-header/.test(Ed.row(g, s, 0).className)) return "hdrneg";
+      cm.dispatch({ selection: { anchor: 8 } });                    // "be|ta" -> line 1
+      if (act() !== "1") return "act1:" + act();
+      if (!lines()[1].classList.contains("cur")) return "cur1";
+      cm.dispatch({ selection: { anchor: doc.length } });           // end of "gamma" -> line 3; line 1 drops it
+      if (act() !== "3") return "act3:" + act();
+      cm.dispatch({ selection: { anchor: 1, head: 8 } });           // a range alpha..beta: the HEAD's line only
+      if (act() !== "1") return "acth:" + act();
+      return "";
+    } catch (e) { return "err"; }
+    finally { cm.destroy(); w.remove(); }
   },
 };
 
@@ -2373,6 +2615,70 @@ Object.assign(Ed, {
     })), { userEvent: "input.type", scrollIntoView: true });
     return true;
   },
+  /* #291: document-navigation keys -> { to, extend } or null (null = not ours: the key goes on).
+     to: "docStart" | "docEnd" | "lineUp" | "lineDown". Measured on stock 1.13.7 (Linux, black box,
+     harness phase navkeysstock, 3200-line note, live preview + source):
+       Ctrl+Home / Ctrl+End    document start / end, scrolled into view   (+Shift: extend)
+       Ctrl+Up / Ctrl+Down     one SOURCE line up / down (not a wrapped row), same column
+                               clamped to the line, scrolled only when it leaves the view
+     macOS (platform convention, cannot run on the Linux box: unit-tested mapping only):
+       Cmd+Up / Cmd+Down       document start / end (+Shift: extend); Cmd+Home/End as before
+       Ctrl+Up / Ctrl+Down     not ours (the system's Mission Control / App windows)
+     PageDown / PageUp       one page down / up, the view scrolls with the caret (stock src: L1 -> L11
+                             -> L32, top L2 -> L13 -> L31), every platform (+Shift: extend); the
+                             native page move walks the rendered DOM as well (ours: L1 -> L2 -> L9)
+     Alt combinations and Ctrl+Shift+Up/Down are not ours (native/plugins, unchanged). */
+  navKey(e, mac) {
+    if (!e || e.altKey || e.isComposing) return null;
+    const k = e.key, ext = !!e.shiftKey, cmd = !!e.metaKey, ctl = !!e.ctrlKey;
+    if (k === "PageDown" || k === "PageUp") return ctl || cmd ? null : { to: k === "PageDown" ? "pageDown" : "pageUp", extend: ext };
+    if (k === "Home" || k === "End") {
+      // as before #291: either modifier is the document start / end, on every platform
+      return ctl || cmd ? { to: k === "End" ? "docEnd" : "docStart", extend: ext } : null;
+    }
+    if (k !== "ArrowUp" && k !== "ArrowDown") return null;
+    const down = k === "ArrowDown";
+    if (mac) return cmd && !ctl ? { to: down ? "docEnd" : "docStart", extend: ext } : null;
+    return ctl && !cmd && !ext ? { to: down ? "lineDown" : "lineUp", extend: false } : null;
+  },
+  isMac() { return typeof navigator !== "undefined" && /Mac/.test(navigator.platform || ""); },
+  /* #291: the target of a navKey result in (line,col), from the caret's head f and the lines L.
+     lo = the first line the caret may stand on (live preview: the line after the Properties block,
+     stock lands Ctrl+Home there; 0 otherwise). goal = the column a run of Ctrl+Up/Down keeps
+     (stock: the column survives a shorter or empty line in between), default f.c. */
+  navTarget(nav, f, L, lo, goal) {
+    const last = L.length - 1, top = Math.max(0, Math.min(last, lo | 0));
+    if (nav.to === "docStart") return { l: top, c: 0 };
+    if (nav.to === "docEnd") return { l: last, c: L[last].length };
+    const l = Math.max(Math.min(top, f.l), Math.min(last, f.l + (nav.to === "lineDown" ? 1 : -1)));
+    if (l === f.l) return { l: f.l, c: f.c };            // first / last line: the caret stays
+    return { l, c: Math.min(goal == null ? f.c : goal, L[l].length) };
+  },
+  // #291: live preview's first caret line = the line after the atomic Properties block (0 = none)
+  navBodyStart(g) {
+    const cm = Ed.cm(g), F = g && g.view && g.view._propsF;
+    if (!cm || !F) return 0;
+    const d = cm.state.field(F, false); if (!d || !d.size) return 0;
+    let end = -1; d.between(0, 0, (a, b) => { end = b; });
+    return end < 0 || end >= cm.state.doc.length ? 0 : cm.state.doc.lineAt(end).number;   // 1-based line of the end = 0-based next line
+  },
+  navRun(g, nav) {
+    const cm = Ed.cm(g); if (!cm) return;
+    if (nav.to === "pageDown" || nav.to === "pageUp") {   // CM6's page commands measure the scroller and scroll it
+      Ed._navGoal = null;
+      const dn = nav.to === "pageDown";
+      (nav.extend ? (dn ? CMc.selectPageDown : CMc.selectPageUp) : (dn ? CMc.cursorPageDown : CMc.cursorPageUp))(cm);
+      return;
+    }
+    const f = Ed.focusPos(g), L = Ed.lines(g), head = cm.state.selection.main.head;
+    const line = nav.to === "lineUp" || nav.to === "lineDown";
+    const G = Ed._navGoal, goal = line && G && G.cm === cm && G.head === head ? G.col : f.c;
+    const t = Ed.navTarget(nav, f, L, Ed.navBodyStart(g), goal);
+    if (nav.extend) Ed.extendTo(g, t.l, t.c); else Ed.place(g, t.l, t.c);
+    Ed._navGoal = line ? { cm, head: cm.state.selection.main.head, col: goal } : null;
+    // the view follows the caret (stock): nearest edge, so a move inside the view does not scroll
+    cm.dispatch({ effects: CMv.EditorView.scrollIntoView(cm.state.selection.main.head, { y: "nearest" }) });
+  },
   onKey(g, e) {
     if (!g || e.isComposing) return;
     if (typeof acKeydown === "function") { acKeydown(g, e); if (e.defaultPrevented) return; }
@@ -2393,10 +2699,15 @@ Object.assign(Ed, {
     if (k === "a" && mod) { e.preventDefault(); return Ed.selectAll(g); }
     if (k === "z" && mod) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
     if (k === "y" && mod) { e.preventDefault(); return Ed.redo(g); }
+    // #291: the document-navigation keys run here, on the document (Ed.navKey), never as the
+    // webview's native caret move: that one only walks the RENDERED DOM, and CM6 renders a
+    // viewport, so on a note longer than it the caret stopped at the viewport edge
+    const nav = Ed.navKey(e, Ed.isMac());
+    if (nav) { e.preventDefault(); Ed.cmStart(); Ed.navRun(g, nav); return Ed.cmEnd(g); }
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
-      // Ctrl/Cmd+Home/End: document start / end; bare Home/End: the line's (smart) home / end
+      // bare Home/End: the line's (smart) home / end (Ctrl/Cmd+Home/End are Ed.navKey's)
       const f = Ed.focusPos(g) || s.b, L = Ed.lines(g), end = e.key === "End";
       const l = mod ? (end ? L.length - 1 : 0) : f.l;
       const c = mod ? (end ? L[l].length : 0) : end ? L[l].length : (f.c === Ed.homeCol(g, l) ? 0 : Ed.homeCol(g, l));
@@ -2899,11 +3210,14 @@ Ed.lpParse = function (g, text) {
   // (osdrop: six image rows pushed the pdf frame to y=737, below a 700 px window). style.css hides it.
   const BLK = ".vimg, .imgmiss, .pdf-embed";
   const blk = wid.some(w => w.el.matches && (w.el.matches(BLK) || !!w.el.querySelector(BLK)));
+  const keys = [];
   P = { cls: row.className + (blk ? " blk" : ""), toks, wid, els: els.map(x => {
     const sp = spec(x.el), d = CMv.Decoration.mark(sp);
     const isMk = x.el.classList.contains("mk");
+    keys.push({ s: x.s, e: x.e, pe: x.el.parentNode, k: JSON.stringify(sp) });
     return { s: x.s, e: x.e, d, rv: isMk ? CMv.Decoration.mark(Object.assign({}, sp, { class: sp.class + " rv" })) : d };
   }) };
+  P.runs = Ed.lpRuns(keys);   // #278: source-mode span merge (Ed.lpRuns); keys (and their DOM refs) are not kept
   if (Ed._lpc.size > 4000) Ed._lpc.clear();
   Ed._lpc.set(text, P);
   return P;
@@ -2917,6 +3231,49 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
 // a task row's marker prefix as Ed.block reads it: indent, any ">" quote levels (">  - [ ] x" is a
 // quoted list row too), a bullet or "N.", then "[c] ". m[0].length = the task text start (gh #46/#75)
 Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
+/* #278 (selection lag in source mode): the mark decoration of one marker element x (Ed.lpParse els) on a
+   build. Live preview hides a marker (.lp .mk) until the selection touches its token, and shows it through
+   the .rv twin (.lp .mk.rv). In SOURCE mode every marker is already shown (.lp.src .mk, style.css: each
+   .mk.rv rule has an identical .lp.src twin), so the swap paints nothing — but CM6 still tore down and
+   re-created the span of every marker the selection entered or left: on the box (probe/278-sellag,
+   20x Shift+Down on the realistic note) 4-60 span.mk childList mutations per step and a 11-23 ms render
+   per key instead of 5-8 ms. Source mode keeps the plain decoration, so a selection-only rebuild leaves
+   the marker DOM alone. */
+Ed.lpSrc = v => !!(v && v.lp && v.lp.classList && v.lp.classList.contains("src"));
+Ed.lpMk = (x, rev, src) => (rev && !src ? x.rv : x.d);
+/* #278 (Ctrl+A in source mode): CM6 re-uses a mark span only for a range that CONTINUES across a line
+   break, so two ADJACENT element ranges with equal specs (heading "#" + " ", quote ">" + " ") become two
+   sibling spans with identical classes. In source mode nothing tells them apart (no .rv swap there, and
+   style.css gives source-mode markers no ::before/::after content: .lp.src ... ::before { content: none }),
+   so they are drawn as ONE span: fewer inline boxes for WebKit to resolve ::selection on (realistic note,
+   box census: 242 -> 228 elements, 209 -> 195 text nodes; screenshots at rest and after Ctrl+A identical
+   to the unmerged build). Live preview is untouched: there each marker keeps its own span (.rv per token).
+   Ed.lpRuns(keys): keys = [{s, e, pe, k}] in lpParse order (pe = parent element, k = the spec as JSON);
+   returns [{i, j, s, e}] (els i..j-1 drawn as one range s..e): consecutive keys merge only with the same
+   parent, the same spec and touching offsets (keys[n].s === previous e); everything else is its own run. */
+Ed.lpRuns = function (keys) {
+  const out = [];
+  for (let i = 0; i < keys.length;) {
+    const a = keys[i]; let e = a.e, j = i + 1;
+    while (j < keys.length && keys[j].pe === a.pe && keys[j].k === a.k && keys[j].s === e && keys[j].e > keys[j].s) { e = keys[j].e; j++; }
+    out.push({ i, j, s: a.s, e });
+    i = j;
+  }
+  return out;
+};
+/* #278: the lp decorations depend on source mode (Ed.lpMk), but applyMode flips .lp.src without a
+   transaction. Rebuild once when the mode differs from the one the current decorations were built for
+   (v._lpSrc, set by build) — and only then: a tab switch / re-apply in the same mode dispatches nothing. */
+Ed.lpSrcSync = function (g) {
+  const v = g && g.view, cm = v && v.cm;
+  if (!cm || !v._lpFx || v._lpSrc === undefined || v._lpSrc === Ed.lpSrc(v)) return false;
+  cm.dispatch({ effects: v._lpFx.of(null) });
+  return true;
+};
+// the caret line's line-decoration classes: `cur` (ours: geometry/census) + `cm-active` (#333, stock's class)
+Ed.ACTIVE_LINE = "cur cm-active";
+// #319: the class stock carries on the editor root, the ancestor theme line selectors key on
+Ed.EDITOR_ROOT = "cm-s-obsidian";
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -2959,6 +3316,7 @@ Ed.lpExt = function (v, G) {
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
+    const src = Ed.lpSrc(v); v._lpSrc = src;   // #278: source mode at this build (Ed.lpMk, Ed.lpSrcSync)
     const cur = doc.lineAt(sel.head).number;
     const tcrLeft = tcrRow !== cur ? tcrRow : -1, tp = " tcr" + (++tcrGen & 1);   // gh #75: see the tcr comment below
     let tcrNext = -1;
@@ -2997,11 +3355,21 @@ Ed.lpExt = function (v, G) {
         const car = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar"));
         if (car) tcrNext = cur;
         const tcr = car || ln.number === tcrLeft ? tp : "";
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (frs.has(ln.number) ? " HyperMD-codeblock" : "") + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
-        for (let i = 0; i < P.els.length; i++) {
+        // #333: the caret line also carries `cm-active`, the class stock 1.13.7 puts on it (its DOM: "cm-line cm-active"),
+        // so a theme's active-line rule (Gruvbox `.cm-active`, Solarized `body:not(.disable-…)
+        // .cm-active`) has a target. Our own CSS paints nothing on it: with no theme rule the line looks as before.
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (frs.has(ln.number) ? " HyperMD-codeblock" : "") + (ln.number === cur ? " " + Ed.ACTIVE_LINE : "") + tcr + fl).range(ln.from));
+        const emit = i => {
           const x = P.els[i];
-          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
+        };
+        // #278: source mode draws a merged run (Ed.lpRuns) as one span; a run an overlay touches falls back
+        // to its elements one by one (exactly the unmerged result), live preview always does
+        if (src && P.runs) for (const r of P.runs) {
+          if (r.j - r.i > 1 && r.e > r.s && !(ors && hit(ors, r.s, r.e))) out.push(Ed.lpMk(P.els[r.i], false, true).range(ln.from + r.s, ln.from + r.e));
+          else for (let i = r.i; i < r.j; i++) emit(i);
         }
+        else for (let i = 0; i < P.els.length; i++) emit(i);
         // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
         // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)
         for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
@@ -3088,7 +3456,9 @@ Ed.lpExt = function (v, G) {
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
+  // #319: the editor root is .cm-s-obsidian as in stock (an ancestor of every .cm-line), which theme line rules
+  // (Minimal .cm-s-obsidian .cm-line.HyperMD-header) require; our CSS keys on it only for stock's heading-line spacing (ui/style.css #319)
+  return [EditorView.editorAttributes.of({ class: Ed.EDITOR_ROOT }), plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
           Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
           Ed.cbHl ? Ed.cbHl(v, G) : [],   // #186: fence bodies coloured by Prism (ui/codehl.js)
           Ed.mathField ? Ed.mathField(v, G, bust) : []];   // #185: $..$ / $$..$$ typeset (ui/mathview.js)

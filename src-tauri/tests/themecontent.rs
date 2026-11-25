@@ -86,7 +86,7 @@ fn all(css: &str, prop: &str) -> Vec<(String, String)> {
 }
 
 const DARK: &str = "body";
-const LIGHT: &str = "body:where(.theme-light)";
+const LIGHT: &str = "body:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark))";
 
 #[test]
 fn helper_parses_the_token_blocks() {
