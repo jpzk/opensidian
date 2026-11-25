@@ -3782,6 +3782,150 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
     render_with_br(content, notes, imgs, reading, false)
 }
 
+/// #348: Obsidian's `==highlight==` renders as `<mark>` in the reading view (stock DOM:
+/// a bare `<mark>`, painted by `--text-highlight-bg`). pulldown-cmark has no such syntax,
+/// so this pass runs over the FINAL event list (after linkify), splitting Text events.
+/// Rules mirror our live-preview inline scanner (ui/editor.js `["==", "hl", "mark"]`):
+/// an opener `==` is followed by a non-space, its closer is the FIRST later `==` and must
+/// follow a non-space (else the opener is given up and that `==` may open instead), and
+/// the content is never empty (`====` stays literal). Unmatched `==` stays literal text.
+/// A pair only forms at one inline depth inside one block (so `<mark>` always nests
+/// well-formed: `==a **b** c==` wraps the strong, `**==a** b==` does not pair), and never
+/// inside code: code spans are their own events, code/metadata block Text is skipped.
+fn mark_highlights(evs: Vec<Event<'_>>) -> Vec<Event<'_>> {
+    // an Html event that is block structure (callout frame, embed div, paragraph seam)
+    fn html_block(h: &str) -> bool {
+        h.contains("<div") || h.contains("</div") || h.contains("<p>") || h.contains("</p>")
+    }
+    // an ext / internal md-link anchor opened by render_with_br (closed by its own "</a>" event)
+    fn html_a_open(h: &str) -> bool {
+        h.starts_with("<a ") && !h.contains("</a>")
+    }
+    // does the neighbour event put a non-space right against a `==` sitting at a Text edge
+    fn atom(ev: Option<&Event>, at_start: bool) -> bool {
+        match ev {
+            Some(Event::Text(n)) => {
+                let c = if at_start { n.chars().next() } else { n.chars().next_back() };
+                c.is_some_and(|c| !c.is_whitespace())
+            }
+            Some(Event::Code(_) | Event::InlineMath(_)) => true,
+            Some(Event::Html(h)) => !html_block(h),
+            Some(Event::Start(_)) => at_start,
+            Some(Event::End(_)) => !at_start,
+            _ => false,
+        }
+    }
+    fn inline_start(t: &Tag) -> bool {
+        matches!(t, Tag::Emphasis | Tag::Strong | Tag::Strikethrough | Tag::Superscript | Tag::Subscript)
+    }
+    fn inline_end(t: &TagEnd) -> bool {
+        matches!(t, TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Superscript | TagEnd::Subscript)
+    }
+    // (event index, byte offset of the `==`, is opener)
+    let mut cuts: Vec<(usize, usize, bool)> = Vec::new();
+    let mut open: Vec<Option<(usize, usize)>> = vec![None];
+    let mut code = false;
+    for (k, ev) in evs.iter().enumerate() {
+        match ev {
+            Event::Start(Tag::CodeBlock(_) | Tag::MetadataBlock(_)) => {
+                code = true;
+                open = vec![None];
+            }
+            Event::End(TagEnd::CodeBlock | TagEnd::MetadataBlock(_)) => {
+                code = false;
+                open = vec![None];
+            }
+            _ if code => {}
+            Event::Start(t) if inline_start(t) => open.push(None),
+            Event::End(t) if inline_end(t) => {
+                if open.len() > 1 {
+                    open.pop();
+                }
+            }
+            Event::Html(h) if html_a_open(h) => open.push(None),
+            Event::Html(h) if &**h == "</a>" => {
+                if open.len() > 1 {
+                    open.pop();
+                }
+            }
+            Event::Html(h) if html_block(h) => open = vec![None],
+            Event::Start(_) | Event::End(_) | Event::Rule => open = vec![None],
+            Event::Text(t) => {
+                let s: &str = t;
+                let b = s.as_bytes();
+                let mut i = 0usize;
+                while i + 1 < b.len() {
+                    if !(b[i] == b'=' && b[i + 1] == b'=') {
+                        i += 1;
+                        continue;
+                    }
+                    let d = open.len() - 1;
+                    if let Some((ok, oo)) = open[d] {
+                        if ok == k && oo + 2 == i {
+                            // empty content: this opener fails, rescan from its second '='
+                            open[d] = None;
+                            i = oo + 1;
+                            continue;
+                        }
+                        // '=' is ASCII, so i and i + 2 are char boundaries
+                        let prev_ok = match s[..i].chars().next_back() {
+                            None => k > 0 && atom(evs.get(k - 1), false),
+                            Some(c) => !c.is_whitespace(),
+                        };
+                        open[d] = None;
+                        if prev_ok {
+                            cuts.push((ok, oo, true));
+                            cuts.push((k, i, false));
+                            i += 2;
+                            continue;
+                        }
+                    }
+                    let next_ok = match s[i + 2..].chars().next() {
+                        None => atom(evs.get(k + 1), true),
+                        Some(c) => !c.is_whitespace(),
+                    };
+                    if next_ok {
+                        open[d] = Some((k, i));
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            // code spans, math, breaks, task markers, inline html: content atoms, no seam
+            _ => {}
+        }
+    }
+    if cuts.is_empty() {
+        return evs;
+    }
+    cuts.sort_unstable();
+    let mut out = Vec::with_capacity(evs.len() + cuts.len() * 2);
+    let mut c = 0usize;
+    for (k, ev) in evs.into_iter().enumerate() {
+        if c >= cuts.len() || cuts[c].0 != k {
+            out.push(ev);
+            continue;
+        }
+        let Event::Text(t) = ev else { unreachable!("cuts only index Text events") };
+        let t: &str = &t;
+        let mut last = 0usize;
+        while c < cuts.len() && cuts[c].0 == k {
+            let (_, at, opener) = cuts[c];
+            if at > last {
+                out.push(Event::Text(t[last..at].to_string().into()));
+            }
+            out.push(Event::Html(if opener { "<mark>" } else { "</mark>" }.into()));
+            last = at + 2;
+            c += 1;
+        }
+        if last < t.len() {
+            out.push(Event::Text(t[last..].to_string().into()));
+        }
+    }
+    out
+}
+
 /// goal/linebreak REQ-3..14: `soft_br` = Obsidian's reading view with "Strict line
 /// breaks" OFF (its default): a SOFT break inside a paragraph, list item,
 /// quote or emphasis renders as `<br>`, i.e. its own row. Only `SoftBreak`
@@ -4070,6 +4214,8 @@ fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: boo
     if !buf.is_empty() {
         linkify(&buf, notes, imgs, reading, demoted.iter().all(Option::is_some), &mut evs);
     }
+    // #348: ==highlight== -> <mark> (stock reading view), after linkify so link/tag html is never split
+    let evs = mark_highlights(evs);
     let mut out = String::new();
     html::push_html(&mut out, evs.into_iter());
     // R15.11: pulldown-cmark emits "<input .../>\n" for task markers; that newline is a rendered space (~4px) between the
@@ -15575,6 +15721,63 @@ mod callout_render_tests {
         // reading-view task boxes inside a callout still carry their FILE line (rvtask)
         has(&h, "data-line=\"1\"");
         has(&h, "data-line=\"2\"");
+    }
+
+    /// #348: `==x==` renders as a bare <mark> in the reading view (stock DOM), with the
+    /// live-preview scanner's rules (ui/editor.js): opener before a non-space, closer the
+    /// first later `==` after a non-space, never empty; pairs nest well-formed.
+    #[test]
+    fn i348_reading_highlight_is_mark() {
+        let r = |s: &str| render_with(s, &[], &[], true);
+        assert_eq!(r("==hi=="), "<p><mark>hi</mark></p>\n");
+        assert_eq!(r("a ==b c== d"), "<p>a <mark>b c</mark> d</p>\n");
+        assert_eq!(r("==a== and ==b=="), "<p><mark>a</mark> and <mark>b</mark></p>\n");
+        // inline markup inside the highlight
+        assert_eq!(r("==a **b** c=="), "<p><mark>a <strong>b</strong> c</mark></p>\n");
+        assert_eq!(r("**==b==**"), "<p><strong><mark>b</mark></strong></p>\n");
+        assert!(r("==a `c` d==").contains("<mark>a <code>c</code> d</mark>"));
+        // headings, list items, table cells
+        assert!(r("# ==h==").contains("<mark>h</mark></h1>"));
+        assert!(r("- ==li==").contains("<li><mark>li</mark></li>"));
+        assert!(r("| a |\n|---|\n| ==c== |").contains("<mark>c</mark>"));
+        // a tag / an external link inside the highlight stay whole
+        let t = r("==x #tag==");
+        assert!(t.contains("<mark>x <a href=\"#\" class=\"tag\" data-tag=\"tag\">#tag</a></mark>"), "{t}");
+        let l = r("==[x](https://e.com)==");
+        assert!(l.starts_with("<p><mark><a href=\"https://e.com\"") && l.contains("x</a></mark>"), "{l}");
+        // `===a===`: same as live preview (first `==` opens, content "=a")
+        assert_eq!(r("===a==="), "<p><mark>=a</mark>=</p>\n");
+        // H1 still holds inside a highlight: raw html is escaped text
+        let h = r("==<b>x</b>==");
+        assert!(h.contains("<mark>&lt;b&gt;x&lt;/b&gt;</mark>") && !h.contains("<b>"), "{h}");
+    }
+
+    #[test]
+    fn i348_negative_no_mark_in_code_or_unmatched() {
+        let r = |s: &str| render_with(s, &[], &[], true);
+        for s in [
+            "`==c==`",                // code span
+            "```\n==x==\n```",        // fenced code block
+            "    ==x==",              // indented code block
+            "---\nk: ==v==\n---\nbody", // frontmatter
+            "a == b",                 // lone ==
+            "==a",                    // unclosed
+            "a==",                    // closer only
+            "== a ==",                // space after opener
+            "==a ==",                 // space before closer
+            "====",                   // empty
+            "==a\n\nb==",             // across paragraphs
+            "**==a** b==",            // would cross the strong
+            "[[n==m]]",               // inside a wikilink target/label
+            "> [!note] ==a\n> b==",   // callout title -> body seam
+        ] {
+            let h = r(s);
+            assert!(!h.contains("<mark>"), "`{s}` must not highlight: {h}");
+        }
+        assert!(r("`==c==`").contains("<code>==c==</code>"));
+        assert!(r("```\n==x==\n```").contains("==x=="));
+        assert!(r("a == b").contains("a == b"));
+        assert!(r("====").contains("===="));
     }
 }
 

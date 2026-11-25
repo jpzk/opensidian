@@ -85,6 +85,10 @@ const Ed = {
     const ind = s.match(/^[ \t]*/)[0], t = s.slice(ind.length);
     const h = /^(#{1,6}) /.exec(t);
     if (h && !ind) {
+      // #319: a top-level heading LINE carries stock 1.13.7's line classes (DOM: "cm-line HyperMD-header
+      // HyperMD-header-N"), so theme rules keyed on them (Minimal .cm-s-obsidian .cm-line.HyperMD-header) reach it.
+      // d > 0 (a heading inside a quote): `row` is the quote box, not the line -> no line class.
+      if (d === 0) row.classList.add("HyperMD-header", "HyperMD-header-" + h[1].length);
       const box = Ed.el("span", "h h" + h[1].length);
       const m0 = Ed.mk(h[1]), m1 = Ed.mk(" ");
       box.appendChild(m0);
@@ -1686,6 +1690,9 @@ const Ed = {
     // paints at the row start = LEFT of the box) whose left edge is >= the box's right edge.
     const c75 = Ed.caret75();
     if (c75) fail("dom75:" + c75);
+    // theme DOM classes on a live CM6 view (#333 active line ...): "" = every case holds
+    const thd = Ed.themeDom();
+    if (thd) fail("thdom:" + thd);
     // R17.7 link destinations: balanced parens survive whole (CommonMark), a
     // backslash escape stays literal, whitespace is still not a link, an empty
     // destination still is, and a bare URL leaves the enclosing prose's ')' out.
@@ -1936,6 +1943,56 @@ const Ed = {
       cm.destroy(); w.remove();
       if (ae && ae !== document.body && ae.isConnected && ae.focus) ae.focus(); else if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     }
+  },
+  // theme DOM selfTest case: a throwaway, invisible live-preview CM6 view; reads back the line classes stock 1.13.7's
+  // DOM carries and theme selectors key on. "" = all hold, else a short token-safe reason.
+  //   #333 the caret line, and ONLY it, is .cm-line.cm-active (stock: "cm-line cm-active"); it follows the caret
+  //   #319 the editor root is .cm-s-obsidian; a top-level "# " line, and only it, is .HyperMD-header + .HyperMD-header-N
+  //   #324 a live-preview callout widget's p/ul/ol/... carry --p-spacing block margins (a list item's p does not)
+  themeDom() {
+    if (typeof CMv === "undefined" || typeof CMs === "undefined" || !document.body) return "nocm";
+    const w = Ed.el("div", "lp");
+    w.style.cssText = "position:fixed;left:0;top:0;width:480px;opacity:0;pointer-events:none;z-index:-1";
+    const v = { lp: w }, g = { view: v, lp: w };
+    const doc = "alpha\nbeta\n# Head\ngamma";
+    const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc, extensions: [Ed.lpExt(v, () => g)] }) });
+    w.appendChild(cm.dom);
+    document.body.appendChild(w);
+    const lines = () => [...cm.contentDOM.querySelectorAll(":scope > .cm-line")];
+    const act = () => lines().map((e, i) => e.classList.contains("cm-active") ? i : -1).filter(i => i >= 0).join(".") || "none";
+    try {
+      if (lines().length !== 4) return "rows" + lines().length;
+      // #324: a live-preview callout widget (stock DOM div.cm-embed-block.markdown-rendered.cm-callout) spaces its
+      // blocks by --p-spacing like the reading view; a list item's p, a plain LP row and the widget root stay 0
+      const co = Ed.el("div", "cm-embed-block markdown-rendered cm-callout"), pr = Ed.el("div", "");
+      co.innerHTML = '<div class="callout" data-callout="note"><div class="callout-title"><div class="callout-title-inner">N</div></div>' +
+        '<div class="callout-content"><p>a</p><p>b</p><ul><li><p>c</p></li></ul></div></div>';
+      pr.style.marginTop = "var(--p-spacing)";
+      w.appendChild(co); w.appendChild(pr);
+      const mt = e => getComputedStyle(e).marginTop, mb = e => getComputedStyle(e).marginBottom;
+      const ps = mt(pr), cp = co.querySelectorAll("p");
+      if (!ps || ps === "0px") return "cosp:" + ps;
+      if (mt(cp[0]) !== ps || mb(cp[1]) !== ps) return "cop:" + mt(cp[0]) + "-" + ps;
+      if (mt(co.querySelector("ul")) !== ps) return "coul";
+      if (mt(cp[2]) !== "0px") return "colip";                       // negatives
+      if (mt(co) !== "0px" || mt(lines()[0]) !== "0px") return "coneg";
+      // #319: the editor root is .cm-s-obsidian; ONLY the heading line is .HyperMD-header + .HyperMD-header-1
+      if (!cm.dom.classList.contains(Ed.EDITOR_ROOT)) return "root";
+      const hd = lines().map((e, i) => e.classList.contains("HyperMD-header") ? i + ":" + [...e.classList].filter(c => /^HyperMD-header-\d$/.test(c)).join("") : "").filter(Boolean).join(".");
+      if (hd !== "2:HyperMD-header-1") return "hdr:" + (hd || "none");
+      for (const [s, n] of [["###### six", "6"]]) if (!Ed.row(g, s, 0).classList.contains("HyperMD-header-" + n)) return "hdr" + n;
+      for (const s of ["> # quoted", "  # indented", "#nospace", "####### seven", "plain"])   // negatives: not a heading LINE
+        if (/HyperMD-header/.test(Ed.row(g, s, 0).className)) return "hdrneg";
+      cm.dispatch({ selection: { anchor: 8 } });                    // "be|ta" -> line 1
+      if (act() !== "1") return "act1:" + act();
+      if (!lines()[1].classList.contains("cur")) return "cur1";
+      cm.dispatch({ selection: { anchor: doc.length } });           // end of "gamma" -> line 3; line 1 drops it
+      if (act() !== "3") return "act3:" + act();
+      cm.dispatch({ selection: { anchor: 1, head: 8 } });           // a range alpha..beta: the HEAD's line only
+      if (act() !== "1") return "acth:" + act();
+      return "";
+    } catch (e) { return "err"; }
+    finally { cm.destroy(); w.remove(); }
   },
 };
 
@@ -3212,6 +3269,10 @@ Ed.lpSrcSync = function (g) {
   cm.dispatch({ effects: v._lpFx.of(null) });
   return true;
 };
+// the caret line's line-decoration classes: `cur` (ours: geometry/census) + `cm-active` (#333, stock's class)
+Ed.ACTIVE_LINE = "cur cm-active";
+// #319: the class stock carries on the editor root, the ancestor theme line selectors key on
+Ed.EDITOR_ROOT = "cm-s-obsidian";
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -3292,7 +3353,10 @@ Ed.lpExt = function (v, G) {
         const car = ln.number === cur && P.wid.some(w => w.el && w.el.classList && w.el.classList.contains("tcar"));
         if (car) tcrNext = cur;
         const tcr = car || ln.number === tcrLeft ? tp : "";
-        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
+        // #333: the caret line also carries `cm-active`, the class stock 1.13.7 puts on it (its DOM: "cm-line cm-active"),
+        // so a theme's active-line rule (Gruvbox `.cm-active`, Solarized `body:not(.disable-…)
+        // .cm-active`) has a target. Our own CSS paints nothing on it: with no theme rule the line looks as before.
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " " + Ed.ACTIVE_LINE : "") + tcr + fl).range(ln.from));
         const emit = i => {
           const x = P.els[i];
           if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
@@ -3390,7 +3454,9 @@ Ed.lpExt = function (v, G) {
     if (!m || s.main.head - ln.from >= m[0].length) return tr;
     return [tr, { selection: CMs.EditorSelection.cursor(ln.from + m[0].length), sequential: true }];
   });
-  return [plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
+  // #319: the editor root is .cm-s-obsidian as in stock (an ancestor of every .cm-line), which theme line rules
+  // (Minimal .cm-s-obsidian .cm-line.HyperMD-header) require; our CSS keys on it only for stock's heading-line spacing (ui/style.css #319)
+  return [EditorView.editorAttributes.of({ class: Ed.EDITOR_ROOT }), plugin, clicks, vkeys, taskSnap, pointerSnap, Ed.cbField(v, G, bust), Ed.coField(v, G, bust), Ed.tblField(v, G, bust),
           Ed.propsField ? Ed.propsField(v, G, bust) : [],   // #119: the Properties block (ui/props.js)
           Ed.cbHl ? Ed.cbHl(v, G) : [],   // #186: fence bodies coloured by Prism (ui/codehl.js)
           Ed.mathField ? Ed.mathField(v, G, bust) : []];   // #185: $..$ / $$..$$ typeset (ui/mathview.js)

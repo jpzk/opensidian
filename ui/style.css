@@ -475,7 +475,7 @@ body:where(.theme-light, :root[data-theme="light"] > :not(.theme-dark)) {
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
   --text-warning: var(--color-orange, #ec7500);               /* deep-templater F10: stock 1.13.7 pixel of templater's device-only note (edge/ev/stock-r1-F10-tab2.png) */
-  --text-highlight-bg: #ffec99;
+  --text-highlight-bg: rgba(255, 208, 0, .4);   /* #348: stock 1.13.7 computed value in light too (= #ffec99 over white) */
   /* the code token names (deep-templater F24): plugin highlighters paint with them,
      templater's <% %> commands most visibly (var(--code-property, #d4d4d4) etc.), and
      without them they took their dark fallbacks on a light page. Values = stock
@@ -995,6 +995,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    alone — :733 adds only colour + italic */
 .preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
 .preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
+.preview mark { background-color: var(--text-highlight-bg); color: var(--text-normal) }   /* #348: reading ==highlight== (stock .markdown-rendered mark: --text-highlight-bg, ink --text-normal; same as the lp .hl) */
 .lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none); }   /* #59: thickness rides in the shorthand (a longhand after it would drop the shorthand from CSSOM) */
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
@@ -1681,7 +1682,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --h5-line-height: 1.39; --h6-line-height: 1.45;
   --h1-letter-spacing: -0.018em; --h2-letter-spacing: -0.015em; --h3-letter-spacing: -0.012em;
   --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
-  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
+  --p-spacing: 1rem; --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
   /* R15.10-13 lists / checkbox / code / blockquote */
   --list-indent: calc(var(--indent-unit, calc(var(--space-unit) * 7 / 4)) * var(--indent-size, 4));
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
@@ -1852,6 +1853,12 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 }
 .lp .lprow { width: 100% }
 .lp .lprow:has(> .h) + .lprow:not(:has(> .h)) { padding-top: var(--p-spacing-empty, 0) }   /* stock: the line under a heading (HyperMD-header + .cm-line) */
+/* #319: stock 1.13.7 heading LINE spacing (stock CSS, computed H1 16px / H2-after-blank 0 in the theme-th-editor phase):
+   a heading line is pushed down by --p-spacing, the text line right under a heading by --p-spacing-empty, and a
+   heading that follows heading + blank line gets 0 (beats a theme's plain .cm-s-obsidian .cm-line.HyperMD-header). */
+.cm-s-obsidian .cm-line.HyperMD-header { padding-top: var(--p-spacing) }
+.cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):not(:has(> br:only-child)) { padding-top: var(--p-spacing-empty) }
+.cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):has(> br:only-child) + .cm-line.HyperMD-header { padding-top: 0 }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
   color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */
 .lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, normal); font-variant: var(--h1-variant, normal); }
@@ -2513,6 +2520,16 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout { padding: 0; margin: 0 }
 .cm-callout .callout { margin: 0 }
 .cm-callout .callout-content .callout { margin: 1em 0 }
+/* #324: the live-preview callout widget is a rendered fragment (stock DOM div.cm-embed-block.markdown-rendered.cm-callout,
+   ui/editor.js Ed.coField): stock spaces its blocks exactly like the reading view (--p-spacing), so the reading-view block
+   spacing rules above apply to it too. Same specificity as the .preview rules: theme sheets still win on order. */
+.cm-callout :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }
+.cm-callout :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
+.cm-callout :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
+.cm-callout li > p { margin-block: 0 }
+/* #324: the widget holds rendered HTML, not source text: stock's .cm-embed-block resets the editor's pre-wrap. Without
+   it the renderer's trailing "\n" after </p> is a whole extra 24px line box at the bottom of .callout-content. */
+.cm-callout { white-space: normal; overflow-wrap: normal; word-break: normal }
 /* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
 /* the live-preview block widget contains its child margins (flow-root): CM6
    measures a block widget by its border box, and .metadata-container's 4px/14px
