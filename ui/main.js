@@ -3861,6 +3861,10 @@ function sbarTok() {
 }
 let ovfT = 0;
 addEventListener("resize", () => {                 // the census must follow the window, not only UI state
+  // #281: a vault window boots HIDDEN, so the boot-time placeRToggle measured #rtoggle in the
+  // unmapped webview's viewport; re-measure once the window is mapped at its real size, or the
+  // [rt:] rect stays stale (the toggle itself is in-flow and always where CSS puts it).
+  placeRToggle();
   requestAnimationFrame(updateTitle);
   clearTimeout(ovfT); ovfT = setTimeout(updateTitle, 150);   // after the relayout settles
 });
@@ -13538,6 +13542,12 @@ async function enterVault() {
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
+  // #281 startup reveal: a vault-boot window is HIDDEN until here — layout, vault theme + snippets,
+  // tree and restored tabs are in, so the first frame the user sees is the whole workspace, not
+  // the parts arriving one by one. Unawaited, nothing after it waits on it. Community plugins load
+  // AFTER (below, unawaited): they never hold the reveal, and the backend shows the window anyway
+  // at reveal::FALLBACK if this line is never reached (a throw above, a stalled webview).
+  inv("boot_reveal").catch(() => {});
   // issue #115: the Daily notes core plugin reads the vault's core-plugins.json + daily-notes.json (on/off, options),
   // then autorun opens today's note — after the boot mark and the reveal, before community plugins load (Calendar /
   // Periodic Notes find instance.options filled)

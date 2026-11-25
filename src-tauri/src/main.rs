@@ -67,6 +67,7 @@ mod updates;
 use opensidian_lib::vaultfs;
 mod watcher;
 mod winsize;
+mod reveal; // #281: a vault-boot window is shown ONCE, when the UI is in (bounded fail-open timer)
 mod wsmgr; // #94: named layouts in .obsidian/workspaces.json (Obsidian core Workspaces parity)
 mod dropticket; // #280: a native drop is a one-shot ticket; attach_files consumes it
 mod xdnd; // #51: the window's OS drop transport — only a drop naming a local file is ours, a link drag reaches the editor
@@ -2856,9 +2857,15 @@ static SWITCH_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /* goal winsize (winsize.rs has the rules and the stock evidence pointers).
    WIN_REC: this vault's saved record + the config default size, read in main()
    before the Builder; set => the window is created hidden and winsize_restore
-   places + shows it in setup. A switch-started window never reads it (the old
-   window's rect wins). WIN_TRACK: the last normal (not maximized) bounds. */
+   places it in setup (#281: the SHOW is boot_show's). A switch-started window never reads it
+   (the old window's rect wins). WIN_TRACK: the last normal (not maximized) bounds. */
 static WIN_REC: OnceLock<(serde_json::Value, (f64, f64))> = OnceLock::new();
+/* #281 startup reveal (reveal.rs): every window that boots INTO a vault (not a switch, not the
+   picker) is created hidden and shown once — by boot_reveal (the UI: layout + theme + tree +
+   tabs in) or by the reveal::FALLBACK timer, whichever is first. BOOT_MAX: the restored record
+   is maximized; applied before the show, so the first mapped frame is already the final size. */
+static BOOT_GATE: reveal::Gate = reveal::Gate::new();
+static BOOT_MAX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static WIN_TRACK: Mutex<winsize::Track> = Mutex::new(winsize::Track::new());
 
 /// the record's key: the canonical vault path
@@ -2866,8 +2873,10 @@ fn winsize_key(p: &Path) -> String {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).display().to_string()
 }
 
-/// setup: sanitise the record against the monitors' work areas, then size,
-/// place (or centre), show, maximize — before the user sees a frame.
+/// setup: sanitise the record against the monitors' work areas, then size and
+/// place (or centre) the HIDDEN window. #281: no show here — boot_show maps it
+/// once (maximized first when the record says so): the user never watches the
+/// window resize, and never sees it before the UI is in.
 fn winsize_restore(w: &tauri::WebviewWindow, rec: &serde_json::Value, default: (f64, f64), wayland: bool) {
     let mut ms = w.available_monitors().unwrap_or_default();
     if let Ok(Some(p)) = w.primary_monitor() {
@@ -2892,10 +2901,7 @@ fn winsize_restore(w: &tauri::WebviewWindow, rec: &serde_json::Value, default: (
             let _ = w.center();
         }
     }
-    let _ = w.show();
-    if plan.max {
-        let _ = w.maximize();
-    }
+    BOOT_MAX.store(plan.max, std::sync::atomic::Ordering::SeqCst);
     eprintln!("[winsize] restore pid={} why={} rect={}x{}@{:?} max={} mons={:?}", std::process::id(), plan.why, plan.w, plan.h, plan.pos, plan.max, mons);
 }
 
@@ -2983,6 +2989,40 @@ fn switch_ready(app: tauri::AppHandle, v: State<Vault>) {
         Some(Err(e)) => eprintln!("[vaultwin] switch: ready not written ({e}); the old window exits on its timeout"),
         None => eprintln!("[vaultwin] switch: no vault lock held; the old window exits on its timeout"),
     }
+}
+
+/// #281: map the vault-boot window (once; the caller won BOOT_GATE). Maximize first
+/// when the restored record says so, so no resize is ever on screen. The log line carries
+/// wall-clock ms (call / after show) so a startup trace can split boot time from map latency.
+fn boot_show(app: &tauri::AppHandle, why: reveal::Why) {
+    use tauri::Manager;
+    let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let t0 = ms();
+    if let Some(w) = app.webview_windows().values().next() {
+        if BOOT_MAX.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = w.maximize();
+        }
+        let _ = w.show();
+    }
+    let t1 = ms();
+    match why {
+        reveal::Why::Ready => eprintln!("[reveal] pid={} shown: UI ready t_call_ms={} t_shown_ms={}", std::process::id(), t0, t1),
+        reveal::Why::Timeout => eprintln!(
+            "[reveal] pid={} UI did not report ready in {:?}; showing anyway (fail open) t_call_ms={} t_shown_ms={}",
+            std::process::id(),
+            reveal::FALLBACK,
+            t0,
+            t1
+        ),
+    }
+}
+
+/// #281: the UI has the vault in (enterVault: layout, vault theme + snippets, tree,
+/// restored tabs, the first note rendered). A switch-started window keeps its own
+/// path (switch_show / switch_ready); the picker's window was never hidden.
+#[tauri::command]
+fn boot_reveal(app: tauri::AppHandle) {
+    reveal::ready(&BOOT_GATE, |why| boot_show(&app, why));
 }
 
 /// vault_rules + the lock probe + spawn: the ONE path that starts a window on
@@ -8718,10 +8758,15 @@ fn main() {
     } else if let Some(p) = &init {
         // goal winsize: a saved record for this vault => start hidden, setup
         // places it (winsize_restore). No record => the config default, as before.
+        // #281: hidden in EITHER case — the window is shown once, when the UI is in
+        // (boot_reveal) or at reveal::FALLBACK (setup arms the timer), never filling in on screen.
         let rec = cfg_value()[winsize::KEY].get(winsize_key(p)).cloned();
-        if let (Some(rec), Some(wc)) = (rec, ctx.config_mut().app.windows.first_mut()) {
+        if let Some(wc) = ctx.config_mut().app.windows.first_mut() {
             wc.visible = false;
-            let _ = WIN_REC.set((rec, (wc.width, wc.height)));
+            BOOT_GATE.arm();
+            if let Some(rec) = rec {
+                let _ = WIN_REC.set((rec, (wc.width, wc.height)));
+            }
         }
     }
     // cp-unrestricted: the window is built in setup (page_window), not by Tauri
@@ -8753,6 +8798,12 @@ fn main() {
             install_term(app.handle().clone()); // tab-dataloss: SIGTERM flushes, bounded
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
+            // #281: the vault-boot window is hidden until boot_reveal; fail open after
+            // reveal::FALLBACK so a hung plugin / a stalled UI can never keep it blank
+            if BOOT_GATE.armed() {
+                let h = app.handle().clone();
+                reveal::arm_fallback(&BOOT_GATE, reveal::FALLBACK, move |why| boot_show(&h, why));
+            }
             if SWITCHED.get().is_some() {
                 let h = app.handle().clone();
                 std::thread::spawn(move || {
@@ -8921,7 +8972,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_rec_start, audio_rec_go, audio_rec_log, audio_rec_started, audio_rec_data, audio_rec_stop, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
-            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_reveal, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
@@ -10415,6 +10466,35 @@ mod tests {
             // are already text of the no-choice script (" dark" is in "prefers-color-scheme: dark").
             assert!(junk.is_empty() || none.contains(junk) || !js.contains(junk), "stored {junk:?} leaked into the init script");
         }
+    }
+
+    /// #281 startup reveal, the wiring around reveal.rs (whose own tests prove the gate + timer):
+    /// a vault boot starts hidden AND arms the fail-open timer; the UI reveals after the tabs are
+    /// in and BEFORE the community plugins load, unawaited — so a hung plugin cannot hold it.
+    #[test]
+    fn boot_reveal_wiring_fails_open_and_precedes_plugins() {
+        let src = include_str!("main.rs");
+        let m = &src[src.find(concat!("} else if let Some(p) = ", "&init {")).expect("vault-boot branch")..];
+        let m = &m[..m.find("\n    }\n").expect("end")];
+        assert!(m.contains("wc.visible = false;") && m.contains("BOOT_GATE.arm();"), "a vault boot window is not created hidden + armed");
+        assert!(src.contains(concat!("reveal::arm_fallback(&BOOT_GATE, reveal::", "FALLBACK,")), "no fail-open timer armed in setup");
+        let wr = &src[src.find("fn winsize_restore(").expect("winsize_restore")..];
+        let wr = &wr[..wr.find("\n}\n").expect("end")];
+        assert!(!wr.contains(concat!("w.sh", "ow()")), "winsize_restore maps the window before the UI is in");
+        let ui = include_str!("../../ui/main.js");
+        let ev = &ui[ui.find("async function enterVault()").expect("enterVault")..];
+        let ev = &ev[..ev.find("\n}\n").expect("end")];
+        let r = ev.find(concat!("inv(\"boot_", "reveal\").catch(")).expect("enterVault never reveals (unawaited)");
+        assert!(!ev[..r].trim_end().ends_with("await"), "the reveal is awaited");
+        let tabs = ev.find("await wsApply(").expect("restore");
+        let plg = ev.find("__osPluginHost.boot(").expect("plugin boot");
+        assert!(tabs < r && r < plg, "reveal must come after the restored tabs and before plugins load");
+        assert!(!ev[..r].contains("__osPluginHost"), "plugin code runs before the reveal");
+        // the boot layout is measured while the window is hidden: a resize (the map at the real
+        // size) must re-measure the #rtoggle rect, or the census keeps the unmapped viewport's rect
+        let rs = &ui[ui.find(concat!("addEventListener(\"re", "size\", () => {")).expect("resize handler")..];
+        let rs = &rs[..rs.find("\n});\n").expect("end")];
+        assert!(rs.contains(concat!("placeRTo", "ggle();")), "resize does not re-measure #rtoggle after the hidden boot");
     }
 
     /// #281: page_window adds the theme init script at creation, from the stored choice
