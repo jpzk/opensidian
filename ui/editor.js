@@ -1012,7 +1012,8 @@ const Ed = {
     let c = 0, n;
     while ((n = w.nextNode())) {
       const m = n.parentElement.closest(".mk");
-      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") });
+      // #278: source mode (.lp.src) reveals every marker without the .rv class (Ed.lpMk)
+      out.push({ n, c, len: n.nodeValue.length, hid: !!m && !m.classList.contains("rv") && !(m.closest && m.closest(".lp.src")) });
       c += n.nodeValue.length;
     }
     return out;
@@ -3151,11 +3152,14 @@ Ed.lpParse = function (g, text) {
   // (osdrop: six image rows pushed the pdf frame to y=737, below a 700 px window). style.css hides it.
   const BLK = ".vimg, .imgmiss, .pdf-embed";
   const blk = wid.some(w => w.el.matches && (w.el.matches(BLK) || !!w.el.querySelector(BLK)));
+  const keys = [];
   P = { cls: row.className + (blk ? " blk" : ""), toks, wid, els: els.map(x => {
     const sp = spec(x.el), d = CMv.Decoration.mark(sp);
     const isMk = x.el.classList.contains("mk");
+    keys.push({ s: x.s, e: x.e, pe: x.el.parentNode, k: JSON.stringify(sp) });
     return { s: x.s, e: x.e, d, rv: isMk ? CMv.Decoration.mark(Object.assign({}, sp, { class: sp.class + " rv" })) : d };
   }) };
+  P.runs = Ed.lpRuns(keys);   // #278: source-mode span merge (Ed.lpRuns); keys (and their DOM refs) are not kept
   if (Ed._lpc.size > 4000) Ed._lpc.clear();
   Ed._lpc.set(text, P);
   return P;
@@ -3169,6 +3173,45 @@ Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered 
 // a task row's marker prefix as Ed.block reads it: indent, any ">" quote levels (">  - [ ] x" is a
 // quoted list row too), a bullet or "N.", then "[c] ". m[0].length = the task text start (gh #46/#75)
 Ed.TASK_RE = /^[ \t]*(?:>[ \t]*)*(?:[-*+]|\d+\.) \[[^\]\n]\] /;
+/* #278 (selection lag in source mode): the mark decoration of one marker element x (Ed.lpParse els) on a
+   build. Live preview hides a marker (.lp .mk) until the selection touches its token, and shows it through
+   the .rv twin (.lp .mk.rv). In SOURCE mode every marker is already shown (.lp.src .mk, style.css: each
+   .mk.rv rule has an identical .lp.src twin), so the swap paints nothing — but CM6 still tore down and
+   re-created the span of every marker the selection entered or left: on the box (probe/278-sellag,
+   20x Shift+Down on the realistic note) 4-60 span.mk childList mutations per step and a 11-23 ms render
+   per key instead of 5-8 ms. Source mode keeps the plain decoration, so a selection-only rebuild leaves
+   the marker DOM alone. */
+Ed.lpSrc = v => !!(v && v.lp && v.lp.classList && v.lp.classList.contains("src"));
+Ed.lpMk = (x, rev, src) => (rev && !src ? x.rv : x.d);
+/* #278 (Ctrl+A in source mode): CM6 re-uses a mark span only for a range that CONTINUES across a line
+   break, so two ADJACENT element ranges with equal specs (heading "#" + " ", quote ">" + " ") become two
+   sibling spans with identical classes. In source mode nothing tells them apart (no .rv swap there, and
+   style.css gives source-mode markers no ::before/::after content: .lp.src ... ::before { content: none }),
+   so they are drawn as ONE span: fewer inline boxes for WebKit to resolve ::selection on (realistic note,
+   box census: 242 -> 228 elements, 209 -> 195 text nodes; screenshots at rest and after Ctrl+A identical
+   to the unmerged build). Live preview is untouched: there each marker keeps its own span (.rv per token).
+   Ed.lpRuns(keys): keys = [{s, e, pe, k}] in lpParse order (pe = parent element, k = the spec as JSON);
+   returns [{i, j, s, e}] (els i..j-1 drawn as one range s..e): consecutive keys merge only with the same
+   parent, the same spec and touching offsets (keys[n].s === previous e); everything else is its own run. */
+Ed.lpRuns = function (keys) {
+  const out = [];
+  for (let i = 0; i < keys.length;) {
+    const a = keys[i]; let e = a.e, j = i + 1;
+    while (j < keys.length && keys[j].pe === a.pe && keys[j].k === a.k && keys[j].s === e && keys[j].e > keys[j].s) { e = keys[j].e; j++; }
+    out.push({ i, j, s: a.s, e });
+    i = j;
+  }
+  return out;
+};
+/* #278: the lp decorations depend on source mode (Ed.lpMk), but applyMode flips .lp.src without a
+   transaction. Rebuild once when the mode differs from the one the current decorations were built for
+   (v._lpSrc, set by build) — and only then: a tab switch / re-apply in the same mode dispatches nothing. */
+Ed.lpSrcSync = function (g) {
+  const v = g && g.view, cm = v && v.cm;
+  if (!cm || !v._lpFx || v._lpSrc === undefined || v._lpSrc === Ed.lpSrc(v)) return false;
+  cm.dispatch({ effects: v._lpFx.of(null) });
+  return true;
+};
 Ed.lpExt = function (v, G) {
   const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
   const bust = CMs.StateEffect.define();
@@ -3211,6 +3254,7 @@ Ed.lpExt = function (v, G) {
   const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
+    const src = Ed.lpSrc(v); v._lpSrc = src;   // #278: source mode at this build (Ed.lpMk, Ed.lpSrcSync)
     const cur = doc.lineAt(sel.head).number;
     const tcrLeft = tcrRow !== cur ? tcrRow : -1, tp = " tcr" + (++tcrGen & 1);   // gh #75: see the tcr comment below
     let tcrNext = -1;
@@ -3249,10 +3293,17 @@ Ed.lpExt = function (v, G) {
         if (car) tcrNext = cur;
         const tcr = car || ln.number === tcrLeft ? tp : "";
         out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + tcr + fl).range(ln.from));
-        for (let i = 0; i < P.els.length; i++) {
+        const emit = i => {
           const x = P.els[i];
-          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push(Ed.lpMk(x, !!(rv && rv.has(i)), src).range(ln.from + x.s, ln.from + x.e));
+        };
+        // #278: source mode draws a merged run (Ed.lpRuns) as one span; a run an overlay touches falls back
+        // to its elements one by one (exactly the unmerged result), live preview always does
+        if (src && P.runs) for (const r of P.runs) {
+          if (r.j - r.i > 1 && r.e > r.s && !(ors && hit(ors, r.s, r.e))) out.push(Ed.lpMk(P.els[r.i], false, true).range(ln.from + r.s, ln.from + r.e));
+          else for (let i = r.i; i < r.j; i++) emit(i);
         }
+        else for (let i = 0; i < P.els.length; i++) emit(i);
         // leaves: checkbox, image, pdf frame, and the #75 blank-task caret anchor span.tcar (at t.e, side 1:
         // right of the box, so the caret at the marker end maps to a rendered spot after the checkbox)
         for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
