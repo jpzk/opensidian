@@ -252,7 +252,12 @@ fn i327_negative_border_hover_is_not_the_plain_border() {
     // the plain divider (--background-modifier-border = base-30) stays where it is; only the hover frame is base-35
     assert!(!c.contains("\n  --background-modifier-border-hover: var(--border)"), "#327: border-hover aliased to the plain border again");
     assert!(!c.contains("\n  --color-base-35:"), "#327: our default theme defines no base-35 ramp row (the fallback carries the stock default; Solarized/AnuPpuccin set their own)");
-    assert_eq!(decl_in(&c, "\nbody {", "--background-modifier-border"), "var(--color-base-30, #45475a)", "#327: plain divider changed");
+    // #340 (#358) moved the dark default ramp to stock greys: base-30 = #333333 (51,51,51), pinned by
+    // theme_default.rs h340. #327's intent here is that the plain divider stays on base-30 and is
+    // not the base-35 hover frame, so pin the current base-30 value and its distinctness from the hover.
+    let plain = decl_in(&c, "\nbody {", "--background-modifier-border");
+    assert_eq!(plain, "var(--color-base-30, #333333)", "#327: plain divider changed");
+    assert_ne!(plain, decl_in(&c, "\nbody {", "--background-modifier-border-hover"), "#327: plain divider became the hover frame");
 }
 #[test]
 fn i327_negative_no_elevated_surface_and_geometry_unchanged() {
