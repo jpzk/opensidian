@@ -4900,6 +4900,8 @@ fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) 
     let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
     // #220: translations are ready before the first script runs (ui/i18n.js)
     let b = b.initialization_script(&i18n_init_js());
+    // #281: the boot theme is on <html> before the first paint (style.css keys the pre-JS palette on it)
+    let b = b.initialization_script(&theme_init_js(get_theme().as_deref()));
     // census-gate: the title census exists only when opted in (census.rs); off = no script, no flag
     let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
@@ -8524,6 +8526,25 @@ fn i18n_set(setting: String) -> Result<(), String> {
     Ok(())
 }
 
+/* #281 (startup flicker): style.css paints body DARK until main.js applyTheme() adds
+   body.theme-light, and main.js is the LAST of ~45 scripts at the end of <body>, so on a
+   light desktop a launch painted a dark shell first (frame timeline vs boot marks: see the
+   #281 PR). This init script runs at document start, before any stylesheet or page script,
+   and puts the SAME decision bootTheme() makes onto <html data-theme>: the stored choice
+   when there is one, else prefers-color-scheme. style.css paints the light palette from that
+   attribute until body carries its own class. `stored` is matched against a closed set
+   (get_theme: "dark" | "light" | None), so no file text ever reaches the script. */
+fn theme_init_js(stored: Option<&str>) -> String {
+    let s = match stored {
+        Some("dark") => "\"dark\"",
+        Some("light") => "\"light\"",
+        _ => "null",
+    };
+    format!(
+        "(function(){{var s={s};var t=s||(window.matchMedia&&matchMedia(\"(prefers-color-scheme: dark)\").matches?\"dark\":\"light\");document.documentElement.setAttribute(\"data-theme\",t);}})();"
+    )
+}
+
 /// #220: the window's i18n boot data, run before any page script (ui/i18n.js): the
 /// setting, the env's language, the list, and the English + resolved .ftl sources,
 /// so the first paint is already translated without an IPC round trip.
@@ -10363,6 +10384,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #281: the boot theme decision is on <html> before the first paint
+    #[test]
+    fn theme_init_js_puts_the_boot_theme_on_html() {
+        let d = theme_init_js(Some("dark"));
+        assert!(d.contains("var s=\"dark\";"), "{d}");
+        let l = theme_init_js(Some("light"));
+        assert!(l.contains("var s=\"light\";"), "{l}");
+        // no stored choice -> the system signal decides, exactly as bootTheme()/systemTheme()
+        let n = theme_init_js(None);
+        assert!(n.contains("var s=null;"), "{n}");
+        assert!(n.contains("matchMedia(\"(prefers-color-scheme: dark)\").matches?\"dark\":\"light\""), "{n}");
+        for js in [&d, &l, &n] {
+            assert!(js.contains("document.documentElement.setAttribute(\"data-theme\",t)"), "{js}");
+            assert!(js.starts_with("(function(){") && js.ends_with("})();"), "not one self-contained statement: {js}");
+            assert!(!js.contains("document.body"), "body does not exist at document start: {js}");
+        }
+    }
+
+    /// #281 negative: junk / hostile stored values never reach the script text (closed set)
+    #[test]
+    fn theme_init_js_ignores_non_mode_values() {
+        let none = theme_init_js(None);
+        for junk in ["", "Dark", "LIGHT", "system", "\"};alert(1);//", "</script><script>x()</script>", "light ", " dark"] {
+            let js = theme_init_js(Some(junk));
+            assert_eq!(js, none, "stored {junk:?} was not treated as 'no choice'");
+            // the equality above is the guarantee; this names a leak directly. Skip values that
+            // are already text of the no-choice script (" dark" is in "prefers-color-scheme: dark").
+            assert!(junk.is_empty() || none.contains(junk) || !js.contains(junk), "stored {junk:?} leaked into the init script");
+        }
+    }
+
+    /// #281: page_window adds the theme init script at creation, from the stored choice
+    #[test]
+    fn page_window_adds_theme_init_before_build() {
+        let src = include_str!("main.rs");
+        let a = src.find("fn page_window(").expect("page_window");
+        let pw = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let init = pw.find(concat!("initialization_script(&theme_init_", "js(get_theme().as_deref()))")).expect("no theme init script at creation");
+        assert!(init < pw.find(".build()?").expect("build"), "the theme init script is added after the window is built");
+    }
+
+    /// #281: style.css paints the light palette in the BOOT state (html data-theme=light, no
+    /// body mode class yet) and keeps the explicit-class precedence (0,0,1)
+    #[test]
+    fn style_css_light_palette_covers_the_boot_state() {
+        let css = include_str!("../../ui/style.css");
+        let sel = "body:where(.theme-light, :root[data-theme=\"light\"] > :not(.theme-dark)) {";
+        assert_eq!(css.matches(sel).count(), 1, "the light palette block does not cover the boot state");
+        let blk = &css[css.find(sel).unwrap()..];
+        assert!(blk[..blk.find('}').unwrap()].contains("--background-primary: var(--color-base-00, #ffffff);"), "the boot branch is not on the light palette block");
+        // a stored DARK choice on a light desktop: html says dark -> the light branch cannot match
+        assert!(!sel.contains("data-theme=\"dark\""), "{sel}");
     }
 
     /// #144 toggle 6: canvas off at creation = an ALL-FRAMES init script added before the
