@@ -8069,7 +8069,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
   // stock reading-view wiki links are a.internal-link: themes scope their link styling to it (AnuPpuccin: no underline)
-  for (const a of g.preview.querySelectorAll("a.wiki")) { a.classList.add("internal-link"); a.onclick = e => pvWikiClick(a, e); }
+  for (const a of g.preview.querySelectorAll("a.wiki")) { a.onclick = e => pvWikiClick(a, e); }   // NEGCTL test-only: internal-link dropped
   // plug-top5: links a plugin renders AFTER this wiring (code-block processors: dataview's file links)
   // follow too — one delegated listener per preview element, only for links nobody wired
   if (!P._pvWiki) {
