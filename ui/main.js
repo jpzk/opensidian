@@ -2880,7 +2880,7 @@ function mkView(g) {
   ed.className = "editor"; ed.spellcheck = false; ed.style.display = "none";
   ed.placeholder = "# write markdown, link with [[Note]]";
   const lp = document.createElement("div"); lp.className = "lp";
-  const pv = document.createElement("div"); pv.className = "preview";
+  const pv = document.createElement("div"); pv.className = "preview markdown-rendered";   // stock reading-view root class: a theme's .markdown-rendered rules reach it (AnuPpuccin: .internal-link decoration none)
   lp.classList.toggle("is-readable-line-width", rlwOn); pv.classList.toggle("is-readable-line-width", rlwOn);   // minimalmargin
   v.editor = ed; v.lp = lp; v.preview = pv;
   v.lines = [""];                                 // the seed doc (CM6 state.doc is the model)
@@ -8068,7 +8068,8 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
-  for (const a of g.preview.querySelectorAll("a.wiki")) a.onclick = e => pvWikiClick(a, e);
+  // stock reading-view wiki links are a.internal-link: themes scope their link styling to it (AnuPpuccin: no underline)
+  for (const a of g.preview.querySelectorAll("a.wiki")) { a.classList.add("internal-link"); a.onclick = e => pvWikiClick(a, e); }
   // plug-top5: links a plugin renders AFTER this wiring (code-block processors: dataview's file links)
   // follow too — one delegated listener per preview element, only for links nobody wired
   if (!P._pvWiki) {
