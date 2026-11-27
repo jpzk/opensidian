@@ -66,6 +66,8 @@ on:
         description: 'sha256 of the universal dmg (from the job that built it)'
         value: ${{ jobs.universal.outputs.dmg_sha256 }}
   pull_request:
+    # release PRs (base main) only, not normal PRs into develop (operator 2026-11-27)
+    branches: [main]
     paths:
       - 'src-tauri/**'
       - 'ui/**'
