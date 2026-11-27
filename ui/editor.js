@@ -182,7 +182,12 @@ const Ed = {
           // #272: the strike span IS the body box (one element, not two marks over the
           // same range, whose nesting CM6 would be free to pick); text-less: plain tkt
           const tt = Ed.el("span", "tkt");
-          Ed.inline(g, tt, tb);
+          // fixvars (themevars N2): stock 1.13.7 strikes the done task's LINE and the text sits in
+          // an inner span whose own computed text-decoration-line is none (the strike is propagated
+          // paint, issue-45 STOCK.md). Same here: tkt keeps the strike, the text gets span.tkb.
+          // tkb is added after tkt, so CM6 nests the equal-range mark INSIDE tkt (addActive order).
+          if (row.classList.contains("tkx")) { const tw = Ed.el("span", "tkb"); Ed.inline(g, tw, tb); if (tw.textContent.length) tt.appendChild(tw); }
+          else Ed.inline(g, tt, tb);
           if (tt.textContent.length) tt.classList.add("lbody");
           row.appendChild(tt);
         }
