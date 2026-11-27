@@ -43,6 +43,16 @@
   css.textContent =
     ".canvas-node-container > .canvas-file-pdf { display: flex; flex-direction: column; width: 100%; box-sizing: border-box; overflow: hidden;" +
     " user-select: none; white-space: normal }\n" +
+    /* Windows. The frame's height follows its WIDTH (editor.js pdfSize: w x aspect + 20)
+       and the card scrolls when the frame is taller than it. Where a scrollbar TAKES ROOM
+       (WebView2: 15 px; WebKitGTK overlays it), that is a loop for a frame a few px too
+       tall: scrollbar -> 15 px narrower -> shorter -> fits -> no scrollbar -> wider ->
+       taller -> scrollbar... one step per frame, for ever. Measured on a 400x300 card (the
+       size "Add media" creates) with an A3-landscape page: 396x289 <-> 381x300, 89 changes
+       in 1.5 s; the card flickers and takes no double-click.
+       There the card, not the page, decides the frame's size: it fills the card and the
+       pages scroll inside it. `!important` because pdfSize writes an inline height. */
+    (/Win/.test(navigator.platform) ? ".canvas-node-container > .canvas-file-pdf { height: 100% !important }\n" : "") +
     ".canvas-node-container > .canvas-file-canvas { display: block; width: 100%; height: 100%; box-sizing: border-box; padding: 6px }\n" +
     ".canvas-node-container > .cvf-text-editor { width: 100%; height: 100%; box-sizing: border-box; padding: 4px 8px }\n" +
     ".cvf-text-editor .cm-editor { height: 100%; outline: none }\n" +

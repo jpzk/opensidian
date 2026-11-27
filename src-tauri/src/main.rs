@@ -8688,6 +8688,17 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// Windows: a PDF card's frame fills the card instead of following its width, or the
+    /// 15 px WebView2 scrollbar makes it loop between two sizes (the card flickers). The
+    /// rule is added only where navigator.platform says Win: Linux keeps its layout.
+    #[test]
+    fn windows_pdf_card_fills_the_card_and_only_there() {
+        let js = include_str!("../../ui/plugins/canvas-files.js");
+        let rule = "(/Win/.test(navigator.platform) ? \".canvas-node-container > .canvas-file-pdf { height: 100% !important }\\n\" : \"\")";
+        assert!(js.contains(rule), "the Windows-only PDF card rule is missing");
+        assert_eq!(js.matches(".canvas-file-pdf { height: 100% !important }").count(), 1, "only the Windows branch sets it");
+    }
+
     /* CC1 (PR #42 round 12, CodeAnt): the trust key is canonicalize(vault root) — a path lookup
        that stands still on a stalled FUSE/NFS vault. Whatever runs while the lifecycle lock is
        held (the trust recheck under it in desk_net::listen_trusted_via and desk_proc::shell_open,
