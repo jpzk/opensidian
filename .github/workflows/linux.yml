@@ -68,6 +68,9 @@ env:
 jobs:
   test:
     name: cargo test + build (x86_64, pinned build container)
+    # builds run on release PRs (base main) only, not on normal PRs into develop (operator 2026-11-27);
+    # dispatch with pr=<n> still tests any PR head on demand.
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
