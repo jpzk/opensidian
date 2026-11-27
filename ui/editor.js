@@ -2090,6 +2090,64 @@ Ed.flexNear = function (cm, down) {
   const n = cm.state.doc.lineAt(cm.state.selection.main.head).number;
   return Ed.flexRow(cm, n) || Ed.flexRow(cm, n + (down ? 1 : -1));
 };
+/* fix/097-fixlist: the vertical move next to a #272 split row, measured on the RENDERED rows like
+   stock's CM6 (keep the caret's x, land on the visual line above / below), but by hit-testing the
+   row boxes directly: CM6's own cursorLineUp/Down estimated across these flex rows and skipped rows
+   (T2 lp R8.4: Up from line 5 landed on line 1). Visual lines inside the CURRENT row's body (a
+   wrapped item) are still the browser's native move; only a move that leaves the row, or starts in
+   the marker box, comes here. A hit that is not on the target line falls back to the same column
+   there (fail closed: never another line than the one above / below). -> true when it moved. */
+Ed.rowLines = function (row) {
+  const r = document.createRange(); r.selectNodeContents(row);
+  const ys = [];
+  for (const b of r.getClientRects()) {
+    if (!b.height) continue;
+    if (!ys.some(y => Math.abs(y.top - b.top) < b.height / 2 || Math.abs(y.bottom - b.bottom) < b.height / 2)) ys.push({ top: b.top, bottom: b.bottom });
+  }
+  return ys.sort((a, b) => a.top - b.top);
+};
+Ed.rowOf = function (cm, n) {
+  let d = null;
+  try { d = cm.domAtPos(cm.state.doc.line(n).from); } catch (_) { return null; }
+  let el = d && d.node;
+  if (el && el.nodeType !== 1) el = el.parentElement;
+  el = el && el.closest ? el.closest(".cm-line") : null;
+  return el && cm.contentDOM.contains(el) ? el : null;
+};
+Ed.flexMove = function (cm, down, extend) {
+  const st = cm.state, sel = st.selection.main, head = sel.head, ln = st.doc.lineAt(head);
+  const c = cm.coordsAtPos(head, down ? -1 : 1);
+  if (!c) return false;
+  const G = Ed._flexGoal, x = G && G.cm === cm && G.head === head ? G.x : c.left;
+  const row = Ed.rowOf(cm, ln.number);
+  // still inside this row (a wrapped body line above / below the caret's): native
+  if (row) {
+    const L = Ed.rowLines(row), mid = (c.top + c.bottom) / 2;
+    if (L.some(l => down ? l.top > mid : l.bottom < mid)) {
+      const inPre = (() => { const d = cm.domAtPos(head); let e = d && d.node; if (e && e.nodeType !== 1) e = e.parentElement; return !!(e && e.closest && e.closest(".lpre")); })();
+      if (!inPre) return false;
+    }
+  }
+  const n = ln.number + (down ? 1 : -1);
+  let to;
+  if (n < 1) to = 0;
+  else if (n > st.doc.lines) to = st.doc.length;
+  else {
+    const tl = st.doc.line(n), tr = Ed.rowOf(cm, n);
+    let p = null;
+    if (tr) {
+      const L = Ed.rowLines(tr);
+      const v = L.length ? (down ? L[0] : L[L.length - 1]) : null;
+      if (v) p = cm.posAtCoords({ x, y: (v.top + v.bottom) / 2 }, false);
+    }
+    if (p == null || p < tl.from || p > tl.to) p = tl.from + Math.min(head - ln.from, tl.length);
+    to = p;
+  }
+  cm.dispatch({ selection: extend ? CMs.EditorSelection.range(sel.anchor, to) : CMs.EditorSelection.cursor(to),
+                scrollIntoView: true, userEvent: "select" });
+  Ed._flexGoal = { cm, head: cm.state.selection.main.head, x };
+  return true;
+};
 /* The FIRST client rect of selectNodeContents(row).getClientRects(), without
    asking for all the others. A range's rects come in document order — a
    top-level child element's border boxes, then the text rects inside it — so
@@ -2754,14 +2812,13 @@ Object.assign(Ed, {
     // viewport, so on a note longer than it the caret stopped at the viewport edge
     const nav = Ed.navKey(e, Ed.isMac());
     if (nav) { e.preventDefault(); Ed.cmStart(); Ed.navRun(g, nav); return Ed.cmEnd(g); }
-    // fix/097-fixlist: Up/Down (+Shift) next to a #272 split list row -> CM6's vertical move (Ed.flexNear)
+    // fix/097-fixlist: Up/Down (+Shift) leaving / entering a #272 split list row -> Ed.flexMove
     if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !mod && !e.altKey) {
       const cm = Ed.cm(g), down = e.key === "ArrowDown";
       if (cm && Ed.flexNear(cm, down)) {
-        e.preventDefault(); Ed.cmStart();
         if (!e.shiftKey && g.view) g.view._vmove = Date.now();   // gh #46 taskSnap: a plain vertical move
-        (e.shiftKey ? (down ? CMc.selectLineDown : CMc.selectLineUp) : (down ? CMc.cursorLineDown : CMc.cursorLineUp))(cm);
-        return Ed.cmEnd(g);
+        Ed.cmStart();
+        if (Ed.flexMove(cm, down, e.shiftKey)) { e.preventDefault(); return Ed.cmEnd(g); }
       }
     }
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
