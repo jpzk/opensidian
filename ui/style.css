@@ -1563,7 +1563,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 #snav { width: 180px; box-sizing: border-box; background: var(--bg-base); border-right: 1px solid var(--border);
         padding: 8px 0; overflow-y: auto }
 .snavh { padding: 4px 14px; color: var(--text-chrome-faint); font-size: 11px; font-weight: 600; text-transform: uppercase }   /* #350: stock nav group heading weight 600, faint ink (#352) */
-.snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
+.snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome); --cursor: pointer }   /* #9 (bugui): nav items are click targets -> the hand. --cursor on the item so a theme .vertical-tab-nav-item { cursor: var(--cursor) } (AnuPpuccin; --cursor unset -> auto) resolves to it, same intent as #142 tabs */
 .snavi:where(:hover) { background: var(--bg-surface) }   /* #328: one class so theme .vertical-tab-nav-item:hover rules win; .sel below still beats it */
 .snavi:where(.sel) { background: var(--background-modifier-hover); color: var(--nav-item-color-active) }   /* #328: stock active settings nav item fill = --background-modifier-hover (Solarized L sets --nav-item-background-active = accent/.1, stock still paints 0,0,0/.07); one class (0,1,0 + :where) so theme .vertical-tab-nav-item.is-active rules win */
 #spage { flex: 1; min-width: 0; padding: var(--size-4-4, 16px); box-sizing: border-box; display: flex; flex-direction: column }
