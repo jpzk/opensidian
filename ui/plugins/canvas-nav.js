@@ -261,7 +261,7 @@
     ["Zoom to selection", "Shift+2"],
     ["Select all", "Ctrl+A"],
     ["Add to the selection", "Shift+click"],
-    ["Select with a rectangle", "Shift+drag empty space"],
+    ["Select with a rectangle", "Shift+drag empty space (mouse; a finger always pans)"],
     ["Create a card with specific size", "Ctrl+drag"],
     ["Clone card", "Ctrl+drag"],
     ["Constrain movement to axis", "Shift+drag"],
