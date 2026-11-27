@@ -95,6 +95,14 @@ JavaScriptCore, so the webkit dev packages must be installed for tests too.
 - **T1 / T2** — the maintainer's private harness drives the built app (T1:
   feature phases, T2: wider end-to-end gates). The reference is stock
   Obsidian 1.13.7 behaviour, observed from outside only (clean room).
+- **T3** — security gates, run by the same harness against the built app:
+  consent dialogs (default = refuse, no bypass, no silent "Always"), the
+  CSP of restricted and trusted pages, the trust gate on every
+  side-effecting command, plugin identity and data separation, network
+  containment, vault confinement and the sandbox. Every T3 gate has a
+  negative control: it is shown to go red when the protection it guards
+  is removed. Any change to consent, trust, CSP, IPC commands, plugin
+  loading, process spawning, networking or the sandbox must pass T3.
 A change in behaviour needs a test that fails before and passes after.
 
 ## Security invariants
