@@ -269,6 +269,12 @@ pub struct Spec {
     pub env: Vec<(String, String)>,
     /// argv[0] the child sees (the name the plugin asked for); None = file
     pub argv0: Option<String>,
+    /// Windows: Node's `windowsVerbatimArguments`. The args are joined with spaces and passed
+    /// as written, not quoted by the usual argv rules: Node sets it for cmd.exe
+    /// (`/d /s /c "<line>"`), which does not undo that quoting. The dialog then shows that one
+    /// line (consent::spawn_body), so what is approved is what runs. Always false elsewhere
+    /// (main.rs), as Node ignores it there.
+    pub verbatim: bool,
     /// Q1 (PR #42 round 4): the PATH the child runs with, cleaned by prepare() BEFORE the
     /// lifecycle lock is taken. None = not prepared: start refuses, it never cleans one itself
     pub path: Option<ChildPath>,
@@ -1435,7 +1441,7 @@ pub fn opener_spec(root: &Path, target: &str) -> Spec {
     let file = windows::opener_program();
     #[cfg(not(windows))]
     let file: String = OPENER.into();
-    Spec { file, args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+    Spec { file, args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, verbatim: false, path: None, prog: None, dir: None }
 }
 
 /* BB1 (PR #42 round 11, CodeAnt): t.recheck() is a PATH walk of a vault path (open O_PATH,
@@ -1532,7 +1538,7 @@ mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, verbatim: false, path: None, prog: None, dir: None }
     }
 
     /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours.

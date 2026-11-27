@@ -326,7 +326,15 @@ pub(super) fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) ->
     let file = prog.launch_path().unwrap_or_else(|_| prog.path.clone());
     let cwd = dir.launch_path().unwrap_or_else(|_| dir.path.clone());
     let mut c = Command::new(file);
-    c.args(&sp.args).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).creation_flags(CREATE_NO_WINDOW);
+    if sp.verbatim {
+        // Node's windowsVerbatimArguments: one line, as written (Spec::verbatim)
+        if !sp.args.is_empty() {
+            c.raw_arg(sp.args.join(" "));
+        }
+    } else {
+        c.args(&sp.args);
+    }
+    c.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).creation_flags(CREATE_NO_WINDOW);
     for (k, v) in &sp.env {
         c.env(k, v);
     }
@@ -426,6 +434,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.canonicalize().unwrap()
+    }
+
+    /// cmd.exe with `args`, prepared as desk_proc_spawn does after the dialog (pinned program and
+    /// cwd, cleaned PATH), run to the end: (stdout, exit code)
+    fn run_cmd(args: &[&str], verbatim: bool) -> (String, Option<i32>) {
+        let cmd = Path::new(&std::env::var("SystemRoot").unwrap()).join(r"System32\cmd.exe").canonicalize().unwrap();
+        let file = cmd.to_string_lossy().into_owned();
+        let d = tmp("verbatim");
+        let sp = Spec {
+            prog: Some(pin(&file).unwrap()),
+            dir: Some(pin_dir(&d).unwrap()),
+            file,
+            args: args.iter().map(|s| s.to_string()).collect(),
+            cwd: d.clone(),
+            root: d,
+            env: vec![],
+            argv0: None,
+            verbatim,
+            path: None,
+        };
+        let r = super::super::start(super::super::prepare(sp, std::env::var_os("PATH")), &super::super::lifecycle()).unwrap();
+        let mut o = vec![];
+        for _ in 0..200 {
+            let c = r.read(std::time::Duration::from_millis(50));
+            o.extend(super::super::latin1_to_bytes(&c.out));
+            if c.done {
+                return (String::from_utf8_lossy(&o).trim().to_string(), c.exit);
+            }
+        }
+        panic!("cmd.exe never finished");
+    }
+
+    /// What the page sends for exec() and `shell: true` now that it says win32: Node's
+    /// `cmd.exe /d /s /c "<line>"` with windowsVerbatimArguments. Verbatim, cmd strips the outer
+    /// quotes and runs the line as written; quoted by the argv rules instead, the line reaches
+    /// cmd as `\"echo ...\"` and does not run.
+    #[test]
+    fn verbatim_cmd_runs_the_line_as_node_sends_it() {
+        let line = "\"echo \"a b\"& exit 4\"";
+        assert_eq!(run_cmd(&["/d", "/s", "/c", line], true), ("\"a b\"".to_string(), Some(4)));
+        let (out, exit) = run_cmd(&["/d", "/s", "/c", line], false);
+        assert_ne!((out.as_str(), exit), ("\"a b\"", Some(4)), "argv quoting must not be what verbatim does");
     }
 
     #[test]

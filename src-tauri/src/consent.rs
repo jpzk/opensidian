@@ -285,6 +285,9 @@ fn spawn_body(sp: &Spec, env: EnvValues) -> String {
     }
     if sp.args.is_empty() {
         t.push_str("Args: (none)\n");
+    } else if sp.verbatim {
+        // Windows verbatim (Spec::verbatim): the program gets this ONE line, exactly as written
+        t.push_str(&format!("Command line (passed as written):\n    {}\n", shown(&sp.args.join(" "))));
     } else {
         t.push_str(&format!("Args ({}):\n", sp.args.len()));
         for a in &sp.args {
@@ -1017,7 +1020,7 @@ mod tests {
     use super::*;
 
     fn sp(file: &str, args: &[&str], cwd: &str) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, verbatim: false, path: None, prog: None, dir: None }
     }
 
     /// base/vault (the plugin's cwd, with its own `fakeprog`), base/bin (the real
@@ -1039,6 +1042,19 @@ mod tests {
         let mut s = sp(file, &[], &cwd.to_string_lossy());
         s.env.push(("PATH".into(), path.into()));
         s
+    }
+
+    /// Windows verbatim (Spec::verbatim): the program gets ONE line, as written, so the dialog
+    /// shows that line and not an argument list the program would never see as such
+    #[test]
+    fn verbatim_spawn_text_shows_the_line_that_runs() {
+        let mut s = sp(r"C:\Windows\System32\cmd.exe", &["/d", "/s", "/c", "\"echo \"a b\"\""], r"C:\v");
+        s.verbatim = true;
+        let t = spawn_text(&s);
+        assert!(t.contains(&format!("Command line (passed as written):\n    {}\n", shown("/d /s /c \"echo \"a b\"\""))), "{t}");
+        assert!(!t.contains("Args ("), "{t}");
+        s.verbatim = false;
+        assert!(spawn_text(&s).contains("Args (4):\n"), "a normal spawn still lists its arguments");
     }
 
     #[test]

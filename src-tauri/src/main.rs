@@ -5131,17 +5131,20 @@ async fn desk_proc_spawn(
     cwd: Option<String>,
     env: Option<std::collections::BTreeMap<String, String>>,
     plugin: Option<String>,
+    verbatim: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot start programs".into());
     }
-    spawn_allowed("spawn", plugin.as_deref())?; // #144 toggle 10: before admit = no dialog
+    spawn_allowed("spawn", plugin.as_deref())?;
+    // Windows only (Spec::verbatim): Node ignores windowsVerbatimArguments elsewhere, so do we
+    let verbatim = cfg!(windows) && verbatim.unwrap_or(false); // #144 toggle 10: before admit = no dialog
     // BB2 (PR #42 round 11): the place in the question queue FIRST — beyond MAX_IN_FLIGHT this is
     // EBUSY before any lookup or pin (resolve), no fs work, no fd opened; ask demands the slot
     let slot = consent::admit()?;
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
-    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, path: None, prog: None, dir: None };
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), root: root.clone(), env: env.unwrap_or_default().into_iter().collect(), argv0: None, verbatim, path: None, prog: None, dir: None };
     consent::check_env(&sp)?; // F6 + Q4: an env, or program + args + cwd, over the cap is refused, nothing asked
     let sp = consent::resolve(sp)?; // F1: file = the absolute path the dialog names and exec runs
     // #74: "Always allow this program" is offered only when the spawn names an enabled plugin of

@@ -550,11 +550,18 @@
        - async_hooks.AsyncLocalStorage: the store is visible inside run()'s synchronous
          extent only (no async-context propagation in the page); getStore() is undefined
          elsewhere, which callers already handle (?? default). */
+  /* The host OS, as Node names it, so a plugin picks the commands of the system it really runs
+     on (where vs which, cmd vs sh, ";" in PATH, Windows install paths). Same test as
+     Platform.isWin (api-core.js), so the two never disagree. Everything that names a FILE stays
+     the confined fs's: "/vault" paths and the posix `path` module, whatever the host. os.EOL
+     stays "\n" on Windows too: a plugin that joins lines with it writes into notes, and "\r\n"
+     there would rewrite every line of a note it touches. */
+  const WIN = typeof navigator !== "undefined" && /Win/.test(navigator.platform);
   const OS_HOME = "/home/opensidian";
   const osOwn = Object.freeze({
     homedir: () => OS_HOME, tmpdir: () => "/tmp", hostname: () => "localhost",
-    platform: () => "linux", type: () => "Linux", arch: () => "x64", machine: () => "x86_64",
-    release: () => "0.0.0", version: () => "", endianness: () => "LE", EOL: "\n", devNull: "/dev/null",
+    platform: () => (WIN ? "win32" : "linux"), type: () => (WIN ? "Windows_NT" : "Linux"), arch: () => "x64", machine: () => "x86_64",
+    release: () => "0.0.0", version: () => "", endianness: () => "LE", EOL: "\n", devNull: WIN ? "\\\\.\\nul" : "/dev/null",
     userInfo: () => ({ uid: -1, gid: -1, username: "opensidian", homedir: OS_HOME, shell: null }),
     networkInterfaces: () => ({}), cpus: () => [], availableParallelism: () => 1,
     totalmem: () => 0, freemem: () => 0, uptime: () => 0, loadavg: () => [0, 0, 0],
@@ -602,7 +609,7 @@
     const self = Object.create(proto);
     const noop = () => self;
     return Object.freeze(Object.assign(self, {
-      platform: "linux", arch: "x64", browser: false, pid: 0,
+      platform: WIN ? "win32" : "linux", arch: "x64", browser: false, pid: 0,
       env: Object.freeze(Object.create(null)),
       version: "v18.0.0",
       versions: Object.freeze(Object.assign(Object.create(null), { node: "18.0.0" })),
@@ -732,10 +739,20 @@
     if (!Array.isArray(args)) { opts = args; args = []; }
     return [args.map(String), opts && typeof opts === "object" ? opts : {}];
   }
+  /* a shell request, as Node builds it: on Windows the default shell is cmd.exe, which gets
+     /d /s /c "<line>" with the arguments passed verbatim (cmd does not undo the quoting the
+     usual argv rules would add); any other shell gets -c <line>. */
+  const IS_CMD = /^(?:.*\\)?cmd(?:\.exe)?$/i;
+  function shellCmd(shell, line) {
+    const sh = typeof shell === "string" ? shell : WIN ? "cmd.exe" : "/bin/sh";
+    return WIN && IS_CMD.test(sh) ? [sh, ["/d", "/s", "/c", "\"" + line + "\""], true] : [sh, ["-c", line], false];
+  }
   function cpSpawnAs(plugin, file, args0, opts0) {
     let [args, opts] = spawnArgs(args0, opts0);
     file = String(file);
-    if (opts.shell) { const cmd = [file, ...args].join(" "); file = typeof opts.shell === "string" ? opts.shell : "/bin/sh"; args = ["-c", cmd]; }
+    // windowsVerbatimArguments: Node's own flag (cross-spawn and execa set it for cmd); Windows only
+    let verbatim = WIN && opts.windowsVerbatimArguments === true;
+    if (opts.shell) [file, args, verbatim] = shellCmd(opts.shell, [file, ...args].join(" "));
     const cp = new ChildProcess();
     cp.spawnfile = file; cp.spawnargs = [file, ...args];
     const st = typeof opts.stdio === "string" ? [opts.stdio, opts.stdio, opts.stdio] : Array.isArray(opts.stdio) ? opts.stdio : [];
@@ -747,7 +764,7 @@
     let env;
     if (opts.env && typeof opts.env === "object") { env = {}; for (const k of Object.keys(opts.env)) if (opts.env[k] != null) env[k] = String(opts.env[k]); }
     const cwd = opts.cwd == null ? undefined : String(opts.cwd instanceof URL ? opts.cwd.pathname : opts.cwd);
-    cp._q = (desk ? desk("desk_proc_spawn", { file, args, cwd, env, plugin }) : Promise.reject(new Error("EPERM: no desktop backend")))
+    cp._q = (desk ? desk("desk_proc_spawn", { file, args, cwd, env, plugin, verbatim }) : Promise.reject(new Error("EPERM: no desktop backend")))
       .then(r => { cp.pid = r.pid; later(() => cp.emit("spawn")); return r.id; },
         e => { later(() => { cp.emit("error", deskErr(e, file, cp.spawnargs)); cp.emit("close", -2, null); }); return null; });
     let timer = null;
@@ -812,8 +829,8 @@
     function exec(cmd, opts, cb) {
       if (typeof opts === "function") { cb = opts; opts = {}; }
       opts = opts || {};
-      const sh = typeof opts.shell === "string" ? opts.shell : "/bin/sh";
-      return cpRun(plugin, sh, ["-c", String(cmd)], Object.assign({}, opts, { shell: false }), cb, String(cmd));
+      const [sh, args, verbatim] = shellCmd(opts.shell, String(cmd));
+      return cpRun(plugin, sh, args, Object.assign({}, opts, { shell: false, windowsVerbatimArguments: verbatim }), cb, String(cmd));
     }
     Object.defineProperty(exec, PCUSTOM, { value: asPromise(exec) });
     Object.defineProperty(execFile, PCUSTOM, { value: asPromise(execFile) });
