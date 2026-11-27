@@ -2041,8 +2041,54 @@ Ed.caretRepaint = function (u) {
   if (!view.hasFocus || view.composing || !view.state.selection.main.empty) return;
   const sel = view.root.getSelection ? view.root.getSelection() : document.getSelection();
   if (!sel || sel.rangeCount !== 1 || !sel.isCollapsed || !view.contentDOM.contains(sel.anchorNode)) return;
-  const r = sel.getRangeAt(0).cloneRange();
+  let r = sel.getRangeAt(0).cloneRange();
+  const t = Ed.flexCaret(r.startContainer, r.startOffset);
+  if (t) { r = document.createRange(); r.setStart(t.node, t.off); r.collapse(true); }
   sel.removeAllRanges(); sel.addRange(r);
+};
+/* fix/097-fixlist (#272 follow-up): a #272 split list row (span.lpre + span.lbody) is a FLEX row, and a
+   DOM caret ON the row element itself, between or after its flex items (.cm-line, k), is no caret spot
+   for WebKit: re-added as is (caretRepaint above), it canonicalises to the NEXT line's start. Typing a
+   task's first text char ("- [ ] " + "t": the #75 anchor span.tcar holding the caret is replaced by
+   span.lbody) left exactly such a caret, so the rest of the word went to the next line ("- [ ] t" /
+   "asktail line": edit M54, lp R8.5). The same spot inside a text node is unambiguous: the end of
+   the item before it, or the start of the body when the item before it is the marker box.
+   -> { node, off } of that text spot, or null (not a flex row's own element position: unchanged). */
+Ed.flexCaret = function (node, off) {
+  if (!node || node.nodeType !== 1 || !node.classList || !node.classList.contains("cm-line")) return null;
+  if (getComputedStyle(node).display !== "flex") return null;
+  const texts = n => {
+    if (!n) return [];
+    if (n.nodeType === 3) return n.nodeValue.length ? [n] : [];
+    if (n.nodeType !== 1 || n.contentEditable === "false") return [];
+    const out = [], w = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
+    for (let x = w.nextNode(); x; x = w.nextNode()) if (x.nodeValue.length) out.push(x);
+    return out;
+  };
+  const before = node.childNodes[off - 1], after = node.childNodes[off];
+  const marker = before && before.nodeType === 1 && before.classList.contains("lpre");
+  const b = texts(before), a = texts(after);
+  if (b.length && !(marker && a.length)) { const x = b[b.length - 1]; return { node: x, off: x.nodeValue.length }; }
+  if (a.length) return { node: a[0], off: 0 };
+  return null;
+};
+/* fix/097-fixlist (#272 follow-up): WebKit's NATIVE Up/Down walks line boxes in DOM order, and the
+   flex items of a #272 split row are separate blocks, so from the marker box it steps into the body
+   box of the SAME row (Shift+Down x2 over "1. a" / "2. b" / "3. c" stopped on line 2: listtoggle Q4).
+   Next to such a row the vertical move is CM6's own measured one (stock 1.13.7's editor is CM6 and
+   moves every row this way); a move between plain rows stays native (gh #46 / PR #62 unchanged). */
+Ed.flexRow = function (cm, n) {
+  if (n < 1 || n > cm.state.doc.lines) return false;
+  let d = null;
+  try { d = cm.domAtPos(cm.state.doc.line(n).from); } catch (_) { return false; }
+  let el = d && d.node;
+  if (el && el.nodeType !== 1) el = el.parentElement;
+  el = el && el.closest ? el.closest(".cm-line") : null;
+  return !!(el && cm.contentDOM.contains(el) && getComputedStyle(el).display === "flex");
+};
+Ed.flexNear = function (cm, down) {
+  const n = cm.state.doc.lineAt(cm.state.selection.main.head).number;
+  return Ed.flexRow(cm, n) || Ed.flexRow(cm, n + (down ? 1 : -1));
 };
 /* The FIRST client rect of selectNodeContents(row).getClientRects(), without
    asking for all the others. A range's rects come in document order — a
@@ -2708,6 +2754,16 @@ Object.assign(Ed, {
     // viewport, so on a note longer than it the caret stopped at the viewport edge
     const nav = Ed.navKey(e, Ed.isMac());
     if (nav) { e.preventDefault(); Ed.cmStart(); Ed.navRun(g, nav); return Ed.cmEnd(g); }
+    // fix/097-fixlist: Up/Down (+Shift) next to a #272 split list row -> CM6's vertical move (Ed.flexNear)
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !mod && !e.altKey) {
+      const cm = Ed.cm(g), down = e.key === "ArrowDown";
+      if (cm && Ed.flexNear(cm, down)) {
+        e.preventDefault(); Ed.cmStart();
+        if (!e.shiftKey && g.view) g.view._vmove = Date.now();   // gh #46 taskSnap: a plain vertical move
+        (e.shiftKey ? (down ? CMc.selectLineDown : CMc.selectLineUp) : (down ? CMc.cursorLineDown : CMc.cursorLineUp))(cm);
+        return Ed.cmEnd(g);
+      }
+    }
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
