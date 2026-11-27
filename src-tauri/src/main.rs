@@ -10977,10 +10977,6 @@ mod tests {
         assert_eq!(src.matches(concat!("security::", "clip_check(")).count(), 1, "toggles 8 + 9 have one reader");
     }
 
-    /// #144 toggle 12: lockdown's pieces outside the overlay are wired — every trust check reads
-    /// restricted (is_trusted_key asks first), a trust-ON is refused, the page CSP drops wasm,
-    /// "Restart now" is registered, refused while nothing waits for a restart, and only a
-    /// restart token lets the child past the lock probe / wait for the old window's lock
     /// #251 + plgsettings (0.9.7 T2): turning restricted mode off pins plugin code ONLY through the
     /// native trust question that listed it: measured before the question, written after a Trust
     /// answer and after the stale-answer check, in the flag's own update, for the asked identity only
@@ -11001,6 +10997,10 @@ mod tests {
         assert!(ps.contains("t && key.id.as_deref() == Some(vid.as_str())"), "pins only on ON, for the asked identity");
     }
 
+    /// #144 toggle 12: lockdown's pieces outside the overlay are wired — every trust check reads
+    /// restricted (is_trusted_key asks first), a trust-ON is refused, the page CSP drops wasm,
+    /// "Restart now" is registered, refused while nothing waits for a restart, and only a
+    /// restart token lets the child past the lock probe / wait for the old window's lock
     #[test]
     fn lockdown_is_wired_through_trust_csp_and_restart() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
