@@ -626,10 +626,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #ribbon button svg { width: var(--icon-l, 18px); height: var(--icon-l, 18px); display: block }
 #ribbon button svg[stroke-width="2"] { stroke-width: var(--icon-l-stroke-width, 2) }
 /* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
-   window each) instead of forcing the body wider than the viewport — 44 + 156
-   + 260 = 460px of fixed chrome does not fit a 320px window. overflow:hidden
-   is the backstop: a clipped icon strip beats a window scrollbar. */
-#side { width: 156px; flex: 0 1 auto; min-width: 0; max-width: 40%;
+   window each) instead of forcing the body wider than the viewport — 44 + 300
+   + 260 = 604px of fixed chrome does not fit a 320px window. overflow:hidden
+   is the backstop: a clipped icon strip beats a window scrollbar.
+   Nominal 300px = stock 1.13.7 fresh-vault .mod-left-split width (observed on
+   the box: split 44..344, leaf from x=344; was 156 = "200px total", e95a8be). */
+#side { width: 300px; flex: 0 1 auto; min-width: 0; max-width: 40%;
         overflow: hidden; background: var(--bg-sidebar);
         display: flex; flex-direction: column }
 /* R9.2 sidebar tab strip: Files / Search / Bookmarks */
