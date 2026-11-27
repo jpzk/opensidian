@@ -13307,6 +13307,11 @@ $("lgbtn").onclick = cmdLocalGraph;
 
 /* ---------- vault picker ---------- */
 function base(p) { return p.replace(/\/+$/, "").split("/").pop() || p; }
+/* a VAULT's name, from its absolute OS path. On Windows that path is `D:\notes`, so "\" ends a
+   name too (base() alone showed the whole path); elsewhere it is base(), so a Linux folder name
+   that contains "\" is still shown whole. Note paths keep base(): they are "/"-separated. */
+const VAULT_SEP_WIN = /Win/.test(navigator.platform);
+function vaultName(p) { return VAULT_SEP_WIN ? (p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p) : base(p); }
 
 function showPicker() {
   pmode = null;
@@ -13341,7 +13346,7 @@ async function loadRecent() {
   for (const p of ps) {
     const li = document.createElement("li");
     li.innerHTML = "<b></b><span></span>";
-    li.querySelector("b").textContent = base(p);
+    li.querySelector("b").textContent = vaultName(p);
     li.querySelector("span").textContent = p;
     li.onclick = () => openVault(p, true);  // boot picker: bind; open window: SWITCH (new process)
     if (vaultPath) {                         // vaultbleed: "open in new window" keeps this one
@@ -13503,7 +13508,7 @@ async function enterVault() {
   // vaultbleed: entered ONCE per process — there is no previous vault to tear
   // down (the session-replace path died with the in-process switch).
   if (state) throw new Error("enterVault: this process already has a vault");
-  $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + base(vaultPath);
+  $("vswitch").innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>' + vaultName(vaultPath);
   bmFolds = new Set();               // collapseall: folds are per vault (R6)
   await lsLoad();                    // treefold: this vault's persisted folds, before the first tree render
   feCaFlag = "E"; bmCaFlag = "C";    // collapseall Q5: the empty-pane label flags start where Obsidian's do

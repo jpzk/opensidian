@@ -2390,7 +2390,35 @@ fn wsm_op_in(root: &Path, op: &str, name: &str, to: Option<&str>, layout: Option
 }
 #[tauri::command]
 fn recent_vaults() -> Vec<String> {
-    span_timed!("recent_vaults", read_cfg().1.into_iter().filter(|p| Path::new(p).is_dir()).collect())
+    span_timed!("recent_vaults", recent_shown(read_cfg().1).into_iter().filter(|p| Path::new(p).is_dir()).collect())
+}
+
+/// Windows: the vault path a person sees and the recent list records. canonicalize answers in
+/// the verbatim form (`\\?\D:\notes`), which is right for file calls but not as a NAME: it is not
+/// what the user picked or will recognise, and the same vault, once picked (`D:\notes`) and once
+/// opened through argv (open in new window, switch), showed up twice in the recent list. The
+/// plain form (desk_proc::plain_path) names the same directory. Every config key that must not
+/// drift (trust, secrets, window record, vault id, lock) canonicalizes on its own, so none of
+/// them changes. Elsewhere: unchanged.
+fn shown_vault_path(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    return desk_proc::plain_path(&p);
+    #[cfg(not(windows))]
+    p
+}
+
+/// the recent list as shown: entries an older build recorded in the verbatim form are shown
+/// plain, and a vault recorded in both forms is shown once (its newest place). The config file
+/// is not rewritten here.
+fn recent_shown(list: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in list {
+        let s = shown_vault_path(PathBuf::from(&p)).display().to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
 }
 
 /// the BOOT picker's one bind (vaultbleed: Err once this process has a vault —
@@ -2992,7 +3020,7 @@ fn resolve_vault_arg(a: &std::ffi::OsStr) -> Result<PathBuf, String> {
     if !sandbox::allows(&p) {
         return Err("outside the sandbox".into());
     }
-    Ok(p)
+    Ok(shown_vault_path(p)) // Windows: D:\notes, not \\?\D:\notes (the same directory)
 }
 
 /// the one-shot in-app reason for a rejected vault argument (README §5)
@@ -12904,6 +12932,39 @@ mod tests {
             assert_eq!(resolve_vault_arg(bad), Err("not valid UTF-8".into()));
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Windows: an argv vault (open in new window, switch) is the canonical directory in its
+    /// plain form, the form the picker records, so one vault is one recent entry; every key that
+    /// canonicalizes on its own (trust, window record) is the same for both forms
+    #[cfg(windows)]
+    #[test]
+    fn vaultarg_on_windows_is_canonical_without_the_verbatim_prefix() {
+        let root = tmp_vault("vaultarg-win");
+        let sp = root.join("my vault ünï");
+        fs::create_dir_all(&sp).unwrap();
+        let canon = fs::canonicalize(&sp).unwrap();
+        assert!(canon.to_string_lossy().starts_with(r"\\?\"), "canonicalize is verbatim here: {}", canon.display());
+        let got = resolve_vault_arg(sp.join("..").join("my vault ünï").as_os_str()).unwrap();
+        assert!(!got.to_string_lossy().starts_with(r"\\?\"), "{}", got.display());
+        assert_eq!(fs::canonicalize(&got).unwrap(), canon, "the same directory");
+        assert_eq!(winsize_key(&got), winsize_key(&canon));
+        assert_eq!(plugins::trust_key(&got).path, plugins::trust_key(&canon).path);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// the recent list as shown: a vault an older build recorded in both forms is shown once,
+    /// plain, at its newest place; other entries keep their order
+    #[test]
+    fn recent_list_shows_each_vault_once() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        #[cfg(windows)]
+        assert_eq!(
+            recent_shown(l(&[r"\\?\D:\notes", r"C:\Users\me\v", r"D:\notes", r"\\?\UNC\h\s\v"])),
+            l(&[r"D:\notes", r"C:\Users\me\v", r"\\h\s\v"])
+        );
+        assert_eq!(recent_shown(l(&["/a", "/b", "/a"])), l(&["/a", "/b"]));
+        assert_eq!(recent_shown(l(&["/a", "/b"])), l(&["/a", "/b"]), "an ordinary list is unchanged");
     }
 
     /// S5: a 33 MiB sparse note is skipped by the walk and unreadable
