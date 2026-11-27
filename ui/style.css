@@ -1712,7 +1712,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
   /* R15.4-6 */
-  --font-text-size: 16px; --font-smaller: 0.92em; --line-height-normal: 1.55; --line-height-tight: 1.25;
+  /* fixvars (themevars N2): stock 1.13.7 inline code computes 14px at 16px text = 0.875em (was 0.92em = 14.72px) */
+  --font-text-size: 16px; --font-smaller: 0.875em; --line-height-normal: 1.55; --line-height-tight: 1.25;
   /* ONE spacing unit for the content column (TOKENS.md): every margin, indent, radius and width below is a multiple of it */
   --space-unit: 0.25rem;
   --font-weight: var(--font-normal, 400); --bold-modifier: 200; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
@@ -1730,7 +1731,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
-  --code-size: var(--font-smaller, 0.92em); --code-radius: var(--radius-s, 4px);   /* #343: stock inline code corner 4px */
+  --code-size: var(--font-smaller, 0.875em); --code-radius: var(--radius-s, 4px);   /* #343: stock inline code corner 4px */
   --blockquote-border-thickness: 2px;   /* #347: stock default (was 3px) */
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
