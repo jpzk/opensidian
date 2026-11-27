@@ -5200,7 +5200,30 @@ fn pins_state_of(root: &Path) -> serde_json::Value {
     serde_json::json!({ "status": status, "changed": changed, "error": error })
 }
 
-/* #251 (F-40): the ONLY page-reachable way to pin a plugin found on disk. The page names ids;
+/// #251: of `ids`, those installed in this vault whose files do not match a pin now (new / changed /
+/// damaged store), measured from disk (at most plugin_pins::MAX_ACK, each once). What a native
+/// question lists and, on its Allow / Trust, exactly what is pinned.
+fn pin_ack_items(cfg: &serde_json::Value, vid: &str, root: &Path, ids: Vec<String>) -> Vec<plugin_pins::AckItem> {
+    let installed: Vec<String> = plugins::installed(root).iter().filter_map(|p| p["id"].as_str().map(String::from)).collect();
+    let mut items: Vec<plugin_pins::AckItem> = Vec::new();
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    for id in ids {
+        if items.len() >= plugin_pins::MAX_ACK || !installed.contains(&id) || items.iter().any(|i| i.id == id) {
+            continue;
+        }
+        let Ok(f) = plugin_pins::read_files(root, &id) else { continue };
+        let was = plugin_pins::status_of(cfg, Some(vid), &id, &f);
+        if was == plugin_pins::Status::Ok {
+            continue;
+        }
+        let old_version = plugin_pins::pin(cfg, Some(vid), &id).ok().flatten().map(|p| p.version);
+        items.push(plugin_pins::AckItem { pin: plugin_pins::pin_of(&f, "ack", at), id, was, old_version });
+    }
+    items
+}
+
+/* #251 (F-40): the page-reachable way to pin a plugin found on disk in a vault that is already
+   trusted (the other: plugins_set's trust question, which lists the same measurement). The page names ids;
    Rust keeps those that are installed in this vault and not matching a pin now (new / changed /
    damaged store), measures their files, and asks ONE native question listing all of them (on the
    first start after the upgrade that is every enabled plugin of a trusted vault, in one dialog).
@@ -5218,21 +5241,7 @@ async fn plugins_pin_ack(win: tauri::Window, v: State<'_, Vault>, ids: Vec<Strin
     let vid = tk.id.clone().ok_or(plugins::NO_IDENTITY)?;
     let cfg = cfg_value();
     let damaged = plugin_pins::table(&cfg, Some(&vid)).is_err();
-    let installed: Vec<String> = plugins::installed(&root).iter().filter_map(|p| p["id"].as_str().map(String::from)).collect();
-    let mut items: Vec<plugin_pins::AckItem> = Vec::new();
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    for id in ids {
-        if items.len() >= plugin_pins::MAX_ACK || !installed.contains(&id) || items.iter().any(|i| i.id == id) {
-            continue;
-        }
-        let Ok(f) = plugin_pins::read_files(&root, &id) else { continue };
-        let was = plugin_pins::status_of(&cfg, Some(&vid), &id, &f);
-        if was == plugin_pins::Status::Ok {
-            continue;
-        }
-        let old_version = plugin_pins::pin(&cfg, Some(&vid), &id).ok().flatten().map(|p| p.version);
-        items.push(plugin_pins::AckItem { pin: plugin_pins::pin_of(&f, "ack", at), id, was, old_version });
-    }
+    let items = pin_ack_items(&cfg, &vid, &root, ids);
     if items.is_empty() {
         return Ok(plugins_state_of(&root));
     }
@@ -5299,6 +5308,8 @@ async fn plugins_set(
     // P1 (PR #42): every ON write carries `seen`, also when the vault was already trusted and
     // nothing is asked — a trust-OFF landing after the is_trusted read makes it EAGAIN
     let (ask, carries) = desk_proc::trust_plan(trusted == Some(true), seen, || plugins::is_trusted(&cfg_value(), &root));
+    // #251 + plgsettings (0.9.7 T2): the pins the trust question below listed (vault identity, items)
+    let mut trust_pins: Option<(String, Vec<plugin_pins::AckItem>)> = None;
     if ask {
         // BB2 (PR #42 round 11): the place in the question queue before trust_key (a lookup)
         let slot = consent::admit()?;
@@ -5307,7 +5318,21 @@ async fn plugins_set(
         if trusted == Some(true) && key.id.is_none() {
             return Err(plugins::NO_IDENTITY.into());
         }
-        if !consent::ask(slot, win, consent::Kind::Trust, consent::trust_question(&key)).await? {
+        // #251: the enabled plugins this flip would run that are not allowed as they are on disk are
+        // measured now and listed IN the trust question (one native question, like stock's one
+        // confirm); Trust pins exactly that measurement with the flag. Code that changes after the
+        // measurement does not match its pin and stays refused (serve_pinned), fail closed.
+        let mut q = consent::trust_question(&key);
+        if let Some(vid) = key.id.clone() {
+            let cfg = cfg_value();
+            let damaged = plugin_pins::table(&cfg, Some(&vid)).is_err();
+            let items = pin_ack_items(&cfg, &vid, &root, plugins::enabled_ids(&root));
+            if !items.is_empty() {
+                q = consent::trust_question_with_plugins(&key, &plugin_pins::ack_text(&key.path, &items, damaged));
+                trust_pins = Some((vid, items));
+            }
+        }
+        if !consent::ask(slot, win, consent::Kind::Trust, q).await? {
             eprintln!("[consent] trust {key:?}: cancelled, nothing written");
             return Ok(plugins_state_of(&root));
         }
@@ -5333,7 +5358,19 @@ async fn plugins_set(
             if let Some(id) = bind {
                 ops.push(cfgstore::Op::SetIn(plugins::TRUST_ID_KEY.into(), key.path.clone(), serde_json::json!(id)));
             }
+            // #251: the pins the Trust answer covered, in the same update as the flag; only for the
+            // folder identity that was asked about (a folder swapped in meanwhile gets none: fail closed)
+            let mut pinned = Vec::new();
+            if let Some((vid, items)) = trust_pins.as_ref().filter(|(vid, _)| t && key.id.as_deref() == Some(vid.as_str())) {
+                for i in items {
+                    ops.push(cfgstore::Op::PluginPinSet { vault: vid.clone(), plugin: i.id.clone(), pin: i.pin.clone() });
+                    pinned.push(i);
+                }
+            }
             cfg_update(&ops);
+            for i in pinned {
+                eprintln!("[plugin-pins] allowed {} {} (main.js {}) with the trust answer", i.id, i.pin.version, &i.pin.main[..16]);
+            }
             if !t {
                 desk_proc::kill_all(&life); // flip OFF: what plugins started stops with them
                 desk_net::close_all(&life); // N5: so do its listeners, under the lock desk_net_listen binds under
@@ -10944,6 +10981,26 @@ mod tests {
     /// restricted (is_trusted_key asks first), a trust-ON is refused, the page CSP drops wasm,
     /// "Restart now" is registered, refused while nothing waits for a restart, and only a
     /// restart token lets the child past the lock probe / wait for the old window's lock
+    /// #251 + plgsettings (0.9.7 T2): turning restricted mode off pins plugin code ONLY through the
+    /// native trust question that listed it: measured before the question, written after a Trust
+    /// answer and after the stale-answer check, in the flag's own update, for the asked identity only
+    #[test]
+    fn the_trust_flip_pins_only_what_its_question_listed() {
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
+        let a = src.find("async fn plugins_set(").expect("plugins_set");
+        let ps = &src[a..a + src[a..].find("\n}\n").expect("end")];
+        let measure = ps.find("pin_ack_items(").expect("not measured");
+        let listed = ps.find("consent::trust_question_with_plugins(").expect("not listed in the question");
+        let asked = ps.find("consent::ask(slot, win, consent::Kind::Trust, q)").expect("not asked");
+        let cancel = ps.find("cancelled, nothing written").expect("cancel path");
+        let stale = ps.find("desk_proc::trust_write(asked, &life)").expect("stale check");
+        let pin = ps.find("cfgstore::Op::PluginPinSet").expect("no pin write");
+        let write = ps.rfind("cfg_update(&ops)").expect("write");
+        assert!(measure < listed && listed < asked && asked < cancel && cancel < stale && stale < pin && pin < write);
+        assert_eq!(ps.matches("cfgstore::Op::PluginPinSet").count(), 1);
+        assert!(ps.contains("t && key.id.as_deref() == Some(vid.as_str())"), "pins only on ON, for the asked identity");
+    }
+
     #[test]
     fn lockdown_is_wired_through_trust_csp_and_restart() {
         let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")).unwrap();
