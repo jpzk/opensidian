@@ -14,12 +14,17 @@
               Written ONLY through the cfgstore Ops PluginPinSet / PluginPinDrop (flock + merge +
               atomic rename, 0600); the generic Ops refuse the key (cfgstore::apply). The
               plugin_store sidecar (opensidian-install.json, in the vault) is never read here.
-   who pins = exactly two places, never on sight:
+   who pins = exactly three places, never on sight:
               (a) a store install / update the user started (plugin_store::install_pinned: the
                   pin is of the bytes that were fetched and written);
               (b) the Allow answer of the native "allow plugin code?" dialog (main.rs
                   plugins_pin_ack): Rust measures the files, shows them, and on Allow writes
                   exactly what it measured. A plugin that changes again after that is refused.
+              (c) the Trust answer of the native "trust vault" dialog when the user turns
+                  restricted mode off (main.rs plugins_set): the same measured list (ack_text)
+                  is part of that question's body, so ONE native question covers "turn on
+                  community plugins" and "allow this code" (stock asks once there too); Trust
+                  writes the flag and exactly the measured pins in one update, Cancel nothing.
    fail closed: no pin = "new", other bytes = "changed", a malformed store = "damaged" (nothing
               in that vault loads until an explicit write replaces the damaged part). */
 use serde::{Deserialize, Serialize};
