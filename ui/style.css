@@ -1707,8 +1707,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable.woff2) }
 @font-face { font-family: "Inter"; font-style: italic; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable-Italic.woff2) }
 :root {
-  /* R15.1 literal stacks (system-ui resolves first on Linux -> Noto Sans, like Obsidian; code -> bundled Source Code Pro) */
-  --font-default: ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", "Google Sans Flex", Roboto, "Inter Variable", "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+  /* R15.1 literal stacks. "Noto Sans" is named before system-ui: WebKitGTK maps system-ui (and the fontconfig "Segoe UI" alias) to a narrower GTK font (Cantarell), while stock 1.13.7 on Linux renders Noto Sans (H1 25.888px = 14.14px/char, mswdom). macOS/Windows resolve -apple-system/BlinkMacSystemFont or lack Noto Sans. code -> bundled Source Code Pro */
+  --font-default: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Noto Sans", system-ui, "Segoe UI", "Google Sans Flex", Roboto, "Inter Variable", "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
   --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
   /* R15.4-6 */
