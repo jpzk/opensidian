@@ -2428,8 +2428,8 @@ fn persist_vault(p: &Path) {
     cfg_update(&[cfgstore::Op::PushRecent(p.display().to_string())]);
 }
 
-/* ux-4: left sidebar width persistence (clamped 150-600, default 200 total
-   = 44 ribbon + 156 #side stays when the key is absent) */
+/* ux-4: left sidebar width persistence (clamped 150-600, default 344 total
+   = 44 ribbon + 300 #side, stock 1.13.7, stays when the key is absent) */
 #[tauri::command]
 fn get_sidebar_w() -> Option<u64> {
     cfg_value()["sidebar_w"].as_u64()

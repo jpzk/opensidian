@@ -626,10 +626,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #ribbon button svg { width: var(--icon-l, 18px); height: var(--icon-l, 18px); display: block }
 #ribbon button svg[stroke-width="2"] { stroke-width: var(--icon-l-stroke-width, 2) }
 /* R22: the sidebars keep their nominal width but SHRINK (never past 40% of the
-   window each) instead of forcing the body wider than the viewport — 44 + 156
-   + 260 = 460px of fixed chrome does not fit a 320px window. overflow:hidden
-   is the backstop: a clipped icon strip beats a window scrollbar. */
-#side { width: 156px; flex: 0 1 auto; min-width: 0; max-width: 40%;
+   window each) instead of forcing the body wider than the viewport — 44 + 300
+   + 260 = 604px of fixed chrome does not fit a 320px window. overflow:hidden
+   is the backstop: a clipped icon strip beats a window scrollbar.
+   Nominal 300px = stock 1.13.7 fresh-vault .mod-left-split width (observed on
+   the box: split 44..344, leaf from x=344; was 156 = "200px total", e95a8be). */
+#side { width: 300px; flex: 0 1 auto; min-width: 0; max-width: 40%;
         overflow: hidden; background: var(--bg-sidebar);
         display: flex; flex-direction: column }
 /* R9.2 sidebar tab strip: Files / Search / Bookmarks */
@@ -1563,7 +1565,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 #snav { width: 180px; box-sizing: border-box; background: var(--bg-base); border-right: 1px solid var(--border);
         padding: 8px 0; overflow-y: auto }
 .snavh { padding: 4px 14px; color: var(--text-chrome-faint); font-size: 11px; font-weight: 600; text-transform: uppercase }   /* #350: stock nav group heading weight 600, faint ink (#352) */
-.snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
+.snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome); --cursor: pointer }   /* #9 (bugui): nav items are click targets -> the hand. --cursor on the item so a theme .vertical-tab-nav-item { cursor: var(--cursor) } (AnuPpuccin; --cursor unset -> auto) resolves to it, same intent as #142 tabs */
 .snavi:where(:hover) { background: var(--bg-surface) }   /* #328: one class so theme .vertical-tab-nav-item:hover rules win; .sel below still beats it */
 .snavi:where(.sel) { background: var(--background-modifier-hover); color: var(--nav-item-color-active) }   /* #328: stock active settings nav item fill = --background-modifier-hover (Solarized L sets --nav-item-background-active = accent/.1, stock still paints 0,0,0/.07); one class (0,1,0 + :where) so theme .vertical-tab-nav-item.is-active rules win */
 #spage { flex: 1; min-width: 0; padding: var(--size-4-4, 16px); box-sizing: border-box; display: flex; flex-direction: column }
@@ -1707,8 +1709,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 @font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable.woff2) }
 @font-face { font-family: "Inter"; font-style: italic; font-weight: 100 900; font-display: swap; src: url(fonts/Inter-Variable-Italic.woff2) }
 :root {
-  /* R15.1 literal stacks (system-ui resolves first on Linux -> Noto Sans, like Obsidian; code -> bundled Source Code Pro) */
-  --font-default: ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", "Google Sans Flex", Roboto, "Inter Variable", "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+  /* R15.1 literal stacks. "Noto Sans" is named before system-ui: WebKitGTK maps system-ui (and the fontconfig "Segoe UI" alias) to a narrower GTK font (Cantarell), while stock 1.13.7 on Linux renders Noto Sans (H1 25.888px = 14.14px/char, mswdom). macOS/Windows resolve -apple-system/BlinkMacSystemFont or lack Noto Sans. code -> bundled Source Code Pro */
+  --font-default: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Noto Sans", system-ui, "Segoe UI", "Google Sans Flex", Roboto, "Inter Variable", "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
   --font-monospace-default: ui-monospace, SFMono-Regular, "Cascadia Mono", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Monaco, "Consolas", "Source Code Pro", monospace;
   --font-text: var(--font-default); --font-interface: var(--font-default); --font-monospace: var(--font-monospace-default);
   /* R15.4-6 */
@@ -1901,6 +1903,10 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .cm-s-obsidian .cm-line.HyperMD-header { padding-top: var(--p-spacing) }
 .cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):not(:has(> br:only-child)) { padding-top: var(--p-spacing-empty) }
 .cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):has(> br:only-child) + .cm-line.HyperMD-header { padding-top: 0 }
+/* SOURCE mode is raw markdown: stock 1.13.7 (box, AnuPpuccin dark) computes the H1 line padding-top 0px there (16px in
+   live preview) and the next line sits flush under it. The three rules above stay as they are; source mode zeroes the
+   spacing they read, so a heading row stays one tight row (phase src: ink cropped round the row centre). */
+.lp.src { --p-spacing: 0px; --p-spacing-empty: 0px }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
   color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */
 .lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, normal); font-variant: var(--h1-variant, normal); }
