@@ -1968,8 +1968,15 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    ran through a nested item's literal indent, left of the box; stock leaves the indent unpainted */
 .lp .tkx { text-decoration: none }
 .lp .tkx .tkt { text-decoration: var(--checklist-done-decoration) }
+/* fixvars (themevars N2): a done task's text sits in span.tkb, an EQUAL-range mark with span.tkt, and CM6
+   is free to nest either one outside (box: the text parent computed line-through, i.e. tkt inner). Stock
+   1.13.7: the text's parent computes none, the strike is propagated paint from an ancestor. So whichever
+   of the two is OUTER carries the strike, the inner one none - the painted strike is the same. */
+.lp .tkx .tkb:has(.tkt) { text-decoration: var(--checklist-done-decoration) }
+.lp .tkx .tkb .tkt { text-decoration: none }
 /* #341: SOURCE mode is raw markdown — stock neither strikes nor dims a done task there (src computed: --text-normal, no line-through) */
 .lp.src .tkx, .lp.src .tkx .tkt { text-decoration: none; color: inherit }
+.lp.src .tkx .tkb { text-decoration: none }   /* fixvars: the outer-tkb strike above, off in source mode too */
 /* #341: raw frontmatter lines (source mode / Properties shown as source; props.js line class fmrow) = stock muted ink at 14px (16px editor) */
 .lp .lprow.fmrow { color: var(--text-muted); font-size: 0.875em }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
