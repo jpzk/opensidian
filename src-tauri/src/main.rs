@@ -32,6 +32,8 @@ use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
 use opensidian_lib::index;
 mod migrate;
+#[cfg(windows)]
+mod pick_win; // the system folder dialog for choosing a vault (pick_folder)
 use opensidian_lib::outline;
 mod pdf;
 mod plugins;
@@ -3034,6 +3036,26 @@ fn argv_vault(args: &[std::ffi::OsString], env_set: bool) -> Option<PathBuf> {
 #[tauri::command]
 fn home_dir() -> String {
     user_home()
+}
+
+/// Windows: ask for a folder with the system's own dialog (pick_win.rs), modal
+/// to this window. Ok(None) = cancelled. The answer is only a PROPOSAL: the
+/// page hands it to pick_vault / create_vault, where the vault rules decide.
+/// Elsewhere the in-app list is the picker; the page never calls this there
+/// (ui/main.js OS_WIN).
+#[tauri::command]
+async fn pick_folder(win: tauri::Window, title: Option<String>, start: Option<String>) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        let owner = win.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+        let title = title.unwrap_or_else(|| "Choose a folder".into());
+        tauri::async_runtime::spawn_blocking(move || pick_win::pick_folder(owner, title, start)).await.map_err(|e| e.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (win, title, start);
+        Err("no system folder dialog on this platform".into())
+    }
 }
 
 /// S1: the only way an external URL leaves the app — the webview never
@@ -8588,7 +8610,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, audio_token, audio_rec_start, audio_rec_go, audio_rec_log, audio_rec_started, audio_rec_data, audio_rec_stop, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
-            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
+            create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, pick_folder, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_title, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, bm_add_view, bm_add_view_at, bm_remove, bm_graph_patch, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts, props_index, props_mode, props_notes, props_types, set_prop_type, set_props_mode,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace, wsm_list, wsm_get, wsm_op,
@@ -8727,6 +8749,25 @@ mod tests {
         assert_eq!(quit_step(true, true), QuitStep::Repeat);
         // bounded: a wedged webview can delay a quit, never cancel it
         assert!(QUIT_GRACE <= std::time::Duration::from_secs(5));
+    }
+
+    /// Windows folder picker: the command is registered, the page reaches it from ONE place
+    /// (winBrowse) and enters that mode only on Windows; Linux and macOS keep the in-app list.
+    /// The dialog only fills the path: opening still goes through pickerGo -> pick_vault.
+    #[test]
+    fn windows_folder_dialog_is_wired_on_windows_only() {
+        let src = include_str!("main.rs");
+        let reg = &src[src.find("generate_handler![").unwrap()..];
+        assert!(reg.contains("home_dir, pick_folder, list_dirs,"), "pick_folder is not registered");
+        let ui = include_str!("../../ui/main.js");
+        assert!(ui.contains("const OS_WIN = /Win/.test(navigator.platform);"));
+        assert_eq!(ui.matches("inv(\"pick_folder\"").count(), 1, "the dialog is opened from one place");
+        let wb = &ui[ui.find("async function winBrowse() {").expect("winBrowse")..];
+        let wb = &wb[..wb.find("\n}\n").unwrap()];
+        assert!(wb.contains("inv(\"pick_folder\""), "pick_folder is called outside winBrowse");
+        assert!(!wb.contains("pick_vault") && !wb.contains("create_vault"), "the dialog must only fill the path");
+        assert_eq!(ui.matches("winFolderMode(").count(), 2, "one definition, one call");
+        assert!(ui.contains("  if (OS_WIN) return winFolderMode(m);\n"), "winFolderMode only on Windows");
     }
 
     #[test]
