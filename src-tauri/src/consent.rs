@@ -423,6 +423,14 @@ pub fn trust_question(canon: &str) -> Question {
     Question { head: TRUST_HEAD.into(), log: text.clone(), text, remember: None, always: false }
 }
 
+/// #251 + plgsettings (0.9.7 T2): turning restricted mode off with enabled plugins that are not
+/// allowed as they are on disk. `ack` = plugin_pins::ack_text of what Rust measured: the trust body
+/// lists that code, so Trust answers both (one question, as stock asks once); Cancel = nothing.
+pub fn trust_question_with_plugins(canon: &str, ack: &str) -> Question {
+    let text = format!("{}\n\nTrust also allows this plugin code as it is on disk now:\n\n{ack}", trust_text(canon));
+    Question { head: TRUST_HEAD.into(), log: text.clone(), text, remember: None, always: false }
+}
+
 /// `sp` = the Spec after resolve() (absolute file). Allow once / Deny only.
 pub fn spawn_question(sp: &Spec) -> Question {
     Question { head: SPAWN_HEAD.into(), text: spawn_text(sp), log: spawn_log(sp), remember: None, always: false }
@@ -1003,6 +1011,19 @@ mod tests {
         let s = security_mic_question(crate::security::Mic::Ask);
         assert_eq!(s.head, SECURITY_HEAD);
         assert!(s.text.contains("Settings › Security › Microphone"));
+    }
+
+    /* #251 + plgsettings (0.9.7 T2): the trust question that also allows plugin code shows the whole
+       trust body AND the measured plugin list; the log is the shown body; same title / buttons */
+    #[test]
+    fn the_trust_question_with_plugins_lists_the_code_it_allows() {
+        let ack = "\"good\" version \"1.0.0\": NEW, not allowed before\n    main.js 0123456789abcdef…";
+        let q = trust_question_with_plugins("/home/u/V", ack);
+        assert!(q.text.starts_with(&trust_text("/home/u/V")), "{}", q.text);
+        assert!(q.text.contains("Trust also allows this plugin code") && q.text.ends_with(ack), "{}", q.text);
+        assert_eq!(q.log, q.text);
+        assert_eq!(q.head, trust_question("/home/u/V").head);
+        assert!(q.remember.is_none() && !q.always, "no remembered / always answer for trust");
     }
 
     #[test]
