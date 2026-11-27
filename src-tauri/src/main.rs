@@ -7695,9 +7695,15 @@ fn win_move_proto(proto: tauri::State<'_, DragProto>) -> String {
 }
 
 /// macOS port: AppKit owns the window move (NSWindow performWindowDragWithEvent behind
-/// tauri's start_dragging), so every press is handed over: "wm". Elsewhere the measured path.
+/// tauri's start_dragging), so every press is handed over: "wm".
+/// Windows: the same. start_dragging hands the press to the system's own move loop
+/// (WM_NCLBUTTONDOWN on the caption), which is what gives Aero Snap, Snap Layouts and
+/// drag-to-top-maximises; moving the window ourselves (the "none" path, what the Linux
+/// probe's defaults pick off Linux) works but offers none of them. Nothing is measured
+/// there: a top-level window is always moved by the system.
+/// Elsewhere (Linux) the measured path.
 fn drag_path_here(measured: &'static str) -> &'static str {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", windows)) {
         "wm"
     } else {
         measured
@@ -8469,7 +8475,7 @@ fn main() {
                     "[win_drag] session: x11={} _NET_WM_MOVERESIZE={} -> path {}",
                     proto.x11,
                     proto.moveresize,
-                    drag_path(proto.x11, proto.moveresize, None)
+                    drag_path_here(drag_path(proto.x11, proto.moveresize, None))
                 );
                 let wayland = !proto.x11;
                 app.manage(proto);
@@ -14015,6 +14021,17 @@ mod tests {
         assert_eq!(y + h, 750.0, "the south edge never moved");
         let c = gesture_rect("se", r, -5000.0, -5000.0).unwrap();
         assert_eq!(c, (100.0, 50.0, WIN_MIN_W, WIN_MIN_H), "an SE clamp leaves the origin alone");
+    }
+
+    /// macOS and Windows hand EVERY press to the system (Snap, Snap Layouts, drag-to-top
+    /// maximise on Windows), whatever the Linux probe's defaults would pick there;
+    /// Linux keeps exactly the measured path.
+    #[test]
+    fn macos_and_windows_hand_every_drag_to_the_system() {
+        for measured in ["none", "wm", "wayland"] {
+            let want = if cfg!(any(target_os = "macos", windows)) { "wm" } else { measured };
+            assert_eq!(drag_path_here(measured), want, "measured {measured}");
+        }
     }
 
     /// R33.6b THE PATH CHOICE, as a pure function so it is testable without a
