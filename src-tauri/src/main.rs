@@ -38,6 +38,8 @@ mod plugins;
 mod plugin_store;
 #[cfg(windows)]
 mod http_win; // the plugin store's HTTPS client on Windows (WinHTTP), see plugin_store::http_get
+#[cfg(windows)]
+mod secrets_win; // app.secretStorage in the Windows Credential Manager, see secrets::run
 mod pasteimg;
 mod qscreate;
 mod perf;
