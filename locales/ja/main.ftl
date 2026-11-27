@@ -381,6 +381,7 @@ menu-task-list = タスクリスト
 menu-undo = 元に戻す
 menu-unlink-tab = タブのリンクを解除
 menu-zoom-to-selection = 選択範囲にズーム
+menu-back-to-previous-view = 前の表示に戻る
 menu-as-obsidian-url = Obsidian URL として
 menu-from-system-root = システムのルートから
 menu-from-vault-folder = 保管庫のフォルダーから

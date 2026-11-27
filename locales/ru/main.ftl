@@ -381,6 +381,7 @@ menu-task-list = Список задач
 menu-undo = Отменить
 menu-unlink-tab = Отвязать вкладку
 menu-zoom-to-selection = Масштаб по выделению
+menu-back-to-previous-view = Вернуться к предыдущему виду
 menu-as-obsidian-url = как URL Obsidian
 menu-from-system-root = от корня системы
 menu-from-vault-folder = от папки хранилища

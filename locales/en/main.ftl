@@ -384,6 +384,7 @@ menu-task-list = Task list
 menu-undo = Undo
 menu-unlink-tab = Unlink tab
 menu-zoom-to-selection = Zoom to selection
+menu-back-to-previous-view = Back to previous view
 menu-as-obsidian-url = as Obsidian URL
 menu-from-system-root = from system root
 menu-from-vault-folder = from vault folder
