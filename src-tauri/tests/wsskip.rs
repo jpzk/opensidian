@@ -19,8 +19,10 @@ fn main_js() -> String {
 /// Source of top-level `function NAME(...) { ... }`: brace-matched, skipping
 /// braces inside '...', "..." and `...` strings and // comments (as tabbm.rs).
 fn func(src: &str, name: &str) -> String {
-    let head = format!("\nfunction {name}(");
-    let start = src.find(&head).unwrap_or_else(|| panic!("function {name} not in ui/main.js")) + 1;
+    let start = [format!("\nfunction {name}("), format!("\nasync function {name}(")]
+        .iter()
+        .find_map(|h| src.find(h.as_str()))
+        .unwrap_or_else(|| panic!("function {name} not in ui/main.js")) + 1;
     let b = src.as_bytes();
     let (mut i, mut depth, mut q, mut seen) = (start, 0i32, 0u8, false);
     while i < b.len() {
@@ -89,6 +91,69 @@ fn a_one_child_main_split_keeps_its_id_and_direction() {
     // a real split is the file's own node already: returned as is
     assert_eq!(ev(&c, "(function(){ var r = {children:[1,2], wid:'x'}; return wsMainWrap({id:'y'}, r) === r; })()"), "true");
     assert!(src.contains("root = wsMainWrap(doc.main, root);"), "wsApply must wrap through wsMainWrap");
+}
+
+/// A top-level `const NAME = ...;` one-liner of ui/main.js, loaded as a `var`.
+fn const_line(src: &str, name: &str) -> String {
+    let head = format!("const {name} = ");
+    let l = src.lines().find(|l| l.starts_with(&head)).unwrap_or_else(|| panic!("{head} not in ui/main.js"));
+    l.replacen("const ", "var ", 1)
+}
+
+/// CodeAnt on #361: wsMainWrap alone proves nothing if wsNode does not write the wid it
+/// keeps. The REAL wsNode + wsIdOf + emptyLeaf serialize the wrapped root (an empty
+/// group, so no tab machinery is needed): the file's main id is the id written, and a
+/// file without one still gets an id drawn at the write.
+#[test]
+fn wsnode_writes_the_main_id_the_wrap_kept() {
+    let src = main_js();
+    let c = javascriptcore::Context::new();
+    ev(&c, "var leafBoot = true; var drawn = 0; var wsId = function () { return 'NEW' + (++drawn); };");
+    for k in ["emptyLeaf", "wsIdOf"] {
+        ev(&c, &const_line(&src, k));
+    }
+    for f in ["wsMainWrap", "wsNode"] {
+        ev(&c, &func(&src, f));
+    }
+    assert_eq!(
+        ev(&c, "(function(){ var o = wsNode(wsMainWrap({id:'eb3c8a0239e5357f', type:'split', direction:'vertical'}, {tabs:[], active:-1}));\
+                 return [o.id, o.type, o.direction, o.children.length, o.children[0].type].join(' '); })()"),
+        "eb3c8a0239e5357f split vertical 1 tabs"
+    );
+    assert_eq!(ev(&c, "wsNode(wsMainWrap({id:'h1', type:'split', direction:'horizontal'}, {tabs:[], active:-1})).direction"), "horizontal");
+    assert!(ev(&c, "wsNode(wsMainWrap({type:'split'}, {tabs:[], active:-1})).id").starts_with("NEW"), "no id on file: one is drawn");
+}
+
+/// CodeAnt on #361: a guard that is merely BEFORE the write proves nothing if it does
+/// not return. The REAL wsFlush runs with its I/O stubbed (inv records, setTimeout
+/// records): while a restore runs it writes nothing and re-arms; the restored file is
+/// skipped; a changed layout is written; a forced flush (wsLeave) is not held back.
+#[test]
+fn wsflush_writes_nothing_while_a_restore_runs() {
+    let src = main_js();
+    let c = javascriptcore::Context::new();
+    ev(&c, "var state = {}, vaultPath = 'V', actN = 0, wsYields = 0, WS_YIELD_MS = 50, WS_YIELD_MAX = 40;\
+            var wsT = null, wsLast = '', wsFile = '', wsWrites = 0, wsInFlight = null, wsApplying = 0;\
+            var timers = [], calls = [], DOC = {a: 1};\
+            function setTimeout(f, ms) { timers.push(ms); return 7; }\
+            function inv(cmd, a) { calls.push(cmd); return new Promise(function () {}); }\
+            function updateTitle() {}\
+            function wsDoc() { return DOC; }");
+    for f in ["wsCanon", "wsUnchanged", "wsFlush"] {
+        ev(&c, &func(&src, f));
+    }
+    // a restore is running: no write, the flush is re-armed
+    ev(&c, "wsApplying = 1; wsFlush();");
+    assert_eq!(ev(&c, "calls.length + ' ' + timers.join(',') + ' ' + wsT"), "0 50 7");
+    // restore done, layout = the file read at launch: skipped, and remembered as written
+    ev(&c, "wsApplying = 0; wsFile = wsCanon(DOC); wsFlush();");
+    assert_eq!(ev(&c, "calls.length + ' ' + (wsLast === JSON.stringify(DOC))"), "0 true");
+    // a real change is written
+    ev(&c, "DOC = {a: 2}; wsFlush();");
+    assert_eq!(ev(&c, "calls.join(',')"), "write_workspace");
+    // a forced flush (vault switch) goes even during a restore
+    ev(&c, "wsInFlight = null; wsApplying = 1; DOC = {a: 3}; wsFlush(true);");
+    assert_eq!(ev(&c, "calls.length"), "2");
 }
 
 #[test]
