@@ -28,7 +28,7 @@ T=$(readlink -f "${1:?tree}"); V=${2:?ver}
 say(){ echo "[$(date +%H:%M:%S)] [appimage] $*"; }
 die(){ say "FAIL: $*"; exit 1; }
 PKGS="gcc-16.2.1-3.fc44 gcc-c++-16.2.1-3.fc44"
-SBOM_PKGS="jq-1.8.1-2.fc44"   # = sbom-local.sh's extra tool (in the lock like everything else)
+SBOM_PKGS="jq-1.8.1-3.fc44"   # = sbom-local.sh's extra tool (in the lock like everything else)
 RUST=1.98.0   # = release.yml RUST_TOOLCHAIN (checked below)
 RUST_MANIFEST_SHA256=3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a
 [ "$RUST" = "$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$(dirname "$0")/../../rust-toolchain.toml")" ] || { echo "rust-toolchain.toml channel != $RUST" >&2; exit 1; }
