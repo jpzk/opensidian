@@ -176,7 +176,7 @@ if [ $PM = rpm ]; then
     [ -n "$lic" ] && [ "$lic" != "(none)" ] || die "$key: rpm has no License tag"
     h=-
     if [ -n "$PKGSET" ]; then
-      row=$(awk -F'\t' -v n="$n" -v a="$a" '!/^#/ && $1==n && $3==a' "$PKGSET" | head -1)
+      row=$(awk -F'\t' -v n="$n" -v a="$a" '!/^#/ && $1==n && $3==a' "$PKGSET" | sed -n 1p)
       [ -n "$row" ] || die "$key: not in pkgset $PKGSET"
       [ "$(cut -f2 <<<"$row")" = "$ep:$vr" ] || die "$key: pkgset says $(cut -f2 <<<"$row"), rpm says $ep:$vr"
       h=$(cut -f4 <<<"$row"); [[ "$h" =~ ^[0-9a-f]{64}$ ]] || die "$key: bad sha256 '$h'"
@@ -287,7 +287,7 @@ while IFS=$'\t' read -r bp ver _ _; do
   fi
   h=
   if [ -n "$PKGSET" ]; then
-    row=$(awk -F'\t' -v n="$b" -v a="$a" '!/^#/ && $1==n && (a=="" || $3==a || $3=="all")' "$PKGSET" | head -1)
+    row=$(awk -F'\t' -v n="$b" -v a="$a" '!/^#/ && $1==n && (a=="" || $3==a || $3=="all")' "$PKGSET" | sed -n 1p)
     [ -n "$row" ] || die "$b: not in pkgset $PKGSET"
     pv=$(cut -f2 <<<"$row"); [ "$pv" = "$ver" ] || die "$b: pkgset says $pv, dpkg says $ver"
     h=$(cut -f4 <<<"$row")

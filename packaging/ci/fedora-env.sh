@@ -103,7 +103,7 @@ install)
   rows | awk -F'\t' '{print $2"\t"$3"\t"$4}' | LC_ALL=C sort > /tmp/want.tsv
   rpm -qa --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n' | grep -v '^gpg-pubkey	' | LC_ALL=C sort > /tmp/got.tsv
   if [ "$(cat /tmp/want.tsv)" != "$(cat /tmp/got.tsv)" ]; then
-    diff /tmp/want.tsv /tmp/got.tsv >&2 || true; die "installed set != fedora-pkgset.lock.tsv ($ARCH)"
+    LC_ALL=C comm -3 /tmp/want.tsv /tmp/got.tsv >&2 || true; die "installed set != fedora-pkgset.lock.tsv ($ARCH)"
   fi
   say "installed set == lock: $(wc -l < /tmp/got.tsv) packages, nothing else"
   { printf '# fedora 44 pinned set (%s)  %s\n# package\tevr\tarch\trpm-sha256\n' "$(sed -n 1p "$LOCK" | sed 's/^# //')" "$IMG"

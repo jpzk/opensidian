@@ -119,7 +119,8 @@ part_ok() {  # part_ok <file>: a CycloneDX 1.6 document with a metadata.componen
 run_part() {  # run_part <part> <cmd...>: stdout -> $t/<part>.cdx.json, stderr -> logs/<part>.log
   local p=$1; shift
   say "part $p: $*"
-  if ! "$@" >"$t/$p.cdx.json" 2>"$out/logs/$p.log"; then tail -20 "$out/logs/$p.log" >&2; die "part $p failed (log $out/logs/$p.log)"; fi
+  # subshell: a die inside the part ends only the part, so its log tail is still printed below
+  if ! ( "$@" ) >"$t/$p.cdx.json" 2>"$out/logs/$p.log"; then tail -20 "$out/logs/$p.log" >&2; die "part $p failed (log $out/logs/$p.log)"; fi
   part_ok "$t/$p.cdx.json" || die "part $p is not a non-empty CycloneDX 1.6 SBOM (log $out/logs/$p.log)"
   say "part $p: $(jq '.components | length' "$t/$p.cdx.json") components"
 }
@@ -130,10 +131,17 @@ run_part() {  # run_part <part> <cmd...>: stdout -> $t/<part>.cdx.json, stderr -
 # the portable AppImage bundles.
 LOCK=$root/packaging/ci/fedora-pkgset.lock.tsv
 lock_eq_rpmdb() {  # rc 0 iff rpm -qa (minus gpg-pubkey) == the lock rows of this arch
-  local a; a=$(uname -m)
+  # coreutils only (comm): the pinned F44 set has no diffutils, and `diff: command not found` must not read as drift
+  local a want got; a=$(uname -m)
   [ -s "$LOCK" ] || { echo "sbom-local: $LOCK missing or empty" >&2; return 1; }
-  diff <(awk -F'\t' -v a="$a" '!/^#/ && $1==a {print $2"\t"$3"\t"$4}' "$LOCK" | LC_ALL=C sort) \
-       <(rpm -qa --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n' | grep -v '^gpg-pubkey	' | LC_ALL=C sort) >&2
+  want=$(awk -F'\t' -v a="$a" '!/^#/ && $1==a {print $2"\t"$3"\t"$4}' "$LOCK" | LC_ALL=C sort) || return 1
+  [ -n "$want" ] || { echo "sbom-local: no $a rows in $LOCK" >&2; return 1; }
+  got=$(rpm -qa --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n' | { grep -v '^gpg-pubkey	' || true; } | LC_ALL=C sort) || return 1
+  [ "$want" = "$got" ] && return 0
+  echo "sbom-local: lock vs rpmdb (col1 = only in lock, col2 = only installed):" >&2
+  printf '%s\n' "$want" >"$t/lock.want"; printf '%s\n' "$got" >"$t/lock.got"   # files, not <(): no /dev/fd needed
+  LC_ALL=C comm -3 "$t/lock.want" "$t/lock.got" >&2 || true
+  return 1
 }
 webkit_native() {
   [ -f /etc/fedora-release ] && command -v rpm >/dev/null || die "native: not the Fedora 44 build env (use --webkit podman)"
