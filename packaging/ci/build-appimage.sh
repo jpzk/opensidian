@@ -154,7 +154,7 @@ if [ "$FLAVOR" = portable ]; then
     miss=$(comm -23 <(bsyms "$f") <(bsyms "$BROTLI_LIBS/libbrotli$l.so.1"))
     [ -z "$miss" ] || { echo "FAIL: built libbrotli$l.so.1 lacks symbols of the bundled copy: $miss" >&2; exit 1; }
     rm -f "$f"; install -m 0755 "$BROTLI_LIBS/libbrotli$l.so.1" "$f"
-    objdump -p "$f" | grep -q "SONAME *libbrotli$l.so.1" || { echo "FAIL: $f soname" >&2; exit 1; }
+    objdump -p "$f" | grep "SONAME *libbrotli$l.so.1" >/dev/null || { echo "FAIL: $f soname" >&2; exit 1; }
     echo "[brotli] bundled $f ($BROTLI_VER)"
   done
   rm -rf "$BROTLI_SRC" "$BROTLI_LIBS"
@@ -220,7 +220,7 @@ else
   cat > "$APPDIR/AppRun" <<'RUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
-if ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.1\.so'; then
+if ! ldconfig -p 2>/dev/null | grep 'libwebkit2gtk-4\.1\.so' >/dev/null; then
   echo "opensidian: system libwebkit2gtk-4.1 not found — this is the slim build." >&2
   echo "Install it:" >&2
   echo "  Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0" >&2
