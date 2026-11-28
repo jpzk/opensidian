@@ -96,7 +96,7 @@ podman run --rm --network=host -e SBOM_TAG="$SBOM_TAG" -e SBOM_COMMIT="$SBOM_COM
   B=target/release/opensidian; ls -l $B; sha256sum $B
   case "$ARCH" in x86_64) W="x86-64" ;; aarch64) W="ARM aarch64" ;; esac
   file -b $B; file -b $B | grep -q "$W" || { say "FAIL: binary is not $W"; exit 1; }
-  echo "glibc floor ($ARCH): $(objdump -T $B | grep -oE "GLIBC_[0-9.]+" | sort -uV | tail -1)"; ldd --version | head -1
+  echo "glibc floor ($ARCH): $(objdump -T $B | grep -oE "GLIBC_[0-9.]+" | sort -uV | tail -1)"; ldd --version | sed -n 1p
   cd /w
   export APPIMAGETOOL=/appimagetool APPIMAGE_EXTRACT_AND_RUN=1
   for F in slim portable; do bash packaging/ci/build-appimage.sh "$F" "$V"; done
