@@ -31,6 +31,13 @@
 .os-plugin-modal .modal-title { font-weight: 600; font-size: 15px; margin: 0 24px 10px 0 }
 .os-plugin-modal .modal-title:empty { display: none }
 .os-plugin-modal .modal.prompt { padding: 0; width: 560px }
+/* a prompt that drops the .modal class (Omnisearch: modalEl.removeClass("modal")) is still the
+   window: without this box it had no background (see-through) and, not positioned, sat UNDER
+   .modal-bg, so every click (scrollbar, result) landed on the backdrop and closed it */
+.os-plugin-modal > .prompt { position: relative; min-width: 360px; width: 560px; max-width: min(640px, 92vw);
+  max-height: 76vh; overflow: auto; padding: 0; background: var(--bg-elevated);
+  color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px var(--shadow-popover) }
 /* plug-val: a plugin modal's button row sits right-aligned under the text, warning buttons filled (stock-F23-a.png) */
 .os-plugin-modal .modal-button-container { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px }
 .os-plugin-modal .modal-button-container button.mod-warning { background: var(--text-error); color: #fff; border-color: transparent }

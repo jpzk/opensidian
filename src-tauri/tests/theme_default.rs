@@ -134,6 +134,21 @@ fn h343_negative_rules_read_the_tokens_so_themes_still_win() {
 
 fn plugins_css() -> String { css("../ui/plugins/plugins.css") }
 
+/// Omnisearch's modal removes the `modal` class and keeps `prompt`. The window must still
+/// be a box ABOVE `.modal-bg` (which closes the modal on click) and not see-through, so the
+/// rule is on `.prompt` itself, not only on `.modal.prompt`.
+#[test]
+fn a_prompt_without_the_modal_class_is_still_the_window() {
+    let p = plugins_css();
+    let b = rule(&p, ".os-plugin-modal > .prompt");
+    assert_eq!(decl(&b, "position").as_deref(), Some("relative"), "not positioned = under .modal-bg: every click closes it");
+    assert_eq!(decl(&b, "background").as_deref(), Some("var(--bg-elevated)"), "no background = see-through");
+    assert_eq!(decl(&b, "overflow").as_deref(), Some("auto"));
+    // the backdrop is the positioned layer the box must sit on top of
+    let bg = rule(&p, ".os-plugin-modal .modal-bg");
+    assert_eq!(decl(&bg, "position").as_deref(), Some("absolute"));
+}
+
 #[test]
 fn h343_coloured_canvas_card_tint_is_stock_7pct() {
     // stock 1.13.7 colour-4 text card, painted: light 238,250,243 = 7% #08b94e over #fff
