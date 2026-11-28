@@ -131,6 +131,7 @@ run_part() {  # run_part <part> <cmd...>: stdout -> $t/<part>.cdx.json, stderr -
 LOCK=$root/packaging/ci/fedora-pkgset.lock.tsv
 lock_eq_rpmdb() {  # rc 0 iff rpm -qa (minus gpg-pubkey) == the lock rows of this arch
   local a; a=$(uname -m)
+  [ -s "$LOCK" ] || { echo "sbom-local: $LOCK missing or empty" >&2; return 1; }
   diff <(awk -F'\t' -v a="$a" '!/^#/ && $1==a {print $2"\t"$3"\t"$4}' "$LOCK" | LC_ALL=C sort) \
        <(rpm -qa --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n' | grep -v '^gpg-pubkey	' | LC_ALL=C sort) >&2
 }

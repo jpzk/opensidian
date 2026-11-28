@@ -179,9 +179,24 @@ WK_EMBEDDED=$t/emb2.tsv expect_fail "G1: webkit version absent from table fails 
 printf '2.50.1\tskia\tm140\t\tBSD-3-Clause\tx\n' >"$t/emb3.tsv"
 WK_EMBEDDED=$t/emb3.tsv expect_fail "G1: row without purl fails closed" "bad row" run
 # the REAL table covers the webkit the AppImage build pins (packaging/ci/fedora-pkgset.lock.tsv, every arch)
-pin=$(awk -F"\t" '!/^#/ && $2=="webkit2gtk4.1" {e=$3; sub(/^[0-9]+:/,"",e); sub(/-.*/,"",e); print e}' "$here/../../packaging/ci/fedora-pkgset.lock.tsv" | sort -u | tr "\n" " " | sed "s/ $//")
-real=$(awk -F'\t' -v v="$pin" '!/^#/ && $1==v && $2!="" && $3!="" && $4 ~ /^pkg:/ && $5!="" && $6!=""' "$here/webkit-embedded.tsv" | cut -f2 | sort | tr '\n' ' ')
-[ "$real" = "angle libsysprof-capture pdfjs-dist skia xdgmime " ] && ok "G1: webkit-embedded.tsv covers pinned webkit $pin: $real" || bad "G1: webkit-embedded.tsv rows for pinned webkit '$pin': '$real'"
+# pinned_wk <lock>: webkit2gtk4.1 upstream versions in a lock; fails closed (rc!=0, no output) when the
+# lock is missing/empty or has no webkit row - never an empty "pinned version" that silently passes.
+pinned_wk() {
+  [ -s "$1" ] || { echo "pkgset lock $1 missing or empty" >&2; return 1; }
+  local v; v=$(awk -F"\t" '!/^#/ && $2=="webkit2gtk4.1" {e=$3; sub(/^[0-9]+:/,"",e); sub(/-.*/,"",e); print e}' "$1" | sort -u | tr "\n" " " | sed "s/ $//") || return 1
+  [ -n "$v" ] || { echo "no webkit2gtk4.1 row in $1" >&2; return 1; }
+  printf '%s\n' "$v"
+}
+if pinned_wk "$t/nope.lock.tsv" >/dev/null 2>"$t/perr"; then bad "G1: missing pkgset lock fails closed"
+else grep -q "missing or empty" "$t/perr" && ok "G1: missing pkgset lock fails closed" || bad "G1: missing pkgset lock fails closed (msg)"; fi
+printf 'x86_64\tgtk3\t0:3.24.52-2.fc44\tx86_64\t%064d\n' 0 >"$t/nowk.lock.tsv"
+if pinned_wk "$t/nowk.lock.tsv" >/dev/null 2>&1; then bad "G1: lock without webkit fails closed"; else ok "G1: lock without webkit fails closed"; fi
+printf 'x86_64\twebkit2gtk4.1\t0:2.54.3-2.fc44\tx86_64\t%064d\n' 0 >"$t/wk.lock.tsv"
+[ "$(pinned_wk "$t/wk.lock.tsv")" = 2.54.3 ] && ok "G1: pinned_wk reads fixture lock" || bad "G1: pinned_wk reads fixture lock"
+if pin=$(pinned_wk "$here/../../packaging/ci/fedora-pkgset.lock.tsv" 2>"$t/perr"); then
+  real=$(awk -F'\t' -v v="$pin" '!/^#/ && $1==v && $2!="" && $3!="" && $4 ~ /^pkg:/ && $5!="" && $6!=""' "$here/webkit-embedded.tsv" | cut -f2 | sort | tr '\n' ' ')
+  [ "$real" = "angle libsysprof-capture pdfjs-dist skia xdgmime " ] && ok "G1: webkit-embedded.tsv covers pinned webkit $pin: $real" || bad "G1: webkit-embedded.tsv rows for pinned webkit '$pin': '$real'"
+else cat "$t/perr"; bad "G1: real packaging/ci/fedora-pkgset.lock.tsv readable with a webkit row"; fi
 
 # ---- osv-fixed-gate ----
 mk() { jq -n --arg eco "$1" --argjson ev "$2" '{results:[{packages:[{package:{name:"webkit2gtk",version:"2.50.1-0ubuntu1",ecosystem:"Ubuntu:26.04:LTS"},
