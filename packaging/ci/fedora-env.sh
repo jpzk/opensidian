@@ -42,7 +42,7 @@ die(){ say "FAIL: $*"; exit 1; }
 [ -s "$LOCK" ] || die "no $LOCK"
 # the lock itself is pinned: re-resolving it (scripts/supply-chain/fedora-resolve.sh) means updating
 # this hash in the same commit; pin-check.sh (rule rpmlock) checks the same equality in CI
-LOCK_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+LOCK_SHA256=a85246f962f69eb2bb195f845db161bc8f22a00fa946bcf6607871e5bdb41cd0
 [ "$(sha256sum "$LOCK" | cut -d' ' -f1)" = "$LOCK_SHA256" ] || die "fedora-pkgset.lock.tsv sha256 $(sha256sum "$LOCK" | cut -d' ' -f1) != LOCK_SHA256 $LOCK_SHA256"
 # lock rows for this arch: target-arch name evr arch sha256 src/ver/rel
 rows(){ awk -F'\t' -v a="$ARCH" '!/^#/ && $1==a' "$LOCK"; }
