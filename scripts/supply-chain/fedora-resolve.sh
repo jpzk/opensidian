@@ -114,9 +114,9 @@ done < "$W/src-$A.tsv"
 say "$i rpms: signed (splice), rpm -K digests signatures OK, sha256 recorded"
 
 # --- closure proof ------------------------------------------------------------------------------
-E=$W/empty-$A; rm -rf "$E"; mkdir -p "$E"; rpm --root "$E" --dbpath /rpmdb --initdb < /dev/null
+E=$W/empty-$A; rm -rf "$E"; mkdir -p "$E/rpmdb"; rpm --dbpath "$E/rpmdb" --initdb < /dev/null   # no --root: chroot needs CAP_SYS_CHROOT; deps/conflicts are checked against this empty db only
 awk -F'\t' '{e=$2; sub(/^[0-9]+:/,"",e); print "'"$W"'/rpms/"$1"-"e"."$3".rpm"}' "$W/lock-$A.tsv" > "$W/files-$A.txt"; mapfile -t files < "$W/files-$A.txt"
-rpm --root "$E" --dbpath /rpmdb --ignorearch --nosignature --test -i "${files[@]}" < /dev/null >&2 || die "pinned set is not self-contained (rpm --test -i)"
+rpm --dbpath "$E/rpmdb" --ignorearch --nosignature --ignoresize --test -i "${files[@]}" < /dev/null >&2 || die "pinned set is not self-contained (rpm --test -i)"
 rm -rf "$E" "$K"; [ -n "${KEEP_RPMS:-}" ] || rm -rf "$W/rpms"   # disk: only the hashes are kept
 say "closure proof: rpm --test -i of ${#files[@]} rpms into an empty root OK"
 LC_ALL=C sort "$W/lock-$A.tsv"
