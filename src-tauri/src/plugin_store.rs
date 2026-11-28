@@ -62,9 +62,9 @@ macro_rules! compat_app_version {
 pub const COMPAT_APP_VERSION: &str = compat_app_version!();
 /// what install writes next to the plugin: where each file came from + its sha256
 pub const SIDECAR: &str = "opensidian-install.json";
-const MAX_REDIRECTS: usize = 5;
-const IO_TIMEOUT_S: u32 = 20;
-const DEADLINE: Duration = Duration::from_secs(180);
+pub(crate) const MAX_REDIRECTS: usize = 5;
+pub(crate) const IO_TIMEOUT_S: u32 = 20;
+pub(crate) const DEADLINE: Duration = Duration::from_secs(180);
 const MAX_LIST: u64 = 32 * 1024 * 1024;
 const MAX_API_JSON: u64 = 2 * 1024 * 1024;
 const MAX_README: u64 = 1024 * 1024;
@@ -96,7 +96,7 @@ pub fn check_url(u: &str) -> Result<url::Url, String> {
 }
 
 /// the loopback fixture mirror, if the env names a valid one
-fn mirror_base() -> Option<url::Url> {
+pub(crate) fn mirror_base() -> Option<url::Url> {
     let raw = std::env::var(BASE_ENV).ok().filter(|s| !s.is_empty())?;
     match parse_mirror(&raw) {
         Some(u) => Some(u),
@@ -349,7 +349,18 @@ pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> 
     Err(format!("{what}: more than {MAX_REDIRECTS} redirects"))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// Windows: WinHTTP (http_win.rs) — what the system already ships, as libsoup is on Linux: TLS
+/// by Schannel, the system's trust store and proxy, no TLS stack in the binary. Same egress rules
+/// as the libsoup client: check_url on every hop, NO automatic redirect (next_hop re-checks each
+/// Location), per-I/O timeout, a whole-request deadline, the byte cap enforced again while the
+/// body is read. Anonymous: no cookies, no automatic authentication.
+#[cfg(windows)]
+pub fn http_get(logical: &str, cap: u64, what: &str) -> Result<Vec<u8>, String> {
+    crate::net_allowed(what)?; // #144 toggle 3: the choke point, before any client exists
+    crate::http_win::get(logical, cap, what)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn http_get(logical: &str, _cap: u64, what: &str) -> Result<Vec<u8>, String> {
     crate::net_allowed(what)?; // #144 toggle 3
     check_url(logical)?;
@@ -1137,6 +1148,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn uninstall_refuses_a_symlinked_plugin_dir() {
         let root = vault("unsym");

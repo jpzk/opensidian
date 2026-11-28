@@ -5,7 +5,9 @@
    require() shim. Loaded by index.html BEFORE main.js and before any plugin.
 
    How a plugin's code gets in (the page CSP has no 'unsafe-eval', no blob:):
-     1. load(id) appends <script src="opensidian-plugin://localhost/<id>/main.js?n=K">;
+     1. load(id) appends <script src="…/<id>/main.js?n=K">. On Linux/macOS that is
+        opensidian-plugin://localhost/…; on WebView2 (Windows/Android) wry only
+        routes http(s)://opensidian-plugin.localhost/… (custom-scheme workaround).
         Rust (src-tauri/src/plugins.rs) serves it only when the vault is trusted,
         the id is enabled and the file is confined — wrapped as
           ;(function(){ __osPluginDefine("<id>", function(module,exports,require){ ...main.js... }) })();
@@ -42,7 +44,18 @@
   const T = window.__TAURI__;
   const invoke = T && T.core && T.core.invoke ? T.core.invoke.bind(T.core) : null;
   const listen = T && T.event && T.event.listen ? T.event.listen.bind(T.event) : null;   // item 5: vault-changed for the plugin vault model
-  const SCHEME = "opensidian-plugin://localhost/";
+  /* WebView2/Android: wry registers custom protocols as http(s)://<scheme>.localhost/
+     (WebView2Feedback#73). Linux/macOS keep <scheme>://localhost/. Detect the page
+     origin so one UI tree works on every host. Exposed for images (editor / canvas). */
+  function customSchemeUrl(scheme, path) {
+    const p = String(path).replace(/^\/+/, "");
+    try {
+      if (/^https?:$/i.test(location.protocol) && /\.localhost$/i.test(location.hostname || ""))
+        return location.protocol + "//" + scheme + ".localhost/" + p;
+    } catch (_) { /* ignore */ }
+    return scheme + "://localhost/" + p;
+  }
+  window.__osCustomSchemeUrl = customSchemeUrl;
   const NODE = window.__osNodeModules;   // captured at boot (index.html loads node-leaves.js first)
 
   const status = new Map();   // id -> {state: "loading"|"loaded"|"failed"|"unloaded", error?}
@@ -260,7 +273,7 @@
       // (e.g. require("@codemirror/..")) with "did not define" (plgprobe caught it)
       s.onerror = () => { if (!done) fin(fail(id, new Error("main.js refused or missing (restricted mode, not enabled, or not installed)"))); };
       s.onload = () => setTimeout(() => { if (!done) fin(fail(id, new Error("main.js did not define a plugin (syntax error?)"))); }, 0);
-      s.src = SCHEME + encodeURIComponent(id) + "/main.js?n=" + (++seq);
+      s.src = customSchemeUrl("opensidian-plugin", encodeURIComponent(id) + "/main.js?n=" + (++seq));
       document.head.appendChild(s);
     });
   }

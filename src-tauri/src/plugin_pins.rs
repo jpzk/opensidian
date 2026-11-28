@@ -480,6 +480,7 @@ mod tests {
     /// #288 review (CodeAnt): plugin_file_in checks the size, then a concurrent vault writer
     /// replaces the file. The read is of the OPEN file, bounded by the cap, never via a symlink.
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn file_replaced_after_the_check_is_read_bounded() {
         let r = vault("swap");
         let main = r.join(".obsidian/plugins/good/main.js");

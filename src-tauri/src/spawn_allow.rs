@@ -276,6 +276,7 @@ mod tests {
         assert_eq!(g[0].program, "/bin/p3");
     }
 
+    #[cfg(unix)]
     #[test]
     fn spawn_allow_plugin_fingerprint_changes_with_main_js_or_manifest() {
         let base = std::env::temp_dir().join(format!("spawnallow-fp-{}", std::process::id()));
@@ -308,6 +309,7 @@ mod tests {
     /* #74: the program hash is of the pinned file's bytes: a rewrite in place (same size,
        mtime set back) or a replace by rename gives another hash, so a grant for the old
        program no longer matches and the spawn is asked again; unchanged = same hash (cached). */
+    #[cfg(unix)]
     #[test]
     fn spawn_allow_program_hash_change_asks_again() {
         // canonical: pin() takes the canonical path (macOS: $TMPDIR is under /var -> /private/var)
@@ -349,6 +351,7 @@ mod tests {
        ctime in the same tick). A program hashed right after its change is not cached, so the
        rewrite is read again and gives another hash. */
     #[test]
+    #[cfg(unix)] // a #!/bin/sh program with no extension is no program on Windows
     fn spawn_allow_racily_new_program_is_not_cached() {
         let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-racy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -377,6 +380,7 @@ mod tests {
     /* #74: the cache still does its job: an unchanged program whose mtime and ctime are older
        than the margin is hashed once and then served from the cache (no re-read). */
     #[test]
+    #[cfg(unix)] // a #!/bin/sh program with no extension is no program on Windows
     fn spawn_allow_old_unchanged_program_is_cached() {
         let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-old-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);

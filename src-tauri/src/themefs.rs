@@ -1950,6 +1950,7 @@ mod tests {
     /// #289 review (CodeAnt): a theme whose theme.css is a symlink is not listed (the
     /// no-follow read in load_theme refuses it) — it is excluded, naming why
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn theme_with_a_symlinked_css_is_excluded_not_offered() {
         let root = tmp_vault("thlink289");
         mk_theme(&root, "Linked", Some(r#"{"name": "Linked", "version": "1.0.0"}"#), false);

@@ -92,7 +92,11 @@ pub fn read_checked(root: &Path, p: &Path, cap: u64) -> Result<Vec<u8>, &'static
     let rel = crate::vaultfs::rel_of(root, p).map_err(|_| "unreadable")?;
     crate::vaultfs::read(root, &rel, cap).map_err(|e| {
         // the walk refuses a symlinked component itself (PermissionDenied "refused: symlink in vault path") or the kernel does (ELOOP)
-        if e.raw_os_error() == Some(libc::ELOOP) || e.to_string().contains("symlink") {
+        #[cfg(unix)]
+        let eloop = e.raw_os_error() == Some(libc::ELOOP);
+        #[cfg(not(unix))]
+        let eloop = false; // Windows: a reparse point is refused by vaultfs with "symlink" in the message
+        if eloop || e.to_string().contains("symlink") {
             "symlinked file"
         } else if e.kind() == std::io::ErrorKind::FileTooLarge {
             "too big"
@@ -265,6 +269,7 @@ pub const TRUST_ID_KEY: &str = "plugins_trust_id";
 /// separates a reused inode number (rm -rf + mkdir often gets the freed one back); a filesystem
 /// without birth time gives NO identity (review #129: the inode alone is reused). The device number is left out on purpose: it is not
 /// stable across remounts of removable / network disks and the path already names the place.
+#[cfg(unix)]
 pub fn dir_identity(canon: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let m = fs::metadata(canon).ok()?;
@@ -272,6 +277,46 @@ pub fn dir_identity(canon: &Path) -> Option<String> {
         return None;
     }
     identity_of(m.ino(), m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()))
+}
+
+/// Windows: the same identity from the open directory — file index (what an inode is here) plus the
+/// creation time (what birth time is): a rm -rf + mkdir gets a new creation time even if NTFS reuses the
+/// index. The volume serial is left out for the reason the device number is.
+#[cfg(windows)]
+pub fn dir_identity(canon: &Path) -> Option<String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct Info {
+        attributes: u32,
+        created: [u32; 2],
+        accessed: [u32; 2],
+        written: [u32; 2],
+        volume: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(h: *mut core::ffi::c_void, info: *mut Info) -> i32;
+    }
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    let f = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(canon).ok()?;
+    let mut info = std::mem::MaybeUninit::<Info>::zeroed();
+    // SAFETY: the handle is open; the struct is read only when the call succeeded
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle() as *mut core::ffi::c_void, info.as_mut_ptr()) } == 0 {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    if info.attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return None;
+    }
+    let index = (info.index_high as u64) << 32 | info.index_low as u64;
+    identity_of(index, f.metadata().ok()?.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()))
 }
 
 /// "<inode>:<birth ns>"; no birth time = no identity (an inode number alone is handed out again)
@@ -648,6 +693,7 @@ mod tests {
         assert!(bind_legacy(&serde_json::json!({"plugins_trusted": {k.path.clone(): false}}), &k).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_root_shares_the_identity_of_its_target() {
         let r = vault("symid");

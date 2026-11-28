@@ -41,7 +41,6 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// exit status of a boot that found its vault already open elsewhere
@@ -103,13 +102,34 @@ pub fn lock_dir(flatpak_id: Option<OsString>, xdg_runtime: Option<OsString>, hom
     }
 }
 
+/// Windows: `%LOCALAPPDATA%\dev.koto.opensidian\locks` (no XDG / Flatpak).
+#[cfg(windows)]
+pub fn env_lock_dir() -> PathBuf {
+    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(la).join("dev.koto.opensidian").join("locks");
+    }
+    let home = user_home();
+    home.join("AppData").join("Local").join("dev.koto.opensidian").join("locks")
+}
+
+#[cfg(not(windows))]
 pub fn env_lock_dir() -> PathBuf {
     let in_flatpak = Path::new("/.flatpak-info").exists();
     let id = if in_flatpak { std::env::var_os("FLATPAK_ID") } else { None };
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let home = user_home();
     lock_dir(id, std::env::var_os("XDG_RUNTIME_DIR"), &home)
 }
 
+fn user_home() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).unwrap_or_else(|| ".".into()))
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()))
+    }
+}
 fn fnv1a64(b: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for &x in b {
@@ -121,7 +141,51 @@ fn fnv1a64(b: &[u8]) -> u64 {
 
 /// lock file for a CANONICAL vault path
 pub fn lock_file(dir: &Path, canon: &Path) -> PathBuf {
-    dir.join(format!("vault-{:016x}.lock", fnv1a64(canon.as_os_str().as_bytes())))
+    dir.join(format!("vault-{:016x}.lock", fnv1a64(canon.as_os_str().as_encoded_bytes())))
+}
+
+/// Non-blocking exclusive lock on the lock file. On unix that is std's flock, which is advisory: the
+/// label and the `ready <token>` lines stay readable while the lock is held. Windows locks are
+/// MANDATORY (std locks the whole file, so a second reader gets ERROR_LOCK_VIOLATION and the ready
+/// probe could never see the line). Here the lock is one byte far past the data, so contention is
+/// the same (any second handle, in this or another process, is refused) and every byte that is
+/// written or read stays reachable. Released when the handle closes or the process dies.
+#[cfg(unix)]
+fn try_lock(f: &File) -> Result<(), fs::TryLockError> {
+    f.try_lock()
+}
+
+#[cfg(windows)]
+fn try_lock(f: &File) -> Result<(), fs::TryLockError> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct Overlapped {
+        internal: usize,
+        internal_high: usize,
+        offset: u32,
+        offset_high: u32,
+        event: *mut core::ffi::c_void,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LockFileEx(h: *mut core::ffi::c_void, flags: u32, reserved: u32, lo: u32, hi: u32, ov: *mut Overlapped) -> i32;
+    }
+    const LOCKFILE_FAIL_IMMEDIATELY: u32 = 1;
+    const LOCKFILE_EXCLUSIVE_LOCK: u32 = 2;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    // SAFETY: a valid handle of an open file; the zeroed OVERLAPPED is only read for its offset
+    let mut ov: Overlapped = unsafe { std::mem::zeroed() };
+    ov.offset_high = 0x4000_0000; // byte 2^62: far beyond any data this file ever holds
+    let ok = unsafe { LockFileEx(f.as_raw_handle(), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &mut ov) };
+    if ok != 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    if e.raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
+        Err(fs::TryLockError::WouldBlock)
+    } else {
+        Err(fs::TryLockError::Error(e))
+    }
 }
 
 fn open(dir: &Path, canon: &Path) -> Result<(File, PathBuf), LockErr> {
@@ -141,13 +205,13 @@ fn open(dir: &Path, canon: &Path) -> Result<(File, PathBuf), LockErr> {
 /// caller: two spellings of one directory must key one lock.
 pub fn acquire_in(dir: &Path, canon: &Path) -> Result<VaultLock, LockErr> {
     let (mut f, lf) = open(dir, canon)?;
-    match f.try_lock() {
+    match try_lock(&f) {
         Ok(()) => {}
         Err(fs::TryLockError::WouldBlock) => return Err(LockErr::Busy(canon.to_path_buf())),
         Err(fs::TryLockError::Error(e)) => return Err(LockErr::Io(format!("{}: {e}", lf.display()))),
     }
     // label for humans; we own the lock, so nobody else writes it concurrently
-    let _ = f.set_len(0).and_then(|_| f.write_all(canon.as_os_str().as_bytes())).and_then(|_| f.write_all(b"\n"));
+    let _ = f.set_len(0).and_then(|_| f.write_all(canon.as_os_str().as_encoded_bytes())).and_then(|_| f.write_all(b"\n"));
     Ok(VaultLock { f, path: lf })
 }
 
@@ -156,7 +220,7 @@ pub fn acquire_in(dir: &Path, canon: &Path) -> Result<VaultLock, LockErr> {
 /// Racy by nature; the child's own acquire stays the authority.)
 pub fn held_in(dir: &Path, canon: &Path) -> bool {
     match open(dir, canon) {
-        Ok((f, _)) => match f.try_lock() {
+        Ok((f, _)) => match try_lock(&f) {
             Ok(()) => false, // dropping f releases it again
             Err(fs::TryLockError::WouldBlock) => true,
             Err(_) => false,
@@ -246,6 +310,7 @@ pub(crate) mod tests {
         acquire_eventually(&locks, &canon).expect("free once that process is gone");
     }
 
+    #[cfg(unix)]
     #[test]
     fn vaultlock_dir_flatpak_uses_the_shared_per_app_runtime_dir() {
         let home = Path::new("/home/u");

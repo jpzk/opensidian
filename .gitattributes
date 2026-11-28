@@ -1,6 +1,48 @@
 # census token registry: two branches appending a line each merge to both lines (G2)
 ui/census.js merge=union
 # every goal appends its own recon-shots negation block; union keeps both (append-only, like census.js)
-.gitignore merge=union
-# built-in themes are byte-exact upstream files (sha256-pinned in builtins.rs): never normalise line endings
+.gitignore text eol=lf merge=union
+
+# Windows clones (Git for Windows sets core.autocrlf=true system-wide) must not turn LF into
+# CRLF in the checkout:
+#  - tests compare sources and fixtures byte-wise (include_str!, sha256 pins, TSV tables),
+#  - src-tauri/data/updates/ holds a signed SHA256SUMS whose signature covers the exact bytes,
+#  - ui/ and locales/ are embedded and served as-is.
+# Text is LF on every OS; fixtures, pinned data and vendored files are never touched.
+*.rs text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.ftl text eol=lf
+*.tsv text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.nix text eol=lf
+*.svg text eol=lf
+*.xml text eol=lf
+*.plist text eol=lf
+*.patch text eol=lf
+*.pins text eol=lf
+*.spec text eol=lf
+*.in text eol=lf
+*.desktop text eol=lf
+.gitattributes text eol=lf
+LICENSE text eol=lf
+Containerfile text eol=lf
+src-tauri/tests/fixtures/** -text
+src-tauri/data/** -text
+src-tauri/vendor/** -text
+ui/vendor/** -text
+ui/fonts/** -text
+vault/** -text
+fuzz/corpus/** -text
+scripts/supply-chain/tests/fixtures/** -text
+# built-in themes are byte-exact upstream files (sha256-pinned in builtins.rs): never normalise
+# line endings (kept last so it wins over the *.css / *.json rules above)
 src-tauri/themes/** -text

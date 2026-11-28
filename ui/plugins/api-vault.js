@@ -331,7 +331,27 @@
       async append(p, data) { const s = String(data); await core.append(ap(p), s); await adapterMade(p, te.encode(s).byteLength); }
       async appendBinary(p, data) { const u = toBytes(data); await core.append(ap(p), u); await adapterMade(p, u.byteLength); }
       async process(p, fn) { const out = fn(await this.read(p)); await this.write(p, out); return out; }
-      getResourcePath() { return ""; }
+      /* stock: a vault-relative path -> a URL the webview can fetch. Plugin files under
+         .obsidian/plugins/<id>/… ride opensidian-plugin (wasm / workers / assets); everything
+         else rides opensidian-img (the same scheme the note renderer uses for embeds). */
+      getResourcePath(p) {
+        const raw = String(p == null ? "" : p);
+        const trail = /\/$/.test(raw);
+        let path = normalizePath(raw.replace(/\/+$/, ""));
+        const mk = window.__osCustomSchemeUrl;
+        const enc = rel => String(rel).split("/").map(encodeURIComponent).join("/");
+        const plug = path.match(/^\.obsidian\/plugins\/([^/]+)(?:\/(.*))?$/);
+        let url;
+        if (plug) {
+          const rest = plug[2] || "";
+          url = mk ? mk("opensidian-plugin", enc(plug[1] + (rest ? "/" + rest : "")))
+            : "opensidian-plugin://localhost/" + enc(plug[1] + (rest ? "/" + rest : ""));
+        } else {
+          url = mk ? mk("opensidian-img", enc(path)) : "opensidian-img://localhost/" + enc(path);
+        }
+        if (trail && !url.endsWith("/")) url += "/";
+        return url;
+      }
       async mkdir(p) { await core.mkdir(ap(p), true); await adapterMade(p, 0, true); }
       async trashSystem() { return false; }       // no system trash: callers fall back to trashLocal
       async trashLocal(p) {
@@ -516,7 +536,10 @@
         await core.append(f.path, u8);
         f.stat.mtime = Date.now(); f.stat.size += u8.byteLength; vault.trigger("modify", f);
       },
-      getResourcePath() { return ""; },
+      getResourcePath(file) {
+        const p = file && typeof file === "object" && file.path != null ? file.path : file;
+        return adapter.getResourcePath(p);
+      },
       getConfig(k) { return ({ useMarkdownLinks: false, newLinkFormat: "shortest", attachmentFolderPath: "/", newFileLocation: "root", newFileFolderPath: "", alwaysUpdateLinks: false, showUnsupportedFiles: false })[k] ?? null; },
       /* vault.config (undocumented, part vint): the vault's own .obsidian/app.json
          as read when the model is built — {} when there is none; no defaults are

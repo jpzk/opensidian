@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Windows build: CI build + test of the Windows port (#34), x86_64 MSVC, the same checks macos.yml
+# runs per arch, so a change that breaks Windows is seen in its PR instead of on someone's machine.
+# No release upload: release.yml is unchanged. It runs on PRs (paths below) and by
+# workflow_dispatch.
+#
+#   build    Rust from rust-toolchain.toml, dist manifest sha256 + rustc commit verified by
+#            scripts/supply-chain/rust-toolchain.sh (the Linux and macOS script, unchanged; it runs
+#            in the image's Git Bash, which has curl, sha256sum and awk);
+#            cargo build --locked --release of src-tauri; the binary must be an x86-64 PE.
+#   test     cargo test --locked --no-fail-fast of src-tauri. A failing test fails the job; the log
+#            is kept as an artifact and summarised in the job summary, as in macos.yml.
+#   setup    only once the tests passed: packaging/windows/opensidian.iss compiled by the image's
+#            Inno Setup 6 (no tauri bundler, no recompile, nothing downloaded) around the binary
+#            built above -> opensidian-<ver>-windows-x86_64-unsigned-setup.exe + .sha256.
+#            Smoke test: silent per-user install into a temp dir, the installed exe must be
+#            byte-identical to the built one, then silent uninstall must remove it.
+#            Uploaded as artifact opensidian-windows-x86_64-unsigned. UNSIGNED: SmartScreen warns.
+#
+# Line endings: the image's Git has core.autocrlf=true, and a CRLF checkout fails the byte-exact
+# tests (fixtures, pinned themes, the Fluent and TSV data). The first step turns it off before the
+# checkout, so the tree is the repository's bytes whether or not .gitattributes covers every path.
+#
+# Runner label, pinned (never *-latest): windows-2025-vs2026, Windows Server 2025 x64 with Visual
+# Studio 2026 (actions/runner-images README, 2026-11-24; windows-latest points to it today). The
+# image's tools used: MSVC (Visual Studio Build Tools), rustup, Git Bash, PowerShell, jq, Inno
+# Setup 6 (6.7.1 on the image today; the job refuses another major). WebView2 is not needed to
+# build or to run the tests. Not covered: Windows on Arm (windows-11-arm).
+#
+# Hardening, as macos.yml: permissions contents: read; no secrets; checkout does not persist the
+# token; no caches; every action pinned to a full commit SHA (same pins as macos.yml); bash -eo
+# pipefail; no continue-on-error.
+name: Windows build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'ui/**'
+      - '.github/workflows/windows.yml'
+      - 'packaging/windows/**'
+      - '.gitattributes'
+      - 'rust-toolchain.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RUST_TOOLCHAIN: '1.98.0'     # = rust-toolchain.toml; rust-toolchain.sh refuses a mismatch
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: '5'
+
+jobs:
+  build:
+    name: build + test Windows x86_64 (windows-2025-vs2026)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 120
+    steps:
+      - name: git, no CRLF conversion
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git --version
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: runner, Windows, tools
+        run: |
+          echo "image: ${ImageOS:-?} ${ImageVersion:-?}  arch: ${RUNNER_ARCH:-?}"
+          [ "${RUNNER_ARCH:-}" = "X64" ] || { echo "::error::runner arch is ${RUNNER_ARCH:-?}, want X64"; exit 1; }
+          cmd.exe //d //c ver
+          bash --version | head -1
+          command -v curl sha256sum awk
+      - name: toolchain ${{ env.RUST_TOOLCHAIN }} (manifest sha256 + rustc commit, rust-toolchain.toml)
+        run: |
+          rustup --version
+          bash scripts/supply-chain/rust-toolchain.sh
+          rustc -vV
+          [ "$(rustc -vV | sed -n 's/^host: //p')" = "x86_64-pc-windows-msvc" ] || { echo "::error::rustc host is not x86_64-pc-windows-msvc"; exit 1; }
+      - name: cargo build --locked --release (x86_64-pc-windows-msvc)
+        working-directory: src-tauri
+        run: |
+          cargo build --locked --release
+          B=target/release/opensidian.exe
+          file "$B"
+          file "$B" | grep -q 'PE32+ executable.*x86-64' || { echo "::error::$B is not an x86-64 PE"; exit 1; }
+          sha256sum "$B"
+      - name: cargo test --locked (src-tauri)
+        working-directory: src-tauri
+        run: |
+          L="$(cygpath -u "$RUNNER_TEMP")/cargo-test-windows-x86_64.log"
+          rc=0
+          cargo test --locked --no-fail-fast > "$L" 2>&1 || rc=$?
+          cat "$L"
+          {
+            echo "### cargo test Windows x86_64 (rc=$rc)"
+            echo '```'
+            grep -E '^test result|^     Running|FAILED|panicked' "$L" | head -200
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "cargo test rc=$rc"
+          exit "$rc"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # the log of the step above, also when it failed (the job stays red)
+        if: ${{ !cancelled() }}
+        with:
+          name: cargo-test-windows-x86_64
+          path: ${{ runner.temp }}/cargo-test-windows-x86_64.log
+          if-no-files-found: error
+          retention-days: 14
+      - id: ver
+        name: version from tauri.conf.json
+        run: |
+          V=$(jq -r .version src-tauri/tauri.conf.json); V=${V%.0}
+          printf '%s' "$V" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || { echo "::error::bad version '$V'"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"; echo "version $V ($(jq --version))"
+      - name: setup (Inno Setup, packaging/windows/opensidian.iss)
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+          MSYS2_ARG_CONV_EXCL: '*'   # ISCC takes /D and /O switches: Git Bash must not turn them into paths
+        run: |
+          ISCC='C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          [ -f "$ISCC" ] || { echo "::error::Inno Setup 6 not on this image ($ISCC)"; exit 1; }
+          OUT="$(cygpath -w "$RUNNER_TEMP")\\dist"
+          EXE="$(cygpath -w "$PWD/src-tauri/target/release/opensidian.exe")"
+          "$ISCC" /Qp "/DAppVersion=$VER" "/DAppExe=$EXE" "/O$OUT" 'packaging\windows\opensidian.iss'
+          cd "$(cygpath -u "$OUT")"
+          S="opensidian-$VER-windows-x86_64-unsigned-setup.exe"
+          [ -f "$S" ] || { echo "::error::$S not produced"; ls -l; exit 1; }
+          file "$S" | grep -q 'PE32 executable' || { echo "::error::$S is not a PE"; exit 1; }
+          sha256sum "$S" > "$S.sha256"
+          cat "$S.sha256"
+      - name: setup smoke test (silent install, compare, silent uninstall)
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+          MSYS2_ARG_CONV_EXCL: '*'
+        run: |
+          D="$(cygpath -u "$RUNNER_TEMP")/dist"
+          S="$D/opensidian-$VER-windows-x86_64-unsigned-setup.exe"
+          T="$(cygpath -u "$RUNNER_TEMP")/opensidian-installed"
+          "$S" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER "/DIR=$(cygpath -w "$T")" "/LOG=$(cygpath -w "$D/../setup-install.log")"
+          [ -f "$T/opensidian.exe" ] || { echo "::error::not installed"; cat "$D/../setup-install.log"; exit 1; }
+          A=$(sha256sum < "$T/opensidian.exe" | cut -c1-64); B=$(sha256sum < src-tauri/target/release/opensidian.exe | cut -c1-64)
+          [ "$A" = "$B" ] || { echo "::error::installed exe $A != built exe $B"; exit 1; }
+          echo "installed exe = built exe ($A)"
+          ls -l "$T"
+          [ -x "$T/unins000.exe" ] || { echo "::error::no uninstaller"; exit 1; }
+          "$T/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          # the uninstaller finishes in a copy of itself started in %TEMP%: wait for the files to go
+          for i in $(seq 1 60); do [ -e "$T/opensidian.exe" ] || break; sleep 1; done
+          [ ! -e "$T/opensidian.exe" ] || { echo "::error::uninstall left opensidian.exe"; exit 1; }
+          echo "uninstalled"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opensidian-windows-x86_64-unsigned
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 14

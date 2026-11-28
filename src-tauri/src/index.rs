@@ -460,7 +460,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
             out.push(if rel.as_os_str().is_empty() {
                 stem.to_string()
             } else {
-                format!("{}/{}", rel.display(), stem)
+                format!("{}/{}", crate::vaultfs::rel_slash(rel), stem)
             });
         }
         false
@@ -488,7 +488,7 @@ fn img_rel(p: &Path, base: &Path, name: &str) -> Option<String> {
     Some(if dir.as_os_str().is_empty() {
         name.to_string()
     } else {
-        format!("{}/{name}", dir.display())
+        format!("{}/{name}", crate::vaultfs::rel_slash(dir))
     })
 }
 
@@ -512,7 +512,7 @@ pub fn attachments_of(root: &Path) -> Vec<String> {
         }
         // #289 review: a regular file only — a FIFO, socket or device is no attachment node
         if t.is_file() && !name.ends_with(".md") {
-            out.push(e.rel.to_string_lossy().into_owned());
+            out.push(crate::vaultfs::rel_slash(&e.rel)); // '/'-separated on Windows too
         }
         false
     });
@@ -1073,6 +1073,7 @@ mod tests {
     /// #289 review (CodeAnt nitpick index.rs:513): only regular files are attachments —
     /// a FIFO with a non-.md name is not offered to the filtered graph as a file node
     #[test]
+    #[cfg(unix)] // mkfifo
     fn attachments_are_regular_files_only() {
         let root = std::env::temp_dir().join(format!("osd-attach289-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);

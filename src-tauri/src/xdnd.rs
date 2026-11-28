@@ -30,7 +30,9 @@
 use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use std::cell::RefCell;
+#[cfg(unix)]
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
@@ -90,7 +92,17 @@ pub(crate) fn is_file_uri(u: &str) -> bool {
 /// attach_drop refuses it as Refused::Remote (its "://" check) instead of guessing a path
 pub(crate) fn uri_path(u: &str) -> PathBuf {
     match local_part(u) {
+        #[cfg(unix)]
         Some(p) => PathBuf::from(OsString::from_vec(pct_decode(p))),
+        // Windows: "file:///C:/x" names "/C:/x"; the drive form is the path
+        #[cfg(windows)]
+        Some(p) => {
+            let s = String::from_utf8_lossy(&pct_decode(p)).into_owned();
+            PathBuf::from(match s.as_bytes() {
+                [b'/', d, b':', ..] if d.is_ascii_alphabetic() => s[1..].to_string(),
+                _ => s,
+            })
+        }
         None => PathBuf::from(u.trim()),
     }
 }
@@ -347,6 +359,7 @@ mod tests {
     }
 
     /// a non-UTF-8 file name survives as bytes; a broken escape stays literal
+    #[cfg(unix)]
     #[test]
     fn decoding_is_byte_exact() {
         use std::os::unix::ffi::OsStrExt;

@@ -749,7 +749,9 @@ pub fn media_check(eff: &Eff, what: &str) -> Result<(), String> {
 
 /// layer 2: the page CSP with toggle 4 applied. On = byte-identical input.
 /// Off = `opensidian-img:` removed from img-src and `blob:` from media-src; every
-/// other directive (and every other source in those two) untouched.
+/// other directive (and every other source in those two) untouched. On Windows the
+/// image scheme is also listed as the origin WebView2 serves it from
+/// (http://opensidian-img.localhost, tauri.windows.conf.json): that goes too.
 pub fn csp_media(csp: &str, on: bool) -> String {
     if on {
         return csp.to_string();
@@ -758,12 +760,12 @@ pub fn csp_media(csp: &str, on: bool) -> String {
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(|d| {
-            let drop = match d.split_whitespace().next().unwrap_or("") {
-                "img-src" => "opensidian-img:",
-                "media-src" => "blob:",
+            let drop: &[&str] = match d.split_whitespace().next().unwrap_or("") {
+                "img-src" => &["opensidian-img:", "http://opensidian-img.localhost"],
+                "media-src" => &["blob:"],
                 _ => return d.to_string(),
             };
-            d.split_whitespace().filter(|t| *t != drop).collect::<Vec<_>>().join(" ")
+            d.split_whitespace().filter(|t| !drop.contains(t)).collect::<Vec<_>>().join(" ")
         })
         .collect::<Vec<_>>()
         .join("; ")
@@ -1128,6 +1130,23 @@ mod tests {
         assert!(with_remote(true, remote_on));
         assert!(!remote_on());
         assert!(remote_off_text().contains("Load external resources is off"));
+    }
+
+    /// toggle 4 on Windows: WebView2 requests the image scheme as http://opensidian-img.localhost,
+    /// so the Windows CSP (tauri.windows.conf.json) lists that origin beside the scheme token.
+    /// Off must drop it too, or the page keeps a vault image source the toggle says is gone.
+    #[test]
+    fn vault_media_toggle_off_drops_the_webview2_image_origin_too() {
+        let win = "default-src 'self'; script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval'; \
+                   style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img: http://opensidian-img.localhost; font-src 'self'; \
+                   connect-src ipc: http://ipc.localhost; media-src 'self' blob:";
+        assert_eq!(csp_media(win, true), win);
+        let off = csp_media(win, false);
+        let img = off.split("; ").find(|d| d.starts_with("img-src")).unwrap();
+        assert_eq!(img, "img-src 'self' data:", "{off}");
+        // the plugin origin is a script source, not media: untouched
+        assert!(off.contains("script-src 'self' opensidian-plugin: http://opensidian-plugin.localhost 'wasm-unsafe-eval'"), "{off}");
+        assert!(off.contains("media-src 'self'") && !off.contains("blob:"), "{off}");
     }
 
     /// toggle 4: default renders; off refuses naming the toggle; the per-call flag

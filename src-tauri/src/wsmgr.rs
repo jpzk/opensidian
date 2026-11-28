@@ -307,6 +307,7 @@ mod tests {
         assert_eq!(names(&mutate_in(&root, |d| op_save(d, "A", &lay("a.md"))).unwrap()), ["A"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinked_obsidian_is_refused() {
         let root = tmp("sym");
@@ -318,6 +319,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn read250_leaf_symlink_devzero_fifo_and_oversize_are_not_read() {
         let root = tmp("r250");
         let out = tmp("r250out");

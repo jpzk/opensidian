@@ -54,7 +54,8 @@ fn ctx() -> javascriptcore::Context {
     let ctx = javascriptcore::Context::new();
     // the shim defers write callbacks with queueMicrotask; JSC's bare context may lack it: a
     // synchronous queue the test drains by hand (FLUSH), so "called once" is observable
-    ctx.evaluate("var Q = []; var queueMicrotask = function (f) { Q.push(f); };\
+    // WIN: the IIFE's host test (node-desktop.js), evaluated there; processShim alone needs it
+    ctx.evaluate("var WIN = false; var Q = []; var queueMicrotask = function (f) { Q.push(f); };\
                   function FLUSH() { while (Q.length) Q.shift()(); }");
     for f in ["stdioShim", "processShim"] {
         ctx.evaluate(&func(&src, f));
@@ -63,6 +64,17 @@ fn ctx() -> javascriptcore::Context {
     ctx.evaluate("var P = processShim();");
     if let Some(e) = ctx.exception() { panic!("processShim(): {}", e.to_str()); }
     ctx
+}
+
+/// process.platform names the host the IIFE detected (WIN): "linux" here, "win32" on Windows,
+/// so a plugin picks the commands of the system it really runs on
+#[test]
+fn process_platform_names_the_host() {
+    let c = ctx();
+    assert_eq!(ev(&c, "P.platform"), "linux");
+    c.evaluate("WIN = true; var PW = processShim();");
+    if let Some(e) = c.exception() { panic!("processShim() on Windows: {}", e.to_str()); }
+    assert_eq!(ev(&c, "PW.platform"), "win32");
 }
 
 fn ev(ctx: &javascriptcore::Context, js: &str) -> String {

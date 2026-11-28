@@ -29,14 +29,32 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
+#[cfg_attr(windows, allow(unused_imports))] // Windows builds its Command in desk_proc/windows.rs
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::Serialize;
+
+/* Windows: the platform pieces (fd-less pin / ident, Job Object kill, PATH cleaning, CreateProcess)
+   live in desk_proc/windows.rs; everything below that is not cfg'd is shared by every OS. */
+#[cfg(windows)]
+mod windows;
+/// Windows: a canonical path in its plain form (`\\?\C:\x` -> `C:\x`, `\\?\UNC\h\s` -> `\\h\s`;
+/// any other verbatim path is kept as it is). main.rs uses it for vault paths a person sees.
+#[cfg(windows)]
+pub fn plain_path(p: &Path) -> PathBuf {
+    windows::plain(p)
+}
+#[cfg(windows)]
+pub use windows::{child_path, pin, pin_dir, Ident, Pinned};
+#[cfg(windows)]
+use windows::{build, ident_of};
 
 /// the page-side name of the vault root (FileSystemAdapter.getBasePath)
 pub const VAULT_ALIAS: &str = "/vault";
@@ -122,6 +140,9 @@ pub struct Run {
     stdin: Mutex<Option<ChildStdin>>,
     st: Mutex<State>,
     cv: Condvar,
+    /// Windows: the Job Object that owns the child and what it starts (kill reaches the tree)
+    #[cfg(windows)]
+    job: windows::JobHandle,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -136,6 +157,10 @@ pub struct Chunk {
     pub done: bool,
 }
 
+#[cfg(windows)]
+pub use windows::{sig_name, sig_num};
+
+#[cfg(unix)]
 pub fn sig_name(n: i32) -> &'static str {
     match n {
         libc::SIGHUP => "SIGHUP",
@@ -153,6 +178,7 @@ pub fn sig_name(n: i32) -> &'static str {
     }
 }
 
+#[cfg(unix)]
 pub fn sig_num(name: &str) -> Option<i32> {
     Some(match name.trim_start_matches("SIG").to_ascii_uppercase().as_str() {
         "HUP" => libc::SIGHUP,
@@ -179,8 +205,21 @@ impl Run {
         if self.st.lock().unwrap_or_else(|e| e.into_inner()).reaped {
             return false;
         }
-        // SAFETY: plain syscall on our child's own group (process_group(0))
-        unsafe { libc::kill(-self.pid, sig) == 0 }
+        #[cfg(unix)]
+        {
+            // SAFETY: plain syscall on our child's own group (process_group(0))
+            unsafe { libc::kill(-self.pid, sig) == 0 }
+        }
+        // Windows has no signals: every one ends the Job Object (the whole tree), or the child alone
+        // when no job could be made; the signal asked for is what the page reads back
+        #[cfg(windows)]
+        {
+            let ended = if self.job.is_null() { windows::terminate_pid(self.pid as u32) } else { self.job.terminate() };
+            if ended {
+                self.st.lock().unwrap_or_else(|e| e.into_inner()).signal.get_or_insert(sig);
+            }
+            ended
+        }
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
@@ -236,6 +275,12 @@ pub struct Spec {
     pub env: Vec<(String, String)>,
     /// argv[0] the child sees (the name the plugin asked for); None = file
     pub argv0: Option<String>,
+    /// Windows: Node's `windowsVerbatimArguments`. The args are joined with spaces and passed
+    /// as written, not quoted by the usual argv rules: Node sets it for cmd.exe
+    /// (`/d /s /c "<line>"`), which does not undo that quoting. The dialog then shows that one
+    /// line (consent::spawn_body), so what is approved is what runs. Always false elsewhere
+    /// (main.rs), as Node ignores it there.
+    pub verbatim: bool,
     /// Q1 (PR #42 round 4): the PATH the child runs with, cleaned by prepare() BEFORE the
     /// lifecycle lock is taken. None = not prepared: start refuses, it never cleans one itself
     pub path: Option<ChildPath>,
@@ -305,6 +350,7 @@ pub fn prepare(mut sp: Spec, inherited: Option<OsString>) -> Spec {
    binary being exec'd while open for writing fails ETXTBSY, a script does not, and its
    interpreter reads it after the exec. (2) the #! line's interpreter is found by the
    kernel by its path; it is not pinned (the script's content, which names it, is). */
+#[cfg(unix)]
 pub struct Pinned {
     fd: std::os::fd::OwnedFd,
     ident: Ident,
@@ -350,6 +396,7 @@ fn path_ident(p: *const libc::c_char) -> Option<Ident> {
 }
 
 /// Y1: fstat of an open fd as an Ident. Async-signal-safe (fstat, no allocation): pre_exec uses it
+#[cfg(unix)]
 fn fd_ident(fd: std::os::fd::RawFd) -> Option<Ident> {
     let mut st = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: fstat writes a struct stat into st; read only on success
@@ -394,7 +441,7 @@ pub fn pin(file: &str) -> Result<Pinned, String> {
     Ok(Pinned { fd, ident, path: c })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub fn pin(_file: &str) -> Result<Pinned, String> {
     Err("ENOSYS: running external programs is not supported on this OS".into())
 }
@@ -459,7 +506,7 @@ pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     Ok(Pinned { fd, ident, path: c })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub fn pin_dir(_dir: &Path) -> Result<Pinned, String> {
     Err("ENOSYS: running external programs is not supported on this OS".into())
 }
@@ -485,6 +532,7 @@ pub fn pin_dir(dir: &Path) -> Result<Pinned, String> {
     Ok(Pinned { fd, ident })
 }
 
+#[cfg(unix)]
 impl Pinned {
     fn raw(&self) -> std::os::fd::RawFd {
         use std::os::fd::AsRawFd;
@@ -512,7 +560,7 @@ impl Pinned {
     }
 
     /// macOS: the pinned fd is O_RDONLY (no O_PATH), so a dup of it reads that very inode
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     pub fn open_read(&self) -> std::io::Result<std::fs::File> {
         use std::io::Seek;
         let mut f = std::fs::File::from(self.fd.try_clone()?);
@@ -543,9 +591,11 @@ pub fn opener_path(ours: Option<OsString>, root: &Path) -> ChildPath {
    entry inside one of the `confine` roots (the vault, the child's cwd) — tested on its
    lexical form (., .., // folded) and on its canonical form when it resolves. A confine
    root of "/" confines nothing (the opener's cwd: plugins cannot write it). */
+#[cfg(unix)]
 pub const SAFE_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
 /// S3: `p` with "." and "//" folded and ".." popped, without touching the filesystem
+#[cfg(unix)]
 fn lexical(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::from("/");
@@ -574,6 +624,7 @@ fn lexical(p: &Path) -> PathBuf {
    a loop) is dropped; one whose canonical form holds a ':' (it would split PATH) too. */
 /// S3 + V1: the directory the child may look programs up in for `dir` (an absolute PATH
 /// entry): its canonical form, or None = drop the entry
+#[cfg(unix)]
 fn path_dir_ok(dir: &Path, confine: &[&Path]) -> Option<PathBuf> {
     #[cfg(test)]
     tests::q1_gate(dir);
@@ -593,6 +644,7 @@ fn path_dir_ok(dir: &Path, confine: &[&Path]) -> Option<PathBuf> {
 
 /// R4 + S1-S3 + V1: the PATH a child runs with, from the PATH it would have had — each
 /// kept entry in its canonical form (V1)
+#[cfg(unix)]
 pub fn child_path(path: &OsStr, confine: &[&Path]) -> OsString {
     let mut out: Vec<u8> = Vec::new();
     for d in path.as_bytes().split(|b| *b == b':') {
@@ -621,6 +673,7 @@ pub fn child_path(path: &OsStr, confine: &[&Path]) -> OsString {
    merged /usr). When none survives the child gets NO_EXEC_PATH — never "", never an
    unchecked entry. */
 /// W1: SAFE_PATH with every entry confinement-checked; NO_EXEC_PATH when none passes
+#[cfg(unix)]
 fn safe_path(confine: &[&Path]) -> OsString {
     let mut out: Vec<PathBuf> = Vec::new();
     for d in SAFE_PATH.split(':') {
@@ -650,6 +703,7 @@ fn safe_path(confine: &[&Path]) -> OsString {
    a cwd, nothing can be created under it, and every "/dev/null/<name>" fails with ENOTDIR
    — execvp and sh report "not found", nothing runs. (A made-up "/nonexistent" could be
    created by root, and then be a vault.) */
+#[cfg(unix)]
 pub const NO_EXEC_PATH: &str = "/dev/null";
 
 /// S2: what build's child PATH is cleaned from — the plugin's PATH, else the app's
@@ -662,6 +716,7 @@ fn spec_path(sp: &Spec, inherited: Option<OsString>) -> OsString {
 /// argv0 = the asked name, else the canonical path the dialog named
 /// AA2: the child enters `dir` (the cwd held open since before the question) by fchdir,
 /// in pre_exec — no current_dir: the cwd's pathname is never walked again
+#[cfg(unix)]
 fn build(sp: &Spec, path: &ChildPath, prog: &Pinned, dir: &Pinned) -> Command {
     let n = prog.raw();
     let want = prog.ident.clone();
@@ -769,12 +824,17 @@ fn cwd_changed(file: &str, cwd: &Path) -> String {
 
 /// Node-style error text: "<CODE>: spawn <file> <reason>"
 fn spawn_err(file: &str, cwd: &Path, e: &std::io::Error) -> String {
-    if e.raw_os_error() == Some(libc::EPERM) {
-        return changed(file); // the pre_exec identity check (Y1)
+    #[cfg(unix)]
+    {
+        if e.raw_os_error() == Some(libc::EPERM) {
+            return changed(file); // the pre_exec identity check (Y1)
+        }
+        if e.raw_os_error() == Some(libc::ESTALE) {
+            return cwd_changed(file, cwd); // the pre_exec cwd check (AA2)
+        }
     }
-    if e.raw_os_error() == Some(libc::ESTALE) {
-        return cwd_changed(file, cwd); // the pre_exec cwd check (AA2)
-    }
+    #[cfg(windows)]
+    let _ = cwd; // no pre_exec on Windows: start() rechecks the pins under the lock
     let code = match e.kind() {
         std::io::ErrorKind::NotFound => "ENOENT",
         std::io::ErrorKind::PermissionDenied => "EACCES",
@@ -814,11 +874,16 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
     let file = sp.file.clone();
     let cwd = sp.cwd.clone();
     let mut child = fork(sp, path, prog, dir).map_err(|e| spawn_err(&file, &cwd, &e))?;
+    // Windows: the child (and what it starts) goes into a Job Object, so kill reaches the tree
+    #[cfg(windows)]
+    let job = windows::JobHandle::assign(&child);
     let run = Arc::new(Run {
         pid: child.id() as i32,
         stdin: Mutex::new(child.stdin.take()),
         st: Mutex::new(State { pumps: 2, ..State::default() }),
         cv: Condvar::new(),
+        #[cfg(windows)]
+        job,
     });
     let (o, e) = (child.stdout.take(), child.stderr.take());
     for (src, is_err) in [(o.map(|x| Box::new(x) as Box<dyn Read + Send>), false), (e.map(|x| Box::new(x) as Box<dyn Read + Send>), true)] {
@@ -835,8 +900,16 @@ pub fn start(sp: Spec, _life: &Life) -> Result<Arc<Run>, String> {
         let st = child.wait();
         let mut s = r.st.lock().unwrap_or_else(|e| e.into_inner());
         if let Ok(st) = st {
-            s.exit = st.code();
-            s.signal = st.signal();
+            #[cfg(unix)]
+            {
+                s.exit = st.code();
+                s.signal = st.signal();
+            }
+            // Windows: a child we ended ourselves (kill) reports its signal and no exit code, as on unix
+            #[cfg(windows)]
+            if s.signal.is_none() {
+                s.exit = st.code();
+            }
         }
         s.reaped = true;
         drop(s);
@@ -926,7 +999,10 @@ pub fn forget(id: u64) {
 pub fn kill_all(_life: &Life) {
     let all: Vec<Arc<Run>> = runs().lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, r)| r).collect();
     for r in all {
+        #[cfg(unix)]
         r.kill(libc::SIGKILL);
+        #[cfg(windows)]
+        r.kill(9);
         r.end();
     }
 }
@@ -1055,6 +1131,7 @@ pub enum ShellOpen {
 }
 
 /// what one fstat of the target says it is (Z2: of an O_NOFOLLOW fd; a symlink there is refused, never its identity)
+#[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ident {
     dev: u64,
@@ -1103,7 +1180,7 @@ fn ident_of(p: &Path) -> Result<Ident, String> {
     Ok(id)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn ident_of(_p: &Path) -> Result<Ident, String> {
     Err("ENOSYS: running external programs is not supported on this OS".into())
 }
@@ -1166,7 +1243,7 @@ impl Local {
     /// the dialog is open), which is not a swap. Files keep the full identity.
     pub fn recheck(&self) -> Result<(), String> {
         let Some(was) = &self.ident else { return Ok(()) };
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         tests::bb1_gate(Path::new(&self.arg)); // BB1 probe: a lookup that stands still
         match ident_of(Path::new(&self.arg)) {
             Ok(now) if now.same_as(was) => Ok(()),
@@ -1176,6 +1253,7 @@ impl Local {
     }
 }
 
+#[cfg(unix)]
 impl Ident {
     /// R1: a directory is compared on (dev, ino, mode) only; anything else on all of it
     fn same_as(&self, was: &Ident) -> bool {
@@ -1220,6 +1298,12 @@ fn file_url_path(target: &str) -> Result<PathBuf, String> {
     if s.contains('\0') {
         return Err(bad());
     }
+    // Windows: file:///C:/x names "/C:/x" here; the drive form is the path
+    #[cfg(windows)]
+    let s = match s.as_bytes() {
+        [b'/', d, b':', ..] if d.is_ascii_alphabetic() => s[1..].to_string(),
+        _ => s,
+    };
     Ok(PathBuf::from(s))
 }
 
@@ -1266,12 +1350,19 @@ pub fn shell_target(root: &Path, op: &str, target: &str) -> Result<ShellOpen, St
    them with Launch::apply; the PATH is opener_path(the app's PATH), made before the lock (Q1).
    S1-S3 (PR #42 round 3): the same child_path as a spawn — bytes, /proc and /dev/fd and
    the vault (`root`) dropped, SAFE_PATH (each entry checked, W1) when nothing is left — and PATH is always set. */
+#[cfg(unix)]
 pub const OPENER_CWD: &str = "/";
+/// Windows: the system drive's root, which plugins cannot write either
+#[cfg(windows)]
+pub const OPENER_CWD: &str = "C:\\";
 /// the OS opener the shell ops hand a target to: xdg-open, or macOS's /usr/bin/open (Launch Services)
 #[cfg(target_os = "macos")]
 pub const OPENER: &str = "open";
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub const OPENER: &str = "xdg-open";
+/// Windows: the shell is ShellExecuteW (main.rs); desk_proc only needs a real binary to resolve and pin
+#[cfg(windows)]
+pub const OPENER: &str = "explorer.exe";
 
 /* AA1 (PR #42 round 10, CodeAnt): consent::resolve pinned the opener (xdg-open) before the
    question, as it pins every program (Y1) — and then desk_shell dropped that pin and exec'd
@@ -1302,7 +1393,7 @@ impl Launch<'_> {
     }
 
     /// macOS: no exec-by-fd (see build): the pinned canonical path, re-checked in apply's pre_exec
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     pub fn program(&self) -> String {
         String::from_utf8_lossy(self.prog.path.as_bytes()).into_owned()
     }
@@ -1310,6 +1401,7 @@ impl Launch<'_> {
     /// the target, the cwd and the cleaned PATH, onto the caller's opener Command (made from
     /// program()). AA1: argv0 = the asked name; the held fd stays open across the exec, and the
     /// open file is still the one pinned before the question — else EPERM, nothing exec'd
+    #[cfg(unix)]
     pub fn apply<'c>(&self, c: &'c mut Command) -> &'c mut Command {
         let n = self.prog.raw();
         let want = self.prog.ident.clone();
@@ -1339,16 +1431,23 @@ impl Launch<'_> {
 
 /// AA1: the opener's spawn error as Node text — the pre_exec identity check is EPERM
 pub fn opener_err(file: &str, e: &std::io::Error) -> String {
+    #[cfg(unix)]
     if e.raw_os_error() == Some(libc::EPERM) {
         return format!("EPERM: open: the opener {file} changed after it was allowed; not run");
     }
+    #[cfg(windows)]
+    let _ = file;
     format!("ENOENT: {OPENER}: {e}")
 }
 
 /// R4/Q4/Y2: the run an open is (asked: resolved, shown and run; a URL: run unasked) — xdg-open
 /// with the one target, in OPENER_CWD. Nothing resolved or pinned yet
 pub fn opener_spec(root: &Path, target: &str) -> Spec {
-    Spec { file: OPENER.into(), args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+    #[cfg(windows)]
+    let file = windows::opener_program();
+    #[cfg(not(windows))]
+    let file: String = OPENER.into();
+    Spec { file, args: vec![target.to_string()], cwd: OPENER_CWD.into(), root: root.to_path_buf(), env: vec![], argv0: None, verbatim: false, path: None, prog: None, dir: None }
 }
 
 /* BB1 (PR #42 round 11, CodeAnt): t.recheck() is a PATH walk of a vault path (open O_PATH,
@@ -1440,12 +1539,12 @@ pub fn fs_work_count() -> usize {
     FS_WORK.with(|c| c.get())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
     fn spec(file: &str, args: &[&str], cwd: &Path) -> Spec {
-        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, path: None, prog: None, dir: None }
+        Spec { file: file.into(), args: args.iter().map(|s| s.to_string()).collect(), cwd: cwd.into(), root: cwd.into(), env: vec![], argv0: None, verbatim: false, path: None, prog: None, dir: None }
     }
 
     /// Q1: what desk_proc_spawn does before the lock — the child PATH cleaned from ours.

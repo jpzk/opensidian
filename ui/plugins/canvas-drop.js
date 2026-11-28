@@ -119,7 +119,12 @@
   const VID = new Set(["mp4", "webm", "ogv", "mov", "mkv"]);
   const PITCH = 445, CARD = 400, AUDIO_H = 42;
   const MP4_SCAN = 1 << 20, MP4_BOXES = 64;   // video header walk: first 1 MB, at most 64 boxes (ruling 5)
-  const mediaUrl = p => "opensidian-img://localhost/" + String(p).split("/").map(encodeURIComponent).join("/");
+  const mediaUrl = p => {
+    const path = String(p).split("/").map(encodeURIComponent).join("/");
+    return typeof window.__osCustomSchemeUrl === "function"
+      ? window.__osCustomSchemeUrl("opensidian-img", path)
+      : "opensidian-img://localhost/" + path;
+  };
   function payload() {
     const dm = app && app.dragManager, d = dm && dm.draggable;
     if (!d) return null;

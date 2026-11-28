@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -185,14 +185,27 @@ pub fn apply(v: &mut Value, ops: &[Op]) {
 
 /// the file the bytes really live in (a symlinked config is followed)
 fn target(cfg: &Path) -> PathBuf {
-    fs::canonicalize(cfg).unwrap_or_else(|_| cfg.to_path_buf())
+    let t = fs::canonicalize(cfg).unwrap_or_else(|_| cfg.to_path_buf());
+    // Windows: canonicalize adds the `\\?\` prefix only once the file EXISTS, so the lock file's name
+    // (hashed from this path) would differ between the first writer and every later one and they would
+    // not exclude each other. One spelling: the plain form, whether or not the file is there yet.
+    #[cfg(windows)]
+    {
+        let s = t.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            if !rest.starts_with(r"UNC\") {
+                return PathBuf::from(rest.to_string());
+            }
+        }
+    }
+    t
 }
 
 /// lock file for the config at `cfg`, inside `lock_dir`
 pub fn lock_file(lock_dir: &Path, cfg: &Path) -> PathBuf {
     let t = target(cfg);
     let mut h: u64 = 0xcbf29ce484222325;
-    for &b in t.as_os_str().as_bytes() {
+    for &b in t.as_os_str().as_encoded_bytes() {
         h ^= b as u64;
         h = h.wrapping_mul(0x100000001b3);
     }
@@ -228,13 +241,25 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
     let r = (|| {
         // #251: the config holds the trust flags, spawn grants and plugin pins: owner-only (0600)
-        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        // (Windows: no mode bits; the file stays under the user profile's own ACL)
+        let mut o = OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        o.mode(0o600);
+        let mut f = o.open(&tmp)?;
+        #[cfg(unix)]
         f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
         f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, t)?;
-        File::open(dir).and_then(|d| d.sync_all())
+        // fsync the directory so the rename is durable; Windows cannot open a directory as a File
+        // (ERROR_ACCESS_DENIED) and NTFS journals the rename itself
+        #[cfg(unix)]
+        File::open(dir).and_then(|d| d.sync_all())?;
+        #[cfg(not(unix))]
+        let _ = dir;
+        Ok(())
     })();
     if r.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -243,10 +268,15 @@ fn write_renamed(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_in_place(t: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(t)?;
+    let mut o = OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    o.mode(0o600);
+    let mut f = o.open(t)?;
     // #288 review: an existing 0644 config would keep its mode here; trust flags, spawn
     // grants and plugin pins are owner-only on this path too (best effort: a refused
     // chmod must not lose the write)
+    #[cfg(unix)]
     if let Err(e) = f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600)) {
         eprintln!("[cfg] chmod 0600 {}: {e}", t.display());
     }
@@ -275,6 +305,7 @@ pub fn update_in(lock_dir: &Path, cfg: &Path, ops: &[Op]) -> Result<Wrote, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn tmp(tag: &str) -> PathBuf {
@@ -334,6 +365,7 @@ mod tests {
         assert_eq!(v, serde_json::json!({"windows":{"/b":{"x":1}}}));
     }
 
+    #[cfg(unix)]
     #[test]
     fn cfgstore_symlinked_config_stays_a_symlink() {
         let d = tmp("link");
@@ -572,6 +604,7 @@ mod tests {
     /// #251: a pin written through its Op persists (the next start reads only the file), the file is
     /// owner-only (0600), and the generic Ops can neither create, replace nor wipe the pins
     #[test]
+    #[cfg(unix)] // file modes
     fn cfgstore_plugin_pins_only_through_their_ops_and_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let d = tmp("pins251");
@@ -599,6 +632,7 @@ mod tests {
     /// #288 review (CodeAnt): the in-place fallback (create/rename refused) leaves the config
     /// owner-only as well, even when the file existed with 0644
     #[test]
+    #[cfg(unix)] // file modes
     fn cfgstore_in_place_fallback_is_owner_only_too() {
         use std::os::unix::fs::PermissionsExt;
         let d = tmp("inplace288");

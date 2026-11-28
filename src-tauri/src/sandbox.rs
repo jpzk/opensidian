@@ -682,6 +682,7 @@ mod tests {
 
     /// restrict_self is per-thread: enforce + probe in a child thread, the
     /// unrestricted parent cleans up. Skips on kernels without Landlock.
+    #[cfg(unix)]
     #[test]
     fn confines_reads_to_vault() {
         if reexec_alone("sandbox::tests::confines_reads_to_vault") {
@@ -745,6 +746,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_confined_window_reaches_the_config_and_other_vaults_only_through_the_spawner() {
         if reexec_alone("sandbox::tests::a_confined_window_reaches_the_config_and_other_vaults_only_through_the_spawner") {
@@ -908,6 +910,7 @@ mod tests {
        vault under $HOME, is refused with EACCES. Before the fix, the picked
        vault was bound in the unconfined picker process, where both writes
        succeed. */
+    #[cfg(unix)]
     #[test]
     fn appguard_landlock_restarted_process_cannot_write_outside_vault() {
         if reexec_alone("sandbox::tests::appguard_landlock_restarted_process_cannot_write_outside_vault") {
