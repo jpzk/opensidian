@@ -73,6 +73,8 @@ GPL-3.0-or-later for all of it, since the first commit.
     - `settings.js`, `browser.js`: Settings › Community plugins (restricted
       mode switch) and the plugin browser UI.
 - `packaging/flatpak/` — manifest, desktop file, metainfo.
+- `packaging/ci/` — release build env (pinned Fedora 44 container + rpm lock
+  `fedora-pkgset.lock.tsv`), AppImage/rpm/deb wraps, launch smoke; see its README.
 - `vault/` — a small sample vault.
 - `scripts/ docs/ notes/ bin/` are gitignored. The maintainer's test harness
   and design notes live in a separate private repo and appear here as
@@ -87,6 +89,13 @@ System deps and toolchain: see README "Build from source" (Rust 1.98.0).
 
 Always `--locked`. The listtoggle and procstdio tests run real `ui/` code in
 JavaScriptCore, so the webkit dev packages must be installed for tests too.
+
+Release builds (release.yml job `appimage`) do not use the host's packages:
+`packaging/ci/appimage-build.sh` builds inside the digest-pinned Fedora 44 base
+image with exactly the rpm set in `packaging/ci/fedora-pkgset.lock.tsv`
+(sha256 + Fedora GPG `rpm -K`, offline install). The PR test env (linux.yml)
+uses the same env. Never add a package from a repo or change a pin by hand:
+re-resolve the lock (packaging/ci/README.md) — pin-check fails CI on drift.
 
 ## Testing levels
 - **T0** — `cargo test --locked`: Rust unit tests in every module, the

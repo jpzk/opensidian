@@ -18,8 +18,8 @@
 #                 2026-11-17 "no pull_request" decision): pin-check, cargo audit / deny / vet, vendored JS
 #                 CVE, glib vendor check, VEX check, gate self-tests on every PR, same fail-closed jobs.
 #   NOT here - AppImage build + headless launch smoke (stays in release.yml + the coordinator box):
-#     - release.yml has no Linux launch smoke to reuse; Linux GUI smokes run on the box through boxd
-#       display leases (T1 phases), which a GitHub runner does not have.
+#     - the headless Linux launch smoke runs in release.yml (job smoke, packaging/ci/launch-smoke.sh:
+#       Xvfb on the runner / in the pinned Fedora 44 base) on the release artifacts, not per PR.
 #     - a headless launch here needs an X server (xvfb / weston): apt on the runner host outside the
 #       pinned set, or a NEW pin in fedora-pkgset.lock.tsv (a release-env change), and it
 #       would only prove exec + WebKit start, which T1 already proves on every release candidate.
