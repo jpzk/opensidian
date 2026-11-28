@@ -18,7 +18,8 @@
 #          Bytes come from kojipkgs (immutable build outputs): the unsigned rpm + its Fedora-44 signature
 #          header from the sigcache, spliced (scripts/supply-chain/rpm-splice.sh) into the signed rpm.
 #   checks host: sha256 == lock. container: sha256 == lock again, the image's own Fedora 44 key
-#          (RPM-GPG-KEY-fedora-44-primary, fingerprint below) imported, rpm -K = "digests signatures OK"
+#          (RPM-GPG-KEY-fedora-44-primary, fingerprint below) as the ONLY trusted key, rpm -K = "digests signatures OK"
+#          + every signature by that fingerprint (scripts/supply-chain/rpm-sigcheck.sh),
 #          for every file, rpm -U of the set with no repo at all, then rpm -qa == lock EXACTLY (no
 #          package more, less or at another version) - any drift fails the build.
 set -euo pipefail
@@ -68,15 +69,18 @@ image)
 fetch)
   D=$(mkdir -p "${2:?dir}" && cd "$2" && pwd)
   n=$(rows | wc -l); [ "$n" -gt 0 ] || die "lock has no $ARCH rows"
+  # one fetch per dir at a time (two concurrent fetches raced on shared temp files, 11:55Z)
+  exec 9>"$D/.lock"; flock -w 1800 9 || die "$D/.lock: another fetch holds it"
   say "fetch $n rpms (lock $(sha256sum "$LOCK" | cut -c1-16)) -> $D"
   i=0
   while IFS=$'\t' read -r _ name evr ar sha path; do
     f=$(printf '%s\t%s\t%s\t%s\t%s\t%s\n' x "$name" "$evr" "$ar" "$sha" "$path" | fname); o=$D/$f; i=$((i+1))
     if [ -s "$o" ] && echo "$sha  $o" | sha256sum -c --status -; then continue; fi
-    curl -4 -fsS --retry 3 -m 900 -o "$D/.u.rpm" "$KOJI/$path/$ar/$f" || die "$f: download $KOJI/$path/$ar/$f"
-    curl -4 -fsS --retry 3 -m 120 -o "$D/.s.sig" "$KOJI/$path/data/sigcache/$KEYID/$ar/$f.sig" || die "$f: download sigcache"
-    bash "$HERE/../../scripts/supply-chain/rpm-splice.sh" "$D/.u.rpm" "$D/.s.sig" "$o"
-    rm -f "$D/.u.rpm" "$D/.s.sig"
+    u=$(mktemp "$D/.u.XXXXXX") s=$(mktemp "$D/.s.XXXXXX")   # per-file temps: no shared .u.rpm/.s.sig
+    curl -4 -fsS --retry 3 -m 900 -o "$u" "$KOJI/$path/$ar/$f" || die "$f: download $KOJI/$path/$ar/$f"
+    curl -4 -fsS --retry 3 -m 120 -o "$s" "$KOJI/$path/data/sigcache/$KEYID/$ar/$f.sig" || die "$f: download sigcache"
+    bash "$HERE/../../scripts/supply-chain/rpm-splice.sh" "$u" "$s" "$o.part"
+    rm -f "$u" "$s"; mv -f "$o.part" "$o"
     echo "$sha  $o" | sha256sum -c --status - || die "$f: sha256 $(sha256sum "$o" | cut -c1-64) != lock $sha"
     if [ $((i % 50)) = 0 ]; then say "  $i/$n"; fi
   done < <(rows)
@@ -86,18 +90,25 @@ install)
   [ -f /etc/fedora-release ] || die "install runs inside the Fedora container"
   say "$(cat /etc/fedora-release); lock $(sha256sum "$LOCK" | cut -d' ' -f1)"
   K=/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary
-  rpm --import "$K"
-  case " $(rpm -q gpg-pubkey --qf '%{VERSION} ') " in *" $KEYFPR "*) ;; *) die "imported key is not $KEYFPR";; esac
+  SC=$HERE/../../scripts/supply-chain/rpm-sigcheck.sh
+  # signer pinned to ONE key (PR #369 review): rpm -K alone accepts a package signed by ANY key the rpmdb
+  # trusts, and "KEYFPR is among the gpg-pubkeys" proves nothing about the signer. So: a private keyring
+  # holding exactly KEYFPR, every signature of every rpm must be by KEYFPR, and the image rpmdb (used by
+  # rpm -U) must trust only KEYFPR too. rpm 6 prints full fingerprints there (script refuses rpm != 6).
+  KR=$(mktemp -d); bash "$SC" keyring "$K" "$KEYFPR" "$KR/db" || die "pinned keyring"
+  rpm --import "$K"; bash "$SC" keys "$KEYFPR" || die "image rpmdb trusts a key other than $KEYFPR"
   files=() bad=0
   while IFS=$'\t' read -r _ name evr ar sha path; do
     f=$(printf '%s\t%s\t%s\t%s\t%s\t%s\n' x "$name" "$evr" "$ar" "$sha" "$path" | fname)
     echo "$sha  $D/$f" | sha256sum -c --status - || { say "sha256 mismatch: $f"; bad=1; continue; }
     k=$(rpm -K "$D/$f" 2>&1) || true
     case "$k" in *": digests signatures OK") ;; *) say "rpm -K: $k"; bad=1;; esac
+    bash "$SC" check "$KR/db" "$KEYFPR" "$D/$f" || { say "signer != $KEYFPR: $f"; bad=1; }
     files+=("$D/$f")
   done < <(rows)
+  rm -rf "$KR"
   [ $bad = 0 ] || die "lock verification failed"
-  say "${#files[@]} rpms: sha256 == lock, rpm -K digests signatures OK (key $KEYFPR)"
+  say "${#files[@]} rpms: sha256 == lock, rpm -K digests signatures OK, every signature by $KEYFPR (one-key keyring)"
   # no repo is ever configured: dnf is not used, rpm installs exactly these files
   rpm -U --replacepkgs --quiet "${files[@]}" || die "rpm -U of the pinned set failed"
   rows | awk -F'\t' '{print $2"\t"$3"\t"$4}' | LC_ALL=C sort > /tmp/want.tsv

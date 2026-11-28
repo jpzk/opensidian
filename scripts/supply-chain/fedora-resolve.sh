@@ -54,6 +54,12 @@ fi
 say "$(wc -l < "$TAGGED") builds tagged f44-updates(+GA) at event $EVENT"
 
 # --- names: dnf5 transaction into an empty root --------------------------------------------------
+# the closure cache is only valid for the SAME inputs (image list + build packages + event): key it,
+# regenerate on any change (PR #369 review: a stale src-$A.tsv was reused after IMG/pkgs changed)
+ck=$({ sha256sum < "$IMG"; printf '%s\n' "$@"; echo "event $EVENT"; } | sha256sum | cut -d' ' -f1)
+if [ -s "$W/src-$A.tsv" ] && [ "$(cat "$W/src-$A.key" 2>/dev/null)" != "$ck" ]; then
+  say "closure cache key changed: regenerating src-$A.tsv"; rm -f "$W/src-$A.tsv" "$W/src-$A.key"
+fi
 if [ ! -s "$W/src-$A.tsv" ]; then
   R=$W/ir-$A; rm -rf "$R"; mkdir -p "$R" "$W/repos"
   printf '[fedora]\nname=f44\nmetalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-44&arch=%s\n[updates]\nname=f44u\nmetalink=https://mirrors.fedoraproject.org/metalink?repo=updates-released-f44&arch=%s\n' "$A" "$A" > "$W/repos/f44.repo"
@@ -67,6 +73,7 @@ if [ ! -s "$W/src-$A.tsv" ]; then
   awk -F"\t" '{print $1"."$2}' "$W/names-$A.tsv" > "$W/na-$A.txt"; mapfile -t na < "$W/na-$A.txt"
   "${D[@]}" -q repoquery --latest-limit=1 --qf '%{name}\t%{arch}\t%{sourcerpm}\n' "${na[@]}" < /dev/null | sed 's/\\t/\t/g' | grep . | LC_ALL=C sort -u > "$W/src-$A.tsv"
   [ "$(wc -l < "$W/src-$A.tsv")" = "$(wc -l < "$W/names-$A.tsv")" ] || die "repoquery: srpm missing for some names"
+  echo "$ck" > "$W/src-$A.key"
   rm -rf "$R" "$W/dnfcache-$A"
 fi
 n=$(wc -l < "$W/src-$A.tsv"); say "closure: $n binary packages"
