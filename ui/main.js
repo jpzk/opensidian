@@ -8552,6 +8552,24 @@ function closeModal() {
   $("modal").hidden = true;
   updateTitle();
 }
+/* The open switcher / palette keeps the keyboard (gate phases excaltheme + excren, 097 T2). A view that
+   focuses ITSELF while the modal is open took every key: the Excalidraw board mounts late (the boot note is
+   swapped to the excalidraw view after the plugin loads) and its container autofocuses, so the typed query,
+   Return and Escape all went into the drawing ([mdq:] empty, eye-dropper opened) and [modal:qs] stayed up.
+   Stock 1.13.7, black box (CDP: .excalidraw .focus() while the switcher is open): activeElement is back on
+   .prompt-input within 0.3 s, the typed "Home" lands in the prompt and Return opens it. So a focus that
+   lands outside the modal is handed back to its input — not one inside another layer (a plugin modal, a
+   menu, the settings window), and never once the modal is closed. */
+document.addEventListener("focusin", e => {
+  const m = $("modal"), t = e.target;
+  if (!modalKind || m.hidden || !t || m.contains(t)) return;
+  if (t.closest && t.closest(".modal-container, .menu, .ctxmenu, #settings")) return;
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (modalKind && !m.hidden && !(a && (m.contains(a) || (a.closest && a.closest(".modal-container, .menu, .ctxmenu, #settings")))))
+      $("minput").focus({ preventScroll: true });
+  }, 0);
+}, true);
 function mdFilter() {
   const q = $("minput").value.trim();
   mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])
