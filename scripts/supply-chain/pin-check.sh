@@ -25,6 +25,8 @@
 #            a committed repo file listed with its sha256 in supply-chain/keyrings.tsv (no host or
 #            downloaded keyring); curl|wget piped into a shell is always a finding
 #   pkgmgr   npm/npx/yarn/pnpm/bun/pipx/go install|get (forbidden), pip without --require-hashes
+#   rpmlock  packaging/ci/fedora-pkgset.lock.tsv (Fedora 44 build env): malformed row, duplicate, a missing
+#            arch, lock sha256 != fedora-env.sh LOCK_SHA256, an appimage-build.sh pin not in the lock
 # ALLOWLIST: TSV  rule  path  needle  expires(YYYY-MM-DD)  scanner  reason
 #   A finding is allowed when rule and path match and the line contains needle. expires >= today,
 #   reason >= 10 chars. scanner is "-" or one of the NAMED scanner exception (operator 2026-11-17:
@@ -39,7 +41,7 @@ AL=${2:-$ROOT/supply-chain/pin-allow.tsv}
 [ -d "$ROOT" ] || { echo "pin-check: no dir $ROOT" >&2; exit 2; }
 TODAY=${PIN_CHECK_TODAY:-$(date -u +%F)}
 SCANNERS=" semgrep opengrep cargo-audit cargo-deny cargo-vet osv-scanner "
-RULES=" uses image apt dnf cargo flatpak fetch pkgmgr "
+RULES=" uses image apt dnf cargo flatpak fetch pkgmgr rpmlock "
 NF=0; T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 : > "$T/find"; : > "$T/used"
 
@@ -77,9 +79,16 @@ hit() {  # rule file line text
   NF=$((NF+1))
 }
 
-# var_pinned FILE VAR -> 0 if every VAR= assignment in FILE is an image ref with @sha256:<64>
+# var_pinned FILE VAR -> 0 if every VAR= assignment in FILE is an image ref with @sha256:<64>, or
+# EVERY assignment is VAR=$(bash <path>/packaging/ci/fedora-env.sh image) [|| ...]: that command loads
+# the OCI archive by sha256 and checks the manifest digest (fedora-env.sh itself must pass oci_pinned).
 var_pinned() {
-  local v a ok=1
+  local v a ok=1 fe=$ROOT/packaging/ci/fedora-env.sh
+  local fre='\$\(bash[[:space:]]+"?[^[:space:]"]*packaging/ci/fedora-env\.sh"?[[:space:]]+image\)([[:space:]]|$)'
+  if grep -qE "(^|[[:space:];(])$2=" "$1" \
+     && ! grep -oE "(^|[[:space:];(])$2=.*" "$1" | sed -E "s/^[[:space:];(]*$2=//" | grep -vqE "^$fre"; then
+    [ -f "$fe" ] && oci_pinned "$fe"; return
+  fi
   v=$(grep -oE "(^|[[:space:];(])$2=[^[:space:];]+" "$1" | sed "s/^.*$2=//; s/[\"']//g")
   [ -n "$v" ] || return 1
   while IFS= read -r a; do
@@ -148,6 +157,9 @@ pkgs() {  # file cmdtext
   rest=$(printf '%s' "$2" | sed -E 's/^.*[[:space:]]install([[:space:]]|$)//; s/(&&|\|\||[;|>}]|\)).*$//; s/[\x27"]//g')
   for w in $rest; do
     case "$w" in -*) continue ;; esac
+    # ./x.deb, /w/x.rpm, ./$PKG: a local file (apt/dnf treat a token with / as a path), i.e. the
+    # artifact this workflow built - pinned by being that file, not a repo package name
+    case "$w" in ./*|/*) continue ;; esac
     if [[ "$w" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
       v=$(grep -oE "(^|[[:space:]])${BASH_REMATCH[1]}=(\"[^\"]*\"|[^[:space:]\"';]+)" "$1" | head -1 | sed -E 's/^[^=]*=//; s/"//g')
       [ -n "$v" ] && { printf '%s\n' $v; continue; }
@@ -258,6 +270,45 @@ while IFS= read -r F; do
     elif printf '%s' "$s" | grep -Eq '(^|[[:space:];&|(`])(pip3?|python3?[[:space:]]+-m[[:space:]]+pip)[[:space:]]+install' && ! printf '%s' "$j" | grep -q -- '--require-hashes'; then hit pkgmgr "$rel" $ln "$s"; fi
   done
 done < "$T/files"
+
+# ---- rpmlock (fedport 2026-11-28): the Fedora 44 build env's exact package set --------------------
+# packaging/ci/fedora-pkgset.lock.tsv = every rpm of the appimage-build.sh container per arch. Each row:
+# target-arch(x86_64|aarch64) name epoch:version-release arch(=target|noarch) sha256(64 hex)
+# srcname/version/release; no duplicate (target,name,arch); both arches present. The lock's own
+# sha256 must equal LOCK_SHA256= in packaging/ci/fedora-env.sh (which refuses any other lock at
+# build time), and every appimage-build.sh PKGS / SBOM_PKGS n-v-r must be a row of BOTH arches.
+# So a changed version, hash, added or dropped package = a finding until the lock is re-resolved
+# (scripts/supply-chain/fedora-resolve.sh) and LOCK_SHA256 updated with it.
+FL=$ROOT/packaging/ci/fedora-pkgset.lock.tsv FE=$ROOT/packaging/ci/fedora-env.sh FA=$ROOT/packaging/ci/appimage-build.sh
+if [ -f "$FL" ] || [ -f "$FE" ]; then
+  if [ ! -f "$FL" ]; then hit rpmlock packaging/ci/fedora-pkgset.lock.tsv 0 "missing (packaging/ci/fedora-env.sh needs it)"
+  else
+    awk -F'\t' '!/^#/ && NF {
+        n++; k=$1"\t"$2"\t"$4; bad=""
+        if (NF != 6) bad="6 fields expected, got " NF
+        else if ($1 != "x86_64" && $1 != "aarch64") bad="target-arch " $1
+        else if ($2 !~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/) bad="name " $2
+        else if ($3 !~ /^[0-9]+:[^-[:space:]]+-[^-[:space:]]+$/) bad="evr not epoch:version-release: " $3
+        else if ($4 != $1 && $4 != "noarch") bad="arch " $4 " for target " $1
+        else if ($5 !~ /^[0-9a-f]{64}$/) bad="sha256 not 64 hex: " $5
+        else if ($6 !~ /^[^\/[:space:]]+\/[^\/[:space:]]+\/[^\/[:space:]]+$/) bad="koji build path not src/version/release: " $6
+        else if (k in seen) bad="duplicate " k
+        seen[k]=1; t[$1]++
+        if (bad != "") printf "%d\t%s\n", NR, bad
+      }
+      END { if (!t["x86_64"]) print "0\tno x86_64 rows"; if (!t["aarch64"]) print "0\tno aarch64 rows" }' "$FL" > "$T/rl"
+    while IFS=$'\t' read -r ln why; do hit rpmlock packaging/ci/fedora-pkgset.lock.tsv "$ln" "$why"; done < "$T/rl"
+    want=$(sed -n 's/^LOCK_SHA256=\([0-9a-f]\{64\}\)\([[:space:]].*\)\{0,1\}$/\1/p' "$FE" 2>/dev/null | head -1)
+    got=$(sha256sum "$FL" | cut -d' ' -f1)
+    [ "$want" = "$got" ] || hit rpmlock packaging/ci/fedora-pkgset.lock.tsv 0 "sha256 $got != LOCK_SHA256 '${want:-none}' in packaging/ci/fedora-env.sh (lock drifted: re-resolve + update both)"
+    if [ -f "$FA" ]; then
+      for p in $(sed -n 's/^\(SBOM_\)\{0,1\}PKGS="\([^"]*\)".*/\2/p' "$FA"); do for la in x86_64 aarch64; do
+        awk -F'\t' -v p="$p" -v a="$la" '!/^#/ && $1==a { e=$3; sub(/^[0-9]+:/,"",e); if ($2"-"e == p) f=1 } END{exit !f}' "$FL" \
+          || hit rpmlock packaging/ci/appimage-build.sh 0 "pin $p is not a $la row of fedora-pkgset.lock.tsv"
+      done; done
+    fi
+  fi
+fi
 
 # ---- stale allowlist entries ----------------------------------------------------------------------
 while IFS=$'\t' read -r an ar ap and; do

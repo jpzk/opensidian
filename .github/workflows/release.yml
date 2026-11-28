@@ -116,7 +116,9 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"; echo "tag $TAG"
       # The runner is only a HOST from here on (#189): ubuntu-26.04 floats by design, but nothing it
       # ships is compiled in or bundled. The build environment is packaging/ci/appimage-build.sh's
-      # digest-pinned ubuntu:26.04 image + snapshot.ubuntu.com apt + pkg=version + sha256-checked Rust.
+      # digest-pinned Fedora-Container-Base-Generic-44-1.7 OCI archive + the exact rpm set of
+      # packaging/ci/fedora-pkgset.lock.tsv (kojipkgs, sha256 + Fedora 44 GPG rpm -K, offline
+      # rpm install, no repo) + sha256-checked Rust (packaging/ci/fedora-env.sh).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
@@ -132,7 +134,7 @@ jobs:
       # SBOM (G1): generated INSIDE the same pinned build container right after the build, from the
       # built binary (appimage-build.sh SBOM_TAG -> scripts/supply-chain/sbom-local.sh --release:
       # rust (cargo metadata licenses + $ARCH resolve scope) + ui/vendor + flatpak + the WebKit
-      # closure read from THAT dpkg database + the binary's own ldd closure). --release fails the
+      # closure read from THAT rpm database (pkg:rpm/fedora purls) + the binary's own ldd closure). --release fails the
       # job on a skipped part, a structural error (sbom-validate.sh) or a denied license
       # (license-policy.sh, G7). Nothing about the SBOM comes from the runner host.
       - name: binary + AppImages + SBOM in the pinned build env (resolved package set recorded)
@@ -154,17 +156,26 @@ jobs:
           {
             echo "### SBOM $ARCH (in the build container)"
             echo "components $(jq '.components | length' "$S"), without licenses $(jq '[.components[] | select((.licenses // []) | length == 0)] | length' "$S"), sha256 $(cut -d' ' -f1 "$S.sha256")"
+            echo "build env webkit (rpm -qa of the container, pkgset): $(awk -F'\t' '$1=="webkit2gtk4.1"' dist/pkgset-$V-$ARCH.tsv)"
+            echo "SBOM webkit purl: $(jq -r '[.components[] | .purl // empty | select(startswith("pkg:rpm/fedora/webkit2gtk4.1@"))] | join(" ")' "$S")"
+            echo "binary sha256: $(sha256sum out/bin/opensidian | cut -d' ' -f1)"
           } >> "$GITHUB_STEP_SUMMARY"
-      # WebKit bundle CVE gate (BLOCKING; moved here from supply-chain.yml webkit-bundle-cve, which
-      # installed the apt set on the runner HOST): scans the WebKit part generated above in the build
-      # container, i.e. exactly what this AppImage bundles, on BOTH arches. Fails on any CVE with a
-      # fixed Ubuntu version (osv-fixed-gate.sh); draft-release needs this job.
+      # WebKit bundle CVE gate (BLOCKING; moved here from supply-chain.yml webkit-bundle-cve): scans the
+      # WebKit part generated above in the build container, i.e. exactly what this AppImage bundles, on
+      # BOTH arches; draft-release needs this job. Two gates, both must pass:
+      #   webkit-wsa-gate.sh: osv.dev has no Fedora ecosystem (pkg:rpm/fedora purls are not scored), so
+      #     the bundled webkit2gtk4.1 version must be >= the fixed-in of every WebKitGTK advisory
+      #     (scripts/supply-chain/webkit-wsa.tsv).
+      #   osv-fixed-gate.sh: every component osv CAN score (the embedded third-party table) still fails
+      #     on a CVE with a fixed version.
       - name: osv-scanner (pinned version + per-arch sha256, osv-scanner.pins)
         run: |
           bin=$(scripts/supply-chain/osv-install.sh --pinned "$RUNNER_TEMP/osv")
           echo "OSV=$bin" >> "$GITHUB_ENV"
-      - name: WebKit bundle CVE gate on the in-container SBOM (fail only on CVEs with a fixed Ubuntu version)
+      - name: WebKit bundle CVE gate on the in-container SBOM (WSA version floor + osv fixed-version)
         run: |
+          set -o pipefail
+          scripts/supply-chain/webkit-wsa-gate.sh dist/sbom/parts/webkit.cdx.json | tee -a "$GITHUB_STEP_SUMMARY"
           mkdir -p "$RUNNER_TEMP/osvcfg"
           scripts/supply-chain/vex-osv-config.sh > "$RUNNER_TEMP/osvcfg/osv-scanner.toml"
           W=dist/sbom/parts/webkit.cdx.json
@@ -204,7 +215,7 @@ jobs:
           path: |
             dist/pkgset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
             dist/libset-${{ steps.ver.outputs.version }}-${{ matrix.arch }}.tsv
-            dist/apt-${{ matrix.arch }}.log
+            dist/rpm-${{ matrix.arch }}.log
           retention-days: 90
           if-no-files-found: error
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -281,6 +292,84 @@ jobs:
           path: dist/opensidian-${{ env.V }}-${{ matrix.arch }}.${{ matrix.kind }}
           retention-days: 7
           if-no-files-found: error
+
+  # Headless launch smoke of what this run built (packaging/ci/smoke-run.sh + launch-smoke.sh: PASS
+  # iff the "Opensidian" window maps and the process stays alive), per arch, plus the install checks
+  # of the wraps: the deb with apt on stock ubuntu-26.04 (that test IS "do its Depends resolve"), the
+  # rpm with plain `rpm -i` (no dnf, no repo) into the pinned Fedora 44 env (fedora-env.sh, same OCI
+  # as rpm-build.sh), each /usr/bin/opensidian == the AppImage binary (sha256) and launches. The X
+  # server (Xvfb + xwininfo) is the pinned Fedora 44 lock's, in a --network=host container.
+  # gate=false rows (ubuntu-24.04, debian-12 = the glibc floor) record the outcome, never fail.
+  smoke:
+    name: launch smoke ${{ matrix.target }} ${{ matrix.arch }}${{ matrix.gate && '' || ' (info)' }}
+    needs: [appimage, wrap]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    continue-on-error: ${{ !matrix.gate }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: ubuntu-26.04, arch: x86_64,  runner: ubuntu-26.04,     gate: true }
+          - { target: ubuntu-26.04, arch: aarch64, runner: ubuntu-26.04-arm, gate: true }
+          - { target: fedora-44,    arch: x86_64,  runner: ubuntu-26.04,     gate: true }
+          - { target: fedora-44,    arch: aarch64, runner: ubuntu-26.04-arm, gate: true }
+          - { target: ubuntu-24.04, arch: x86_64,  runner: ubuntu-24.04,     gate: false }
+          - { target: ubuntu-24.04, arch: aarch64, runner: ubuntu-24.04-arm, gate: false }
+          - { target: debian-12,    arch: x86_64,  runner: ubuntu-26.04,     gate: false }
+          - { target: debian-12,    arch: aarch64, runner: ubuntu-26.04-arm, gate: false }
+    permissions:
+      contents: read
+    env:
+      V: ${{ needs.appimage.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: opensidian-${{ env.V }}-${{ matrix.arch }}-portable.AppImage
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: internal-release-binary-${{ matrix.arch }}
+          path: dist/bin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ matrix.target == 'ubuntu-26.04' }}
+        with:
+          name: opensidian-${{ env.V }}-${{ matrix.arch }}.deb
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ matrix.target == 'fedora-44' }}
+        with:
+          name: opensidian-${{ env.V }}-${{ matrix.arch }}.rpm
+          path: dist
+      - name: smoke ${{ matrix.target }} ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = "$ARCH" ] || { echo "runner is $(uname -m), matrix says $ARCH"; exit 1; }
+          P=dist/opensidian-$V-$ARCH-portable.AppImage; B=$(sha256sum dist/bin/opensidian | cut -d' ' -f1)
+          chmod +x "$P"; echo "binary sha256 $B"; sha256sum "$P"
+          PKG=''
+          [ "$TARGET" = ubuntu-26.04 ] && PKG=dist/opensidian-$V-$ARCH.deb
+          [ "$TARGET" = fedora-44 ] && PKG=dist/opensidian-$V-$ARCH.rpm
+          rc=0; bash packaging/ci/smoke-run.sh "$TARGET" "$P" "$B" $PKG || rc=$?
+          {
+            echo "### launch smoke $TARGET $ARCH (gate ${{ matrix.gate }})"
+            for f in dist/smoke-portable.log dist/smoke-installed.log; do [ -s "$f" ] || continue
+              echo "- ${f#dist/smoke-}: $(grep -m1 PRETTY_NAME "$f" || true) $(grep -m1 'glibc:' "$f" || true) -> $(tail -n1 "$f")"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: smoke-${{ matrix.target }}-${{ matrix.arch }}
+          path: dist/smoke-*.log
+          retention-days: 30
+          if-no-files-found: warn
 
   flatpak:
     name: flatpak ${{ matrix.arch }} (packaging/flatpak)
@@ -465,7 +554,7 @@ jobs:
   # the runner's preinstalled first-party gh CLI with the job's github.token.
   draft-release:
     name: draft-release
-    needs: [appimage, sums, supply-chain, macos]
+    needs: [appimage, smoke, sums, supply-chain, macos]
     # tags v* -> draft for that tag; branch v<ver>-release -> draft for tag v<ver>
     # targeting the branch commit (no tag is pushed; it appears on publish).
     # A workflow_dispatch dry run (the default) never gets here.
