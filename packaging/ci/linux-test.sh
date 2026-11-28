@@ -45,7 +45,7 @@ TGT=$ARCH-unknown-linux-gnu
 eval "RSHA=\$RUST_XZ_SHA256_$ARCH"
 command -v podman >/dev/null || die "no podman"
 OUT=$(readlink -f "${OUT:-$T/dist/linux-test}"); rm -rf "$OUT"; mkdir -p "$OUT/cargo-home"
-IMG=$(bash "$FE" image) || die "fedora image"
+IMG=$(bash "$T/packaging/ci/fedora-env.sh" image) || die "fedora image"   # literal path: pin-check var_pinned
 RPMS=${FEDORA_RPM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/opensidian-appimage/rpms-$ARCH}
 bash "$FE" fetch "$RPMS" || die "fedora-env.sh fetch"
 say "tree $T  arch $ARCH  image $IMG  lock $(sha256sum "$HERE/fedora-pkgset.lock.tsv" | cut -d' ' -f1)  rust $RUST  floors $TOTAL_MIN/$LIB_MIN"

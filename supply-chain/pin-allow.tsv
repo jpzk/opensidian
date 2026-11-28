@@ -4,3 +4,7 @@
 # sha256): semgrep image digest-pinned, cargo-audit/deny/vet `--locked --version` + .crate sha256
 # (cargo-scanner-verify.sh), osv-scanner pinned only (osv-install.sh). Anything added here needs a
 # reason and an expiry, renewed by review.
+# 2026-11-28 (#097 fedport): 2 fetch entries for the Fedora lock GENERATOR fedora-resolve.sh (not a
+# build input; every rpm it records is rpm -K verified against the F44 key from the pinned OCI).
+fetch	scripts/supply-chain/fedora-resolve.sh	--data "$1" "$HUB"	2027-02-28	-	lock GENERATOR, not a build input: koji XML-RPC metadata query (event/tag listing), no artifact; output = fedora-pkgset.lock.tsv reviewed in PR
+fetch	scripts/supply-chain/fedora-resolve.sh	"$KOJI/$sn/$ver/$rel/$ar/$f"	2027-02-28	-	lock GENERATOR: kojipkgs rpm is spliced with the Fedora 44 sigcache header and rpm -K verified (F44 key from the pinned OCI) before its sha256 is recorded; builds fetch by that sha256 (fedora-env.sh)
