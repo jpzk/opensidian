@@ -21,6 +21,21 @@ set-general-plugin-api-version = Versión de la API de complementos { $v }
 set-general-plugin-api-version-desc = La API de complementos que implementa esta compilación; se rechazan los complementos que exigen un minAppVersion más nuevo.
 set-general-automatic-updates = Actualizaciones automáticas
 set-general-automatic-updates-desc = Las actualizaciones automáticas están desactivadas por ahora. Usa «Buscar actualizaciones» para encontrar una nueva versión firmada.
+# #294 Check for updates: the verdict (updates.rs check_with) and its line in Settings
+update-none = Opensidian está al día ({ $v }); no se encontró ninguna versión publicada.
+update-available = Opensidian { $version } está disponible: sumas de verificación firmadas por { $key }; comprueba tu descarga con este hash.
+update-current = Opensidian está al día ({ $v }). Última versión { $version }: sumas de verificación firmadas por { $key }.
+update-unsigned = La última versión { $version } NO está firmada (o la firma no es válida); se ignora.
+update-mismatch = Última versión { $version }: los archivos de la versión no coinciden con las sumas de verificación firmadas; se ignora.
+update-rollback = Antes se vio una versión firmada { $version }, pero la más reciente que se puede verificar ahora es { $v }; no se ofrece una versión anterior.
+update-warn-unsigned = La versión más reciente { $version } NO está firmada (o la firma no es válida); se ignora.
+update-warn-mismatch = Versión más reciente { $version }: los archivos de la versión no coinciden con las sumas de verificación firmadas; se ignora.
+update-no-artefact = Las sumas de verificación firmadas no incluyen ningún archivo de la versión para esta plataforma.
+update-artefact-missing = El archivo firmado de esta plataforma ({ $file }) no está adjunto a la versión.
+update-rollback-none = Antes se vio una versión firmada { $version }, pero GitHub no muestra ninguna versión ahora; no se ofrece nada.
+update-checking = Buscando en GitHub una versión firmada…
+update-view-release = Ver la versión
+update-error = No se pudo buscar actualizaciones: { $error }
 set-general-language = Idioma
 set-general-language-desc = Cambia el idioma de la interfaz. | Cómo añadir un idioma nuevo a Opensidian.
 set-general-help = Ayuda
@@ -150,6 +165,17 @@ set-fileslinks-allow-uri-callbacks = Permitir callbacks de URI
 set-fileslinks-allow-uri-callbacks-desc = Permite usar x-callback-url mediante x-success o x-error al gestionar URI de Opensidian. | Más información
 set-fileslinks-rebuild-vault-cache = Reconstruir la caché de la bóveda
 set-fileslinks-rebuild-vault-cache-desc = Reconstruir la caché puede llevar de unos segundos a unos minutos según el tamaño de tu bóveda. | Más información
+
+## Settings > Security > Sandbox (#293)
+
+secsb-section = Aislamiento
+secsb-label = Aislamiento Landlock
+secsb-enforced = Activo
+secsb-not-enforced = No activo
+secsb-off = Desactivado
+secsb-desc-enforced = Esta ventana solo puede escribir dentro de su bóveda y en las carpetas que necesita la aplicación. Se activa al iniciar con OPENSIDIAN_LANDLOCK=1.
+secsb-desc-not-enforced = El aislamiento está activado, pero no se aplica en esta ventana, así que aquí no se abre ninguna bóveda.
+secsb-desc-off = No está activado. Inicia Opensidian con OPENSIDIAN_LANDLOCK=1 para limitarlo a la bóveda (solo Linux).
 
 ## Command palette and Settings > Hotkeys
 
@@ -358,3 +384,24 @@ menu-zoom-to-selection = Ampliar a la selección
 menu-as-obsidian-url = como URL de Obsidian
 menu-from-system-root = desde la raíz del sistema
 menu-from-vault-folder = desde la carpeta de la bóveda
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = Acceso a dispositivos
+secdev-camera = Cámara
+secdev-camera-desc = Acceso a la cámara para la aplicación y los complementos de la comunidad. Mientras la cámara está activa, el título de la ventana empieza por "● Camera".
+secdev-location = Ubicación
+secdev-location-desc = Tu ubicación, para la aplicación y los complementos de la comunidad.
+secdev-notifications = Notificaciones
+secdev-notifications-desc = Notificaciones de escritorio de la aplicación y de los complementos de la comunidad.
+secdev-pointerlock = Bloqueo del puntero
+secdev-pointerlock-desc = La aplicación o un complemento de la comunidad puede ocultar y capturar el puntero del ratón después de que hagas clic (vistas 3D, juegos); Esc lo libera.
+secdev-values = Preguntar: cada solicitud se pregunta en una ventana del sistema aparte. Permitir siempre: se concede sin esa ventana (confirmas esta opción una vez, en una ventana del sistema). Desactivado: se rechaza cada solicitud y no se muestra ninguna ventana.
+secdev-na = No disponible
+secdev-na-desc = Nunca se concede a la aplicación ni a los complementos, y no se muestra ninguna ventana: captura de pantalla, nombres de dispositivos, contenido protegido (EME), acceso a datos de sitios web, WebXR, MIDI.
+secmic-label = Micrófono
+secmic-desc = Preguntar: la grabadora pregunta en una ventana aparte del sistema antes de cada grabación. Permitir siempre: las grabaciones empiezan sin esa ventana (confirmas esta opción una sola vez, en una ventana del sistema). Desactivado: se rechaza cualquier grabación y no se muestra ninguna ventana. Mientras el micrófono está activo, el título de la ventana empieza por «● Recording».
+secmic-ask = Preguntar
+secmic-always = Permitir siempre
+secmic-off = Desactivado
+secmic-forced = Desactivado a la fuerza por { $name }.

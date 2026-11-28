@@ -16,10 +16,11 @@
        camera/screen setting is touched).
      - permission-request: a UserMediaPermissionRequest is ALLOWED only if it is
        for an audio device, NOT for a video device, NOT for a display (screen)
-       device, AND this window is ARMED. Everything else that is a user-media
-       or device-info request is DENIED explicitly; every other request type
-       (geolocation, notifications, clipboard, ...) returns false = WebKit's
-       default handler, which denies — i.e. exactly today's behaviour.
+       device, AND this window is ARMED. devaccess: EVERY request type is now
+       decided by devperm::decide (Settings › Security › Device access rows;
+       unknown types denied) and the handler never falls back to WebKit's
+       default — which, for pointer lock, ALLOWS (that was today's behaviour,
+       kept as the Pointer lock row's default "always allow").
      - ARMED = a one-shot deadline (ARM_WINDOW) set by `audio_arm(token)` and
        CONSUMED by the first matching request, cleared by `audio_disarm` and by a
        page load. A plugin's getUserMedia outside that window is denied.
@@ -108,6 +109,7 @@ pub fn page_started(label: &str) {
     with_slot(label, |s| *s = Slot::default());
     if !is_rec(label) {
         with_slot(&rec_label(label), |s| s.armed = None);
+        grant_drop(label); // #295: an Allow given to the old page never starts the new one
     }
 }
 
@@ -185,6 +187,141 @@ pub fn authorized(label: &str, tok: &str) -> Result<(), String> {
     with_slot(label, |s| check(s, tok))
 }
 
+/* #295 (audit F-8) THE START DECISION LIVES OUTSIDE THE PAGE. The token only proves "the core
+   recorder of this page load asks"; plugins share that page realm and can make the core ask
+   (its ribbon / command / any page function). So a token is no longer enough to open the mic:
+   every recording start needs a fresh GRANT, and a grant exists only after the user pressed
+   Record in the NATIVE consent (consent::Kind::Mic, asked by main.rs audio_rec_start; Settings ›
+   Security › Microphone "off" refuses before any dialog, lockdown forces "off").
+     - one grant per app window, minted by `grant` right after the native Allow, valid GRANT_TTL;
+     - `start_check` (the gate audio_rec_start passes before it creates the recorder webview):
+       valid token AND the Microphone setting not off AND a fresh grant, which it CONSUMES — so a
+       grant opens exactly one start; no grant, an expired or a used one = NotAllowedError, even
+       with a valid token (fail closed);
+     - a page (re)load voids the window's grant (page_started).
+   No env var, cfg flag or test hook mints a grant: `grant` is called from audio_rec_start only,
+   after consent::ask returned Ok(true) (main.rs T0 pins the order). */
+/// how long a native Allow stays good for the start it was asked for
+pub const GRANT_TTL: Duration = Duration::from_secs(10);
+/// the refusal a start without a fresh native grant gets (the page maps NotAllowedError to
+/// "Microphone access was denied.")
+pub const NO_GRANT: &str = "NotAllowedError: audio recorder: the recording was not allowed in the native consent";
+
+/// app window label -> the deadline of its one-shot grant
+static GRANTS: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// the user pressed Record in the native consent for app window `parent` (main.rs audio_rec_start only)
+pub fn grant(parent: &str, now: Instant) {
+    GRANTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(parent.to_string(), now + GRANT_TTL);
+}
+
+/// take (consume) the grant of `parent`: Ok only for one that exists and has not expired;
+/// an expired one is consumed too
+pub fn take_grant(parent: &str, now: Instant) -> Result<(), String> {
+    match GRANTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(parent) {
+        Some(t) if now <= t => Ok(()),
+        _ => Err(NO_GRANT.into()),
+    }
+}
+
+/// a page (re)load: the old page's grant is void
+fn grant_drop(parent: &str) {
+    if let Some(m) = GRANTS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        m.remove(parent);
+    }
+}
+
+/// THE start gate: the fresh native grant (taken = consumed FIRST, so every start attempt burns
+/// it, refused or not), the page's token, the effective Microphone setting (`mic` =
+/// security::mic_check of it). Ok only when all three hold; every Err is a refusal (nothing is
+/// created).
+pub fn start_check(parent: &str, tok: &str, mic: Result<(), String>, now: Instant) -> Result<(), String> {
+    let g = take_grant(parent, now);
+    authorized(parent, tok)?;
+    mic?;
+    g
+}
+
+/* #295 the recording indicator the page cannot hide: while app window <label> records, its NATIVE
+   window title starts with REC_MARK. main.rs rec_indicator keeps it there (Linux: a GTK
+   notify::title handler re-applies it on every title change, so the page's own setTitle cannot
+   drop it; macOS: re-applied every REC_MARK_TICK, next to the system's own microphone-in-use
+   indicator). At the START because a long title is cut at its end. */
+pub const REC_MARK: &str = "● Recording — ";
+/// macOS / other: how often the title mark is re-applied while recording
+#[cfg_attr(target_os = "linux", allow(dead_code))] // the Linux mark rides a GTK notify::title handler instead
+pub const REC_MARK_TICK: Duration = Duration::from_millis(250);
+
+/// the title the window must carry: Some(new) when `cur` is not already it. On = exactly one
+/// REC_MARK, first; off = no REC_MARK anywhere (a page cannot leave a fake one either)
+pub fn indicator_title(cur: &str, on: bool) -> Option<String> {
+    title_with(cur, on, false)
+}
+
+/* devaccess: the camera's live-capture mark, next to the recording mark. While a Camera grant
+   (Settings › Security › Device access › Camera) holds the camera of app window <label> (WebKit's
+   camera-capture-state is not None), its native title starts with CAM_MARK. Both marks are rebuilt
+   together in ONE fixed order by title_with, so the recording hook and the camera hook always aim
+   at the same title (no notify::title ping-pong), and a page cannot fake, move or drop either. */
+pub const CAM_MARK: &str = "● Camera — ";
+
+/// the title with exactly the marks that are on, first, in a fixed order (REC_MARK, then
+/// CAM_MARK); every copy of either mark elsewhere is removed. Some(new) only when it differs.
+pub fn title_with(cur: &str, rec: bool, cam: bool) -> Option<String> {
+    let bare = cur.replace(REC_MARK, "").replace(CAM_MARK, "");
+    let want = format!("{}{}{bare}", if rec { REC_MARK } else { "" }, if cam { CAM_MARK } else { "" });
+    (want != cur).then_some(want)
+}
+
+/// app windows whose camera is live (WebKit camera-capture-state != None)
+static CAM_LIVE: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+/// record whether app window `label` holds the camera now
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // macOS: the system camera indicator
+pub fn cam_set(label: &str, on: bool) {
+    let mut g = CAM_LIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(Default::default);
+    if on {
+        s.insert(label.to_string());
+    } else {
+        s.remove(label);
+    }
+}
+
+/// does app window `label` hold the camera now
+pub fn cam_on(label: &str) -> bool {
+    CAM_LIVE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(label))
+}
+
+/// app window label -> the generation of its current recording indicator (absent = off)
+static INDICATOR: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+static INDICATOR_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// turn the indicator state of `parent` on (Some(generation)) or off (None)
+pub fn indicator_set(parent: &str, on: bool) -> Option<u64> {
+    let mut g = INDICATOR.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::new);
+    if on {
+        let n = INDICATOR_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        m.insert(parent.to_string(), n);
+        Some(n)
+    } else {
+        m.remove(parent);
+        None
+    }
+}
+
+/// is the indicator generation `generation` of `parent` still the live one
+#[cfg_attr(target_os = "linux", allow(dead_code))] // the macOS / other ticker only
+pub fn indicator_live(parent: &str, generation: u64) -> bool {
+    INDICATOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(parent)).copied() == Some(generation)
+}
+
+/// is app window `parent` recording (its indicator on)
+pub fn indicator_on(parent: &str) -> bool {
+    INDICATOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|m| m.contains_key(parent))
+}
+
 /// what the gate answers a user-media request with
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Verdict {
@@ -232,34 +369,133 @@ pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl F
                 eprintln!("[audiorec] mock capture devices ON ({MOCK_ENV}=1, debug build)");
             }
         }
-        wv.connect_permission_request(move |_, req| {
+        let cam_label = label.clone();
+        wv.connect_permission_request(move |wv, req| {
+            // devaccess: EVERY request is decided here by devperm::decide and answered with allow() or
+            // deny(); the handler returns true on every path, so WebKit's class default (which ALLOWS
+            // pointer lock) never runs. An unknown request type is Kind::Unknown = Deny.
+            let ty = req.type_().name().to_string();
+            let mut kind = crate::devperm::kind_of(&ty);
             if let Some(um) = req.downcast_ref::<webkit2gtk::UserMediaPermissionRequest>() {
                 let raw: *mut webkit2gtk_sys::WebKitUserMediaPermissionRequest = um.to_glib_none().0;
                 // SAFETY: `raw` is the live request object, borrowed for the duration of the signal handler
                 let display = unsafe {
                     webkit2gtk_sys::webkit_user_media_permission_is_for_display_device(raw) != 0
                 };
-                let (a, v) = (um.is_for_audio_device(), um.is_for_video_device());
-                let verdict = decide(&label, a, v, display, Instant::now());
-                eprintln!("[audiorec] user-media request audio={a} video={v} display={display} -> {verdict:?}");
-                match verdict {
-                    Verdict::Allow => req.allow(),
-                    Verdict::Deny => req.deny(),
+                kind = crate::devperm::Kind::UserMedia { audio: um.is_for_audio_device(), video: um.is_for_video_device(), display };
+            }
+            let (rows, lockdown) = crate::devperm::current();
+            let verdict = crate::devperm::decide(&label, kind, rows, lockdown, Instant::now());
+            eprintln!("[audiorec] permission request {ty} {kind:?} -> {verdict:?}");
+            match verdict {
+                crate::devperm::Decision::Allow => req.allow(),
+                // Ask: ONE native question for this one request (consent::ask_device); the request
+                // stays pending until it is answered, then dev_ask allows or denies it
+                crate::devperm::Decision::Ask => dev_ask(wv, &label, kind, req.clone()),
+                crate::devperm::Decision::Deny => {
+                    dev_refused(&label, kind, lockdown);
+                    req.deny()
                 }
-                return true;
             }
-            if req.is::<webkit2gtk::DeviceInfoPermissionRequest>() {
-                // enumerateDevices labels: not needed to record, never given
-                req.deny();
-                return true;
-            }
-            false // every other request: WebKit's default handler (deny), unchanged
+            true
         });
+        // devaccess: the camera's live-capture title mark (CAM_MARK), from WebKit's own
+        // camera-capture-state (2.34+): not None = the camera is held by this page
+        if wv.find_property("camera-capture-state").is_some() {
+            let lab = cam_label;
+            wv.connect_notify_local(Some("camera-capture-state"), move |wv, _| {
+                let v = wv.property_value("camera-capture-state");
+                // SAFETY: the property is a GEnum (WebKitMediaCaptureState); `v` holds it
+                let st = unsafe { gtk::glib::gobject_ffi::g_value_get_enum(v.to_glib_none().0) };
+                cam_mark(wv, &lab, st != 0);
+            });
+        }
         done();
     });
     if let Err(e) = r {
         eprintln!("[audiorec] gate not installed: {e}");
     }
+}
+
+/// devaccess: a Device access row = ask. One native question (consent::ask_device: Rust constant
+/// text, default Cancel, a bounded place from consent::admit) for this one request, which stays
+/// pending meanwhile; at the answer the rule is decided AGAIN (devperm::after_consent), so lockdown
+/// or off set while the question was open still refuses. No row / no place = denied, nothing asked.
+#[cfg(target_os = "linux")]
+fn dev_ask(wv: &webkit2gtk::WebView, label: &str, kind: crate::devperm::Kind, req: webkit2gtk::PermissionRequest) {
+    use gtk::glib::Cast;
+    use gtk::prelude::WidgetExt;
+    use webkit2gtk::PermissionRequestExt;
+    let Some(field) = crate::devperm::row_field(kind) else {
+        return req.deny();
+    };
+    let Ok(slot) = crate::consent::admit() else {
+        return req.deny(); // EBUSY: too many questions open; logged by admit
+    };
+    let parent = wv.toplevel().and_then(|t| t.downcast::<gtk::Window>().ok());
+    let lab = label.to_string();
+    crate::consent::ask_device(slot, parent, label, field, move |yes| {
+        let (rows, lockdown) = crate::devperm::current();
+        let again = crate::devperm::decide(&lab, kind, rows, lockdown, Instant::now());
+        let grant = crate::devperm::after_consent(yes, again);
+        eprintln!("[devperm] {field} request in {lab}: answered {}, now {again:?} -> {}", if yes { "Allow once" } else { "Cancel" }, if grant { "Allow" } else { "Deny" });
+        if grant {
+            req.allow()
+        } else {
+            req.deny()
+        }
+    });
+}
+
+/// devaccess: a row request refused without a dialog says which switch refused it
+#[cfg(target_os = "linux")]
+fn dev_refused(label: &str, kind: crate::devperm::Kind, lockdown: bool) {
+    if let (Some(f), false) = (crate::devperm::row_field(kind), is_rec(label)) {
+        if lockdown {
+            eprintln!("[devperm] NotAllowedError: lockdown is on (Settings › Security › Lockdown forces Device access › {} off)", crate::security::dev_name(f));
+        } else {
+            eprintln!("[devperm] {}", crate::security::dev_off_text(f));
+        }
+    }
+}
+
+/// devaccess: app window label -> its camera title hook (GTK main thread only)
+#[cfg(target_os = "linux")]
+thread_local! {
+    static CAM_TITLE_HOOK: std::cell::RefCell<HashMap<String, (gtk::Window, gtk::glib::SignalHandlerId)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// devaccess: the camera of app window `label` went live (on) or was released: CAM_MARK on its
+/// native title, kept there by a notify::title hook (as the recording mark is: main.rs
+/// rec_indicator) until the camera is released. Both marks via title_with, one order.
+#[cfg(target_os = "linux")]
+fn cam_mark(wv: &webkit2gtk::WebView, label: &str, on: bool) {
+    use gtk::glib::{Cast, ObjectExt};
+    use gtk::prelude::{GtkWindowExt, WidgetExt};
+    cam_set(label, on);
+    let Some(gw) = wv.toplevel().and_then(|t| t.downcast::<gtk::Window>().ok()) else {
+        return eprintln!("[devperm] camera indicator: no window for {label}");
+    };
+    let lab = label.to_string();
+    let fix = move |gw: &gtk::Window| {
+        let cur = gw.title().map(|t| t.to_string()).unwrap_or_default();
+        if let Some(t) = title_with(&cur, indicator_on(&lab), cam_on(&lab)) {
+            gw.set_title(&t);
+        }
+    };
+    CAM_TITLE_HOOK.with(|h| {
+        let mut h = h.borrow_mut();
+        if let Some((w, id)) = h.remove(label) {
+            w.disconnect(id);
+        }
+        fix(&gw);
+        if on {
+            let id = gw.connect_notify_local(Some("title"), move |gw, _| fix(gw));
+            h.insert(label.to_string(), (gw.clone(), id));
+        }
+    });
+    eprintln!("[devperm] camera indicator {label}: {}", if on { "on" } else { "off" });
 }
 
 /* #136 the recorder webview must be IN an on-screen window for WebKit: a page that is not in a window
@@ -382,7 +618,7 @@ pub fn install<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>) {
 pub fn install_then<R: tauri::Runtime>(w: &tauri::WebviewWindow<R>, done: impl FnOnce() + Send + 'static) {
     let label = w.label().to_string();
     let r = w.with_webview(move |pw| {
-        crate::macos::media_gate(pw.inner(), &label, |l, a, v| decide(l, a, v, false, Instant::now()) == Verdict::Allow);
+        crate::macos::media_gate(pw.inner(), &label, |l, a, v| { let (rows, lockdown) = crate::devperm::current(); crate::devperm::mac_decision(crate::devperm::decide(l, crate::devperm::Kind::UserMedia { audio: a, video: v, display: false }, rows, lockdown, Instant::now())) });
         done();
     });
     if let Err(e) = r {
@@ -607,5 +843,223 @@ mod tests {
         assert!(!out.join("victim.webm").exists());
         let _ = fs::remove_dir_all(&r); // reason: test cleanup
         let _ = fs::remove_dir_all(&out); // reason: test cleanup
+    }
+
+    /* #295 (audit F-8): the start gate. A valid page token is NOT enough: a fresh native grant is needed too */
+
+    /// a valid token without a grant is refused with NotAllowedError (the core recorder driven by a
+    /// page script, no native Record pressed)
+    #[test]
+    fn mic295_valid_token_without_grant_is_not_allowed() {
+        let w = "t295-nogrant";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        let e = start_check(w, &t, Ok(()), now).unwrap_err();
+        assert!(e.starts_with("NotAllowedError: "), "{e}");
+        assert_eq!(e, NO_GRANT);
+        // a wrong token is refused too (and never reaches the grant question)
+        grant(w, now);
+        assert!(start_check(w, "00000000000000000000000000000000", Ok(()), now).is_err());
+        // ... and that refused attempt BURNED the grant: the right token now finds none
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "a refused start must consume the grant");
+    }
+
+    /// one native Record = one start: the grant is consumed by the first start_check
+    #[test]
+    fn mic295_grant_is_single_use() {
+        let w = "t295-once";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        grant(w, now);
+        start_check(w, &t, Ok(()), now).unwrap();
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "second start on one grant");
+        assert_eq!(take_grant(w, now).unwrap_err(), NO_GRANT);
+        // a grant belongs to its window: window A's Record never starts window B
+        let o = "t295-once-other";
+        page_started(o);
+        let to = token(o).unwrap();
+        grant(w, now);
+        assert_eq!(start_check(o, &to, Ok(()), now).unwrap_err(), NO_GRANT, "a grant crossed windows");
+        start_check(w, &t, Ok(()), now).unwrap();
+    }
+
+    /// a grant older than GRANT_TTL is refused (and consumed: it cannot be used later either)
+    #[test]
+    fn mic295_expired_grant_is_refused() {
+        let w = "t295-ttl";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        grant(w, now);
+        start_check(w, &t, Ok(()), now + GRANT_TTL).expect("at the deadline: still good");
+        grant(w, now);
+        let late = now + GRANT_TTL + Duration::from_millis(1);
+        assert_eq!(start_check(w, &t, Ok(()), late).unwrap_err(), NO_GRANT, "an expired grant opened the mic");
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "an expired grant was kept");
+        assert!(GRANT_TTL <= Duration::from_secs(30), "the grant must be short-lived");
+    }
+
+    /// Settings › Security › Microphone off (security::mic_check(Off)) refuses even with a fresh
+    /// grant and a valid token, and the grant is consumed
+    #[test]
+    fn mic295_microphone_off_refuses_even_with_grant() {
+        let w = "t295-off";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        grant(w, now);
+        let e = start_check(w, &t, crate::security::mic_check(crate::security::Mic::Off), now).unwrap_err();
+        assert!(e.starts_with("NotAllowedError: ") && e.contains("(Settings › Security › Microphone)"), "{e}");
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT, "the off refusal left the grant usable");
+        // lockdown: the effective value is off -> the same refusal
+        let mut l = crate::security::Sec::default();
+        l.lockdown = true;
+        let eff = crate::security::effective_with(l, Some(l));
+        grant(w, now);
+        let m = crate::security::mic_effective_with(crate::security::Mic::Ask, &eff);
+        assert!(start_check(w, &t, crate::security::mic_check(m), now).unwrap_err().contains("the microphone is off"));
+    }
+
+    /// #295 follow-up, Microphone = always allow: no per-start question, but the start gate is the
+    /// SAME — a wrong or missing token is refused (and burns the grant audio_rec_start minted), a
+    /// page reload voids it, and a start that passes turns the native indicator on like any other
+    #[test]
+    fn mic295_always_allow_start_still_needs_the_token_and_shows_the_indicator() {
+        use crate::security::{mic_asks, mic_check, Mic};
+        let w = "t295-always";
+        let now = Instant::now();
+        page_started(w);
+        let t = token(w).unwrap();
+        assert!(!mic_asks(Mic::Always), "always allow must skip only the question");
+        // the always path mints the grant itself (no dialog); a forged token still fails
+        grant(w, now);
+        assert!(start_check(w, "00000000000000000000000000000000", mic_check(Mic::Always), now).is_err(), "always allow started with a wrong token");
+        assert_eq!(start_check(w, &t, mic_check(Mic::Always), now).unwrap_err(), NO_GRANT, "the refused attempt must burn the grant");
+        grant(w, now);
+        assert!(start_check(w, "", mic_check(Mic::Always), now).is_err(), "always allow started with no token");
+        // a token from before a page reload is dead too
+        grant(w, now);
+        page_started(w);
+        assert!(start_check(w, &t, mic_check(Mic::Always), now).is_err(), "always allow started with an old page's token");
+        let t2 = token(w).unwrap();
+        grant(w, now);
+        start_check(w, &t2, mic_check(Mic::Always), now).expect("always allow + the page token + the grant = start");
+        // the started recording carries the native indicator (main.rs rec_indicator -> indicator_set)
+        let g = indicator_set(w, true).unwrap();
+        assert!(indicator_on(w) && indicator_live(w, g));
+        assert_eq!(indicator_title("Note - V - Opensidian", true).as_deref(), Some("● Recording — Note - V - Opensidian"));
+        indicator_set(w, false);
+        // lockdown over always allow: refused even with token + grant
+        let mut l = crate::security::Sec::default();
+        l.lockdown = true;
+        let eff = crate::security::effective_with(l, Some(l));
+        grant(w, now);
+        let e = start_check(w, &t2, mic_check(crate::security::mic_effective_with(Mic::Always, &eff)), now).unwrap_err();
+        assert!(e.contains("the microphone is off"), "{e}");
+    }
+
+    /// a page (re)load voids the window's grant (an Allow given to the old page starts nothing)
+    #[test]
+    fn mic295_page_load_voids_the_grant() {
+        let w = "t295-reload";
+        let now = Instant::now();
+        page_started(w);
+        grant(w, now);
+        page_started(w);
+        let t = token(w).unwrap();
+        assert_eq!(start_check(w, &t, Ok(()), now).unwrap_err(), NO_GRANT);
+        // a recorder webview's own load does not touch the app window's grant
+        grant(w, now);
+        page_started(&rec_label(w));
+        start_check(w, &t, Ok(()), now).unwrap();
+    }
+
+    /// the native title mark: exactly one, first, while on; none at all while off; no write when
+    /// the title already is what it must be
+    #[test]
+    fn mic295_indicator_title_mark() {
+        let t = "Note - Vault - Opensidian [panes:1]";
+        let on = indicator_title(t, true).unwrap();
+        assert_eq!(on, format!("{REC_MARK}{t}"));
+        assert_eq!(indicator_title(&on, true), None, "already marked: no write (no notify loop)");
+        assert_eq!(indicator_title(&on, false).as_deref(), Some(t));
+        assert_eq!(indicator_title(t, false), None);
+        // a page that moves the mark to the end (where a long title is cut), doubles it or fakes it
+        let moved = format!("{t}{REC_MARK}");
+        assert_eq!(indicator_title(&moved, true).as_deref(), Some(on.as_str()));
+        let twice = format!("{REC_MARK}{REC_MARK}{t}");
+        assert_eq!(indicator_title(&twice, true).as_deref(), Some(on.as_str()));
+        assert_eq!(indicator_title(&moved, false).as_deref(), Some(t), "a fake mark survives the off");
+        assert_eq!(indicator_title("", true).as_deref(), Some(REC_MARK));
+    }
+
+    /// the indicator generation: on = a new live generation, off = none live, a later on
+    /// supersedes an earlier ticker
+    #[test]
+    fn mic295_indicator_generations() {
+        let w = "t295-ind";
+        assert!(!indicator_on(w));
+        let g1 = indicator_set(w, true).unwrap();
+        assert!(indicator_on(w) && indicator_live(w, g1));
+        let g2 = indicator_set(w, true).unwrap();
+        assert!(!indicator_live(w, g1) && indicator_live(w, g2), "the old ticker must stop");
+        assert_eq!(indicator_set(w, false), None);
+        assert!(!indicator_on(w) && !indicator_live(w, g2));
+    }
+
+    /// devaccess: both title marks — fixed order, one each, page fakes removed, and a fixed point
+    /// (the recording hook and the camera hook never fight over the title)
+    #[test]
+    fn devaccess_title_marks_both_one_order() {
+        let t = "Note - Vault - Opensidian";
+        assert_eq!(title_with(t, false, true).as_deref(), Some(format!("{CAM_MARK}{t}").as_str()));
+        let both = format!("{REC_MARK}{CAM_MARK}{t}");
+        assert_eq!(title_with(t, true, true).as_deref(), Some(both.as_str()));
+        assert_eq!(title_with(&both, true, true), None, "already right: no write");
+        let swapped = format!("{CAM_MARK}{REC_MARK}{t}");
+        assert_eq!(title_with(&swapped, true, true).as_deref(), Some(both.as_str()), "one order");
+        assert_eq!(title_with(&both, true, false).as_deref(), Some(format!("{REC_MARK}{t}").as_str()), "camera off keeps the recording mark");
+        assert_eq!(title_with(&both, false, false).as_deref(), Some(t));
+        let fake = format!("{t}{CAM_MARK}{CAM_MARK}");
+        assert_eq!(title_with(&fake, false, false).as_deref(), Some(t), "a page's fake camera mark is removed");
+        // fixed point: for every start title and state, applying the result again changes nothing
+        for start in [t.to_string(), both.clone(), swapped.clone(), fake.clone(), String::new()] {
+            for rec in [false, true] {
+                for cam in [false, true] {
+                    let once = title_with(&start, rec, cam).unwrap_or(start.clone());
+                    assert_eq!(title_with(&once, rec, cam), None, "{start:?} rec={rec} cam={cam}");
+                    assert_eq!(once.matches(REC_MARK).count(), rec as usize);
+                    assert_eq!(once.matches(CAM_MARK).count(), cam as usize);
+                }
+            }
+        }
+        // indicator_title (the recording mark alone) is unchanged
+        assert_eq!(indicator_title(t, true).as_deref(), Some(format!("{REC_MARK}{t}").as_str()));
+    }
+
+    /// devaccess: the camera-live state per window
+    #[test]
+    fn devaccess_cam_live_state() {
+        let w = "t-devacc-cam";
+        assert!(!cam_on(w));
+        cam_set(w, true);
+        assert!(cam_on(w) && !cam_on("t-devacc-other"));
+        cam_set(w, false);
+        assert!(!cam_on(w));
+    }
+
+    /// SOURCE SHAPE: the camera mark follows WebKit's own camera-capture-state, and the recording
+    /// hook in main.rs builds the title with the camera state too (one title_with, no fight)
+    #[test]
+    fn devaccess_cam_mark_wired() {
+        let src = include_str!("audiorec.rs");
+        assert!(src.contains("wv.connect_notify_local(Some(\"camera-capture-state\")"));
+        assert!(src.contains("cam_mark(wv, &lab, st != 0);"));
+        let m = include_str!("main.rs");
+        assert!(m.contains("audiorec::title_with(&cur, on, audiorec::cam_on(&lab))"), "Linux recording hook");
+        assert!(m.contains("audiorec::title_with(&cur, on, audiorec::cam_on(w.label()))"), "macOS recording ticker");
+        assert!(!m.contains("audiorec::indicator_title("), "no hook builds the title without the camera mark");
     }
 }

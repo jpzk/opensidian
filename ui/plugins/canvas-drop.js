@@ -14,10 +14,10 @@
    from the file explorer" below. One synchronous placement -> ONE cv-history step; the new cards end selected.
 
    A FILE from another application (CV-101). A real OS drop reaches the page
-   only as main.js's `drop-files` event -> attachDrop(paths, at); "Insert
+   only as main.js's `drop-files` event -> attachDrop(offer, at); "Insert
    attachment" (R31.7) is the keyboard road into the same attachDrop. When the
    board under the drop point (or, with no point, the active leaf) is a canvas,
-   attachDrop hands the paths here: attach_files copies them into the vault with
+   attachDrop hands the drop here (#280: a ticket, not paths): attach_files copies it into the vault with
    its own caps and refusal sentences (the "note" argument is the board's path:
    the attachment folder is the vault's setting, the note only names the
    requester), and every file that landed becomes one file card at the drop
@@ -390,10 +390,12 @@
   // host = {inv, refresh, say, update}: main.js's attach_files invoke, tree refresh, drop banner, census repaint
   // attach_files names a requester (it only checks the name stays inside the vault): the board's own path
   function noteOf(c) { const v = boards().find(b => b.canvas === c); return (v && v.path) || c.path || "canvas"; }
-  async function attach(c, paths, at, host) {
+  // #280: `src` = a real drop's one-shot ticket ({ticket, names}) or a typed path ({path}); host.call (main.js attachCall)
+  // picks attach_files (consumes the ticket) or attach_typed (native confirm) — the page never holds a drop's paths
+  async function attach(c, src, at, host) {
     const p = pointOf(c, at);
     let a;
-    try { a = await host.inv("attach_files", { note: noteOf(c), paths }); }
+    try { a = await host.call(noteOf(c), src); }
     catch (e) { last.att = "err"; last.msg = String((e && e.message) || e); host.say(last.msg); return host.update(); }
     if (a.copied.length) await host.refresh();
     if (a.copied.length && !ro(c)) place(c, a.copied, p);

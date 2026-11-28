@@ -75,9 +75,11 @@ body {
   --background-primary: var(--color-base-00, #1c1c1c);        /* T6b: base-00 = --background-primary; value: themelight audit */
   --background-primary-alt: var(--color-base-10, #232323);    /* T6b: base-10 = the code/alt surface */
   --background-secondary: #282828;                            /* no ramp row measured; value: themelight audit */
-  --background-secondary-alt: #313244;                        /* no ramp row measured */
+  --background-modifier-border-hover: var(--color-base-35, #3f3f3f);   /* #327: stock menu/graph-control frame = base-35 (stock 1.13.7 default D 63, Solarized D base02 7,54,66) */
+  --mono-rgb-100: 255, 255, 255;   /* #337: stock-defined base var (themes write rgba(var(--mono-rgb-100), a)); stock 1.13.7 Minimal D prompt input border-top = 255,255,255/0.05 */
+  --background-secondary-alt: #1c1c1c;                        /* #340: stock dark tab header painted 28,28,28 (was Catppuccin #313244) */
   --ribbon-background: #282828;                               /* no ramp row measured; value: themelight audit */
-  --background-modifier-border: var(--color-base-30, #45475a);/* T6b: base-30 = --divider-color/--background-modifier-border */
+  --background-modifier-border: var(--color-base-30, #333333);/* T6b: base-30 = --divider-color/--background-modifier-border */
   --indentation-guide-color: color-mix(in srgb, var(--mono-100, #fff) 12%, transparent);   /* listlinks REQ-9: a faint guide on the note surface */
   --text-normal: var(--color-base-100, #dadada);              /* R15.14: --text-normal: var(--color-base-100) */
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
@@ -111,6 +113,8 @@ body {
   --accent-h: 258;
   --accent-s: 88%;
   --accent-l: 66%;
+  --color-accent-hsl: var(--accent-h), var(--accent-s), var(--accent-l);   /* #336: stock base triple, both modes */
+  --interactive-accent-hsl: var(--color-accent-hsl);   /* #336: Solarized --tag-background hsla(this, .1/.2) */
   --color-accent: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
   --color-accent-1: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --color-accent-2: hsl(calc(var(--accent-h) - 5), calc(var(--accent-s) * 1.05), calc(var(--accent-l) * 1.29));
@@ -122,7 +126,7 @@ body {
      --interactive-accent and Obsidian still tints selection with it, so the
      triple is the wrong source. tag pill: the triple at .1 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 33%, transparent);
-  --tag-background: hsla(var(--accent-h), var(--accent-s), var(--accent-l), .1);
+  --tag-background: hsla(calc(var(--accent-h) * 1.0028), calc(var(--accent-s) * 1.008), calc(var(--accent-l) * .9893), .1);   /* #334: fitted to stock dark computed tint (default accent -> rgba(137,88,245,.1)); multiplicative so a theme hue in deg stays valid */
   /* ---- chrome surfaces under Obsidian's theme names (themelight audit):
      the active tree row and the selected palette row are the SAME white veil;
      the active tab = the note surface; file tree ink = --text-muted. */
@@ -130,6 +134,9 @@ body {
   --background-modifier-border-focus: #555555;
   --nav-item-color: var(--text-muted);
   --nav-item-color-active: var(--text-normal);
+  --nav-item-color-hover: var(--text-normal);   /* #349: stock's hovered tree row = body ink (not the muted resting ink) */
+  --tab-outline-color: var(--background-modifier-border);   /* #322: stock outlines the active tab in the divider ink (= table/divider border colour) */
+  --prompt-border-color: var(--color-base-40, var(--background-modifier-border-focus));   /* #326: stock frames the palette/switcher in --color-base-40 (Solarized stock = its base-40 base00/base0, NOT its accent focus border); our default theme sets no base ramp, so the stock default base-40 #bdbdbd light / #555555 dark comes from the focus-border defaults */
   --nav-item-background-active: var(--background-modifier-hover);
   --tab-container-background: #333333;
   --tab-background-active: var(--background-primary);
@@ -209,9 +216,10 @@ body {
   --checkbox-border-color: var(--text-chrome-muted);
   --checkbox-color: var(--bg-button-primary);
   --checkbox-marker-color: var(--bg-base);
-  --checklist-done-color: var(--text-chrome-faint);
-  --code-background: var(--bg-surface);
-  --blockquote-border-color: var(--text-accent);
+  --checklist-done-color: var(--text-muted);   /* #341: stock done-task ink = --text-muted (L 92 / D 179), not faint */
+  --code-background: var(--background-primary-alt);   /* #320: stock default (inline code on the alt background) */
+  --blockquote-border-color: var(--interactive-accent);   /* #347: stock default (interactive accent, not text accent) */
+  --blockquote-background-color: transparent;   /* #330: stock default; a theme setting it (AnuPpuccin crust .5) paints behind blockquotes */
   /* ==================== LAYER 3 — OURS ALONE =============================
      An editor has surfaces the theme recon never showed painting through any
      name we probed (a ribbon ink, an elevated popover, a faint rule, the
@@ -222,14 +230,14 @@ body {
   --bg-banner-error: #45283c;
   --bg-button-plain: #e0e0e0;
   --bg-button-default: #fff;   /* the focused (default) answer in the rename/delete prompts. Ours, not --text-on-accent: a theme with a light accent sets that one DARK (AnuPpuccin: its base), which painted the default button in the label colour */
-  --border-strong: #585b70;
+  --border-strong: #555555;
   --border-focus-ring: #bdbdbd;
-  --rule-faint: #31324499;
-  --text-chrome-alt: #cdd6f5;
-  --text-chrome-faint: #7f849c;
-  --text-chrome-dim: #6c7086;
+  --text-chrome-faint: var(--text-faint);   /* #352: faint chrome ink (counts, hints, footer, group headings) is the theme --text-faint like stock (default L #ababab / D #666666); the built-ins that once split it are gone */
+  --text-chrome-dim: var(--text-faint);     /* #352 */
+  --rule-faint: #33333399;
+  --text-chrome-alt: #dadada;
   --text-on-accent: #fff;
-  --text-quiet: #bac2de;
+  --text-quiet: #b3b3b3;
   --link-unresolved: #7c86c8;
   --link-unresolved-underline: color-mix(in srgb, currentColor 30%, transparent);   /* listlinks REQ-15: underline = link colour at 0.3 alpha */
   --accent-mauve: var(--color-accent, #cba6f7);
@@ -290,7 +298,8 @@ body {
   --anim-duration-fast: transform .1s;
   --background-modifier-active-hover: var(--bg-surface);
   --background-modifier-cover: rgba(0,0,0,.35);
-  --background-modifier-message: rgba(30,30,30,0.95);
+  --background-modifier-message: rgba(0,0,0,0.9);   /* #344: stock default (computed oklch(0 0 0 / .9), no theme sets it in Minimal); the inverted notice card + tooltips */
+  --text-on-message: #fafafa;   /* #344: stock notice ink, 250 in light AND dark (default, Gruvbox, Minimal) */
   --blockquote-font-style: normal;
   --border-width: 1px;
   --button-radius: 4px;
@@ -301,7 +310,7 @@ body {
   --color-base-00: #1c1c1c;
   --color-base-10: #232323;
   --color-base-100: #dadada;
-  --color-base-30: #45475a;
+  --color-base-30: #333333;   /* #340: stock dark border (code border 51,51,51; light #e4e4e4 = same row) */
   --color-base-50: #666666;
   --color-base-70: #b3b3b3;
   --color-cyan: #53dfdd;
@@ -316,12 +325,13 @@ body {
   --divider-color-hover: var(--border-strong);
   --drag-item-background: var(--bm-drop-src-bg);
   --drag-item-shadow: 0 4px 14px var(--shadow-popover);
-  --dropdown-background: var(--bg-sidebar);
+  --dropdown-background: var(--interactive-normal);   /* #337: stock dropdowns are --interactive-normal buttons (Solarized L 238,232,213 / D 7,54,66) */
   --dropdown-padding: 0 8px;
   --font-interface-theme: var(--font-interface-override), system-ui, sans-serif;
   --font-monospace-theme: var(--font-monospace-override), var(--font-monospace-default);
   --font-normal: 400;
   --font-semibold: 600;
+  --font-bold: 700;   /* #336: stock base weight; themes build on it (Solarized --table-header-weight) */
   --font-smallest: .7em;
   --font-text-theme: var(--font-text-override), var(--font-default);
   --font-ui-large: 16px;
@@ -346,15 +356,17 @@ body {
   --input-height: 24px;
   --input-padding: 4px 6px;
   --input-radius: 4px;
-  --interactive-normal: var(--border);
-  --link-color: var(--accent-blue);
+  --interactive-normal: var(--color-base-30);   /* #337: stock dark dropdown/button fill = base-30 (Solarized D base02 7,54,66); light block: base-00 */
+  --link-color: var(--text-accent);   /* #332: stock links follow the theme accent */
   --link-color-hover: var(--text-accent-hover);
-  --link-decoration: none;
-  --link-external-color: var(--accent-blue);
+  --link-decoration: underline;   /* #339: stock default-theme links are underlined (reading view, live preview, canvas cards); every bundled theme sets none itself */
+  --link-external-color: var(--text-accent);   /* #332 */
   --link-external-decoration: underline;
-  --link-unresolved-color: var(--link-unresolved);
+  --link-unresolved-color: var(--link-color);   /* #321: stock derives the unresolved ink from the link colour */
+  --link-unresolved-opacity: 0.7;   /* #321: stock dims unresolved links (default, Minimal, AnuPpuccin, Gruvbox) */
   --link-unresolved-decoration-color: var(--link-unresolved-underline);
-  --menu-background: var(--bg-base);
+  --menu-background: var(--background-secondary);   /* #327: stock menus sit on --background-secondary (default L 246 / D 40) */
+  --menu-border-color: var(--background-modifier-border-hover, var(--border));   /* #327: stock frame = --background-modifier-border-hover */
   --menu-border-width: 1px;
   --menu-padding: 4px 0;
   --menu-radius: 6px;
@@ -406,8 +418,8 @@ body {
   --tag-color: var(--accent-blue);
   --tag-decoration: none;
   --tag-padding-y: 0;
-  --tag-radius: 999px;
-  --tag-size: .85em;
+  --tag-radius: 2em;                /* #343: stock 1.13.7 tag pill corner = 28px on a 14px tag (2em) */
+  --tag-size: .875em;               /* #343: stock tag font-size 14px at 16px text */
   /* callouts (#59 slice 1): stock 1.13.7 app.css body block, verbatim names + formulas (see the
      ".callout" section at the end of this file). The colours fall back to Obsidian's dark palette
      literals instead of defining --color-* here: --text-error etc. already read var(--color-red, …)
@@ -456,12 +468,19 @@ body {
    wrote (themelight BEFORE: Minimal's light text and links lost to ours).
    Ours now ties the dark block (body, 0,0,1) and wins it on order; every
    theme rule (.theme-light, body.theme-light, or body after this sheet)
-   beats it. :where() keeps the lint-colors selector shape (^body). */
-body:where(.theme-light) {
+   beats it. :where() keeps the lint-colors selector shape (^body).
+   #281: the second branch is the BOOT state: before main.js runs, body has no mode class
+   and the theme init script (main.rs theme_init_js) has already put the boot decision on
+   <html data-theme>. Without it the pre-JS shell painted dark on a light desktop. Still
+   (0,0,1): everything inside :where() counts zero. */
+body:where(.theme-light, :root[data-theme="light"] > :not(.theme-dark)) {
   /* ---- layer 1: Obsidian's theme names ---- */
   --background-primary: var(--color-base-00, #ffffff);
   --background-primary-alt: var(--color-base-10, #fafafa);
   --background-secondary: #f6f6f6;
+  --background-modifier-border-hover: var(--color-base-35, #dadada);   /* #327: stock default L 218 (Gruvbox sets none: 218; Solarized L base2 238,232,213) */
+  --mono-rgb-100: 0, 0, 0;   /* #337: stock 1.13.7 Minimal L prompt input border-top = 0,0,0/0.05 */
+  --interactive-normal: var(--color-base-00, #ffffff);   /* #337: stock default L dropdown 255 (Gruvbox sets none: 255; Solarized L base2) */
   --background-secondary-alt: var(--color-base-05, #e5e5e5);
   --ribbon-background: #f6f6f6;
   --background-modifier-border: var(--color-base-30, #e4e4e4);
@@ -471,7 +490,7 @@ body:where(.theme-light) {
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
   --text-warning: var(--color-orange, #ec7500);               /* deep-templater F10: stock 1.13.7 pixel of templater's device-only note (edge/ev/stock-r1-F10-tab2.png) */
-  --text-highlight-bg: #ffec99;
+  --text-highlight-bg: rgba(255, 208, 0, .4);   /* #323/#335/#348: stock light computes the translucent tint, not its opaque over-white #ffec99 (wrong over any non-white surface) */
   /* the code token names (deep-templater F24): plugin highlighters paint with them,
      templater's <% %> commands most visibly (var(--code-property, #d4d4d4) etc.), and
      without them they took their dark fallbacks on a light page. Values = stock
@@ -493,6 +512,7 @@ body:where(.theme-light) {
   --color-accent-2: hsl(calc(var(--accent-h) - 3), calc(var(--accent-s) * 1.02), calc(var(--accent-l) * 1.15));
   --text-accent: var(--color-accent);
   --interactive-accent: var(--color-accent-1);
+  --tag-background: hsla(calc(var(--accent-h) * .9833), calc(var(--accent-s) * .982), calc(var(--accent-l) * 1.079), .1);   /* #334: fitted to stock light computed tint (default accent -> rgba(147,118,245,.1)) */
   /* light selection = --interactive-accent at .2 (Wasp and 1984 agree); the
      tree row and palette row hover = black at .067 */
   --text-selection: color-mix(in srgb, var(--interactive-accent) 20%, transparent);
@@ -508,8 +528,6 @@ body:where(.theme-light) {
   --border-strong: #ababab;
   --rule-faint: #eeeeee;
   --text-chrome-alt: #222222;
-  --text-chrome-faint: #ababab;
-  --text-chrome-dim: #b6b6b6;
   --text-quiet: #5c5c5c;
   --link-unresolved: #ad8cf8;
   --accent-mauve: var(--color-accent, #8a5cf5);
@@ -597,7 +615,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
        background: var(--bg-base); color: var(--text-chrome) }
 /* R9.1 ribbon: fixed 44px icon strip, survives sidebar collapse. overflow: hidden like stock 1.13.7
    .workspace-ribbon: icons that do not fit a short window are clipped at the strip (R22, OVF_CLIP) */
-#ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); flex-shrink: 0; display: flex;
+#ribbon { width: var(--ribbon-width, 44px); background: var(--bg-ribbon); color: var(--text-muted);   /* #341: stock ribbon container ink = --text-muted */
+          flex-shrink: 0; display: flex;
           flex-direction: column; align-items: center; gap: var(--size-4-2, 8px); overflow: hidden;
           padding: var(--ribbon-padding, 10px 0) }
 #ribbon:has(~ #side[hidden]) { background-color: var(--ribbon-background-collapsed, var(--bg-ribbon)) }
@@ -679,7 +698,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .shit { padding: 2px 8px 2px 16px; color: var(--text-chrome-muted); cursor: pointer;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background-color: var(--search-result-background, transparent); }
 .shit:hover { background: var(--bg-surface) }
-.shit mark { background: none; color: var(--accent-yellow) }
+/* #323: a search / backlink match is stock's .search-result-file-matched-text: the theme highlight
+   behind --text-normal ink. ONE bare class selector (0,1,0) so a theme rule for the class (Solarized
+   ink --text-on-accent, Gruvbox --text-highlight-fg) wins by load order, exactly as in stock. */
+.search-result-file-matched-text { background-color: var(--text-highlight-bg); color: var(--text-normal) }
 .sempty { padding: 8px; color: var(--text-chrome-dim) }
 /* bmfolder: `flex: 1` is LOAD-BEARING, not tidiness. .spane is a flex column, so
    a content-sized #bmlist ends at its last row and the area below the rows is the
@@ -753,7 +775,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
              color: var(--text-chrome-muted) }
 .trow .tfi svg { width: var(--icon-s, 14px); height: var(--icon-s, 14px) }
 .trow .tfi svg[stroke-width="2"] { stroke-width: var(--icon-s-stroke-width, 2) }
-.trow.folder { font-weight: 500; padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
+.trow.folder { padding: var(--nav-item-parent-padding, var(--nav-item-padding, 0 4px)); }
 .trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: var(--nav-tag-radius, 3px);   /* goal canvas-core: the CANVAS tag on a .canvas row */
              font-size: 0.7em; letter-spacing: .04em; color: var(--nav-tag-color, var(--text-chrome-dim)); background: var(--nav-tag-background, var(--bg-surface)); font-weight: var(--nav-tag-weight, inherit); }
 .trow.active .ttag { color: var(--nav-tag-color-active, var(--nav-tag-color, var(--text-chrome-dim))) }
@@ -788,7 +810,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .rhead .scount { color: var(--text-chrome-dim); font-weight: 400; margin-left: 4px }
 .rlist { flex: 1; overflow-y: auto; font-size: var(--sidebar-font-size) }   /* sidefont: backlinks/outgoing/outline rows = Q1 (docs/recon-sidefont Q3) */
 .rempty { padding: 8px 10px; color: var(--text-chrome-dim) }
-.blnote { padding: 4px 8px; color: var(--text-chrome); cursor: pointer; display: flex;
+.blnote { padding: 4px 8px; color: var(--nav-item-color-active); cursor: pointer; display: flex;   /* #341: stock backlink file title = the theme --nav-item-color-active (default = --text-normal) */
           align-items: center; gap: 4px; white-space: nowrap; overflow: hidden }
 .blnote:hover { background: var(--bg-surface) }
 .blnote .tc { flex: 0 0 12px; display: flex; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
@@ -800,7 +822,6 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .blline { padding: 2px 8px 2px 24px; color: var(--text-chrome-muted); cursor: pointer; font-size: var(--font-ui-smaller, 12px);   /* sidefont: context SNIPPET, smaller than Q1 (Q3) */
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .blline:hover { background: var(--bg-surface) }
-.blline mark { background: none; color: var(--accent-yellow) }
 .outrow { padding: 4px 10px; color: var(--text-chrome); cursor: pointer; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis }
 .outrow:hover { background: var(--bg-surface) }
@@ -810,7 +831,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tocrow { display: flex; align-items: center; gap: var(--size-2-1, 2px); padding: 3px 6px 3px 0;
           color: var(--text-chrome-muted); cursor: pointer; white-space: nowrap; overflow: hidden }
 .tocrow:hover { background: var(--bg-surface) }
-.tocrow.active { color: var(--text-chrome); background: var(--bg-surface) }
+.tocrow.active { color: var(--nav-item-color-active); background: var(--nav-item-background-active) }   /* #351: the current heading = stock's active tree item */
 .tocrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--collapse-icon-color, var(--text-chrome-dim)) }
 .tocrow .tc svg { width: 10px; height: 10px; transition: var(--anim-duration-fast, transform .1s) }
 .tocrow.open .tc svg { transform: rotate(90deg) }
@@ -820,7 +841,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .tockids[hidden] { display: none }
 /* tags pane: rows share the outline tree look; #name left, count right */
 .tagrow { display: flex; align-items: center; gap: 2px; padding: 3px 8px 3px 0;
-          color: var(--text-chrome); cursor: pointer; white-space: nowrap; overflow: hidden }
+          color: var(--nav-item-color); cursor: pointer; white-space: nowrap; overflow: hidden }   /* #329: tag rows = tree ink (--nav-item-color), as stock .tag-pane-tag */
 .tagrow:hover { background: var(--bg-surface) }
 .tagrow .tc { flex: 0 0 14px; display: flex; justify-content: center; color: var(--text-chrome-dim) }
 .tagrow .tc svg { width: 10px; height: 10px; transition: transform .1s }
@@ -880,7 +901,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* #142: the tab is a click target (click = activate, double click = rename) -> the hand. Two classes so a theme's
    bare .workspace-tab-header { cursor: var(--cursor) } (AnuPpuccin, --cursor unset -> auto) cannot take it back. */
 .tab.workspace-tab-header { cursor: pointer }
-.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); }   /* themematch: active tab = the note surface */
+.tab.active { background: var(--tab-background-active); color: var(--tab-text-color-focused-active, var(--text-chrome)); border-radius: var(--tab-radius-active, var(--tab-radius, 0)); box-shadow: 0 0 0 var(--tab-outline-width, 1px) var(--tab-outline-color); }   /* themematch: active tab = the note surface */
 /* #59 x #84: stock Obsidian 1.13.7 tab ink — a FOCUSED window paints --tab-text-color-focused(-active) (rules above), an
    UNFOCUSED one --tab-text-color(-active). App-owned marker body.window-focused (main.js winFocus), NOT Obsidian's
    body.is-focused: that class would switch on theme rules keyed to it (AnuPpuccin: active title -> accent), off-stock. */
@@ -950,7 +971,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
   border-style: solid; border-color: var(--scrollbar-bg); border-width: var(--scrollbar-border-width, 0 3px 0 2px); border-radius: var(--scrollbar-radius, 6px); min-height: 45px }
 .lp.cmown > .cm-editor > .cm-scroller::-webkit-scrollbar-thumb:active { background-color: var(--scrollbar-active-thumb-bg, var(--scrollbar-thumb-bg)) }
 .lp a.wiki { color: var(--link-color, var(--accent-blue)); font-weight: var(--link-weight, inherit); }
-.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
+.lp a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
 .lprow { min-height: 1.5em; cursor: text }
 .lprow > :first-child { margin-top: 0 }
@@ -990,12 +1011,13 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
 .preview a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit); }
-.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: italic }
+.preview a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal }   /* #321: upright like stock */
+.preview mark { background-color: var(--text-highlight-bg); color: var(--text-normal) }   /* #348: reading ==highlight== (stock .markdown-rendered mark: --text-highlight-bg, ink --text-normal; same as the lp .hl) */
 .lp a.ext, .preview a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none); }   /* #59: thickness rides in the shorthand (a longhand after it would drop the shorthand from CSSOM) */
 .lp a.ext:hover, .preview a.ext:hover { color: var(--link-external-color-hover, var(--link-external-color, var(--accent-blue))); text-decoration-line: var(--link-external-decoration-hover, var(--link-external-decoration, underline)) }
 /* tags: inline #tag pills (small rounded accent-tinted chip) */
 .lp a.tag, .preview a.tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg);
-  border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .85em); text-decoration: var(--tag-decoration, none);
+  border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 7px); font-size: var(--tag-size, .875em); text-decoration: var(--tag-decoration, none);
   cursor: pointer; white-space: nowrap; border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
 .lp a.tag:hover, .preview a.tag:hover { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)); color: var(--tag-color-hover, var(--tag-color, var(--accent-blue))); text-decoration: var(--tag-decoration-hover, var(--tag-decoration, none)); }
 .graph { flex: 1 1 0; min-width: 0; min-height: 0;   /* R22 */ background: var(--bg-ribbon); position: relative; z-index: 1 }   /* above .graphgl */
@@ -1124,6 +1146,8 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 .ctxmenu .mi svg { width: 12px; height: 12px; display: block }
 /* R38.29: `Delete file` is the ONE non-default-coloured row in the menu (red, see docs/requirements.md R38.29) */
 .ctxmenu div.del { color: var(--accent-red) }
+/* #345: a destructive row (.is-warning, the explorer note menu's Delete) is --text-error ink, as stock and ui/menu.css */
+.ctxmenu div.is-warning { color: var(--text-error, var(--accent-red)) }
 /* #220 General > Language: the active language is accented, a check after its name (issue mock-up) */
 .ctxmenu div.langon { color: var(--text-accent) }
 .ctxmenu .langchk { display: inline-block; width: 12px; height: 12px; margin-left: 6px; vertical-align: -1px }
@@ -1143,7 +1167,7 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
    wider/taller than the pane it floats in — the body scrolls instead. */
 .graph-controls { position: absolute; top: 12px; right: 12px; z-index: 7; width: var(--graph-controls-width, 240px);
   max-width: calc(100% - 24px); max-height: calc(100% - 24px); overflow-x: hidden; overflow-y: auto; box-sizing: border-box;
-  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--background-secondary); border: 1px solid var(--background-modifier-border-hover, var(--border)); border-radius: 8px;   /* #327 */
   padding: 6px 0 8px; font-size: 13px; color: var(--text-chrome) }
 .graph-controls[hidden] { display: none }
 /* The card's shadow is switched on (.gf-lit, startGraph) once the sim first comes to rest, not
@@ -1230,16 +1254,24 @@ body:not(.window-focused) .tab.active { color: var(--tab-text-color-active, var(
 #modal[hidden] { display: none }
 #mbox { width: 520px; max-width: 90%; margin: 0; background: var(--bg-elevated);
         max-height: 100%; min-height: 0; display: flex; flex-direction: column;
-        border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+        border: 1px solid var(--prompt-border-color); border-radius: 8px; overflow: hidden;
         box-shadow: 0 8px 30px var(--shadow-modal) }
-#minput { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
+#minput { width: 100%; box-sizing: border-box; padding: 10px 14px; border-width: 0;   /* #337: width only - an ID-level border colour would outrank theme input.prompt-input rules (Minimal) */
           flex: 0 0 auto;
           border-bottom: 1px solid var(--border); background: var(--bg-base);
           color: var(--text-chrome); font-size: 14px; outline: none }
+/* #337: a focused stock prompt input is framed in --background-modifier-border-focus (Solarized: its accent
+   203,75,22); our separator under it keeps its own colour */
+.prompt-input:focus { border-color: var(--background-modifier-border-focus) }   /* #337: (0,2,0) so a theme input.prompt-input:focus rule wins, as on stock */
+#minput:focus { border-bottom-color: var(--border) }
+/* #352: WebKit paints its own grey placeholder (#a9a9a9 in both modes) unless told; stock = --text-faint */
+#minput::placeholder, #rninput::placeholder { color: var(--input-placeholder-color, var(--text-faint)) }
 #mlist { max-height: 320px; min-height: 0; flex: 0 1 auto; overflow-y: auto }
 #mlist .mrow { display: flex; justify-content: space-between; align-items: center;
                padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text-chrome) }
 #mlist .mrow.sel, #mlist .mrow:hover { background: var(--background-modifier-hover) }   /* themematch: selected suggestion */
+/* #346: the matched characters of a suggestion (main.js fuzzyLabel) — stock bolds them (computed 700) */
+.suggestion-highlight { font-weight: 700 }   /* single class: a theme's .suggestion-highlight rule wins, as in stock */
 #mlist .mhint { color: var(--text-chrome-faint); font-size: 11px; margin-left: 12px; white-space: nowrap }
 #mlist .mempty { padding: 8px 14px; color: var(--text-chrome-faint); font-size: 12px }
 /* goal qscreate: stock's create hint is accent-coloured, and its static instructions
@@ -1425,8 +1457,8 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    token it publishes does NOT expire with the banner (dropTok's lesson: "no
    refusal happened" and "a refusal whose banner faded" must not look alike). */
 #notice { position: fixed; right: 12px; bottom: 12px; z-index: 71; max-width: 420px;
-          padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border-strong);
-          background: var(--bg-surface); color: var(--text-chrome); font-size: 12px; line-height: 1.4;
+          padding: 8px 12px; border-radius: 6px; border: 0;
+          background: var(--background-modifier-message); color: var(--text-on-message); font-size: 12px; line-height: 1.4;   /* #344: stock's inverted notice (dark card, light ink, both modes) */
           white-space: pre-line }
 #notice[hidden] { display: none }
 #saveerr:not([hidden]) ~ #notice, #dropmsg:not([hidden]) ~ #notice { bottom: 58px }
@@ -1478,27 +1510,40 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .lp .h { font-weight: 700; color: var(--text-heading, currentColor) }   /* wasp: orange headings; currentColor = inherit for every theme that declares no --text-heading */
 /* #59 slice 2: per-level heading ink = the theme's --h<n>-color (Obsidian: h<n> { color: var(--h<n>-color) }), the
    reading view below the same; a theme that declares none keeps --text-heading / currentColor, so the default is unchanged */
-.lp .h1 { font-size: var(--h1-size); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, inherit); font-variant: var(--h1-variant, inherit); }
-.lp .h2 { font-size: var(--h2-size); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, inherit); font-variant: var(--h2-variant, inherit); }
-.lp .h3 { font-size: var(--h3-size); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, inherit); font-variant: var(--h3-variant, inherit); }
-.lp .h4 { font-size: var(--h4-size); color: var(--h4-color, var(--text-heading, currentColor)); font-family: var(--h4-font, inherit); font-style: var(--h4-style, inherit); font-variant: var(--h4-variant, inherit); }
-.lp .h5 { font-size: var(--h5-size); color: var(--h5-color, var(--text-heading, currentColor)); font-family: var(--h5-font, inherit); font-style: var(--h5-style, inherit); font-variant: var(--h5-variant, inherit); }
-.lp .h6 { font-size: var(--h6-size); color: var(--h6-color, var(--text-heading, currentColor)); font-family: var(--h6-font, inherit); font-style: var(--h6-style, inherit); font-variant: var(--h6-variant, inherit); }
+.lp .h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, inherit); font-variant: var(--h1-variant, inherit); }
+.lp .h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); color: var(--h2-color, var(--text-heading, currentColor)); font-family: var(--h2-font, inherit); font-style: var(--h2-style, inherit); font-variant: var(--h2-variant, inherit); }
+.lp .h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); color: var(--h3-color, var(--text-heading, currentColor)); font-family: var(--h3-font, inherit); font-style: var(--h3-style, inherit); font-variant: var(--h3-variant, inherit); }
+.lp .h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); color: var(--h4-color, var(--text-heading, currentColor)); font-family: var(--h4-font, inherit); font-style: var(--h4-style, inherit); font-variant: var(--h4-variant, inherit); }
+.lp .h5 { font-size: var(--h5-size); font-weight: var(--h5-weight); color: var(--h5-color, var(--text-heading, currentColor)); font-family: var(--h5-font, inherit); font-style: var(--h5-style, inherit); font-variant: var(--h5-variant, inherit); }
+.lp .h6 { font-size: var(--h6-size); font-weight: var(--h6-weight); color: var(--h6-color, var(--text-heading, currentColor)); font-family: var(--h6-font, inherit); font-style: var(--h6-style, inherit); font-variant: var(--h6-variant, inherit); }
 .lp .b { font-weight: var(--bold-weight); color: var(--bold-color, inherit); }
 .lp .i { font-style: italic; color: var(--italic-color, inherit); font-weight: var(--italic-weight, inherit); }
 .lp .bi { font-weight: var(--bold-weight); font-style: italic }
 .lp .s { text-decoration: line-through }
-.lp .hl { background: var(--highlight-yellow); color: var(--text-normal) }   /* issue #47: the lp ==marker== is a <mark>, whose UA sheet paints black ink; stock: --text-normal */
+/* #335: the LP ==marker== is stock's span.cm-highlight: --text-highlight-bg behind --text-normal ink (issue #47),
+   under ONE bare class selector (0,1,0) so the theme's own highlight rules (Solarized .cm-s-obsidian
+   span.cm-highlight ink --text-on-accent + 2px padding, Gruvbox .cm-highlight --text-highlight-fg) win as in
+   stock. Before, the element was a bare <mark class="hl">: no theme rule named it, and .lp .hl hard-coded the ink. */
+.cm-highlight { background-color: var(--text-highlight-bg); color: var(--text-normal) }
 .lp .code { font-family: var(--font-monospace); font-size: var(--code-size); background: var(--code-background); border-radius: var(--code-radius) }
 .lp .wl, .lp .lt, .lp .url { color: var(--link-color, var(--accent-blue)) }
 .lp .wl:hover, .lp .lt:hover, .lp .url:hover { color: var(--link-color-hover, var(--text-accent-hover)) }   /* themematch: link hover ink */
 .lp a.wiki { text-decoration: var(--link-decoration, none) }
 .lp a.wiki:hover { text-decoration-line: var(--link-decoration-hover, var(--link-decoration, none)) }
 .lp.src .wl, .lp.src .lt, .lp.src .url { text-decoration: underline }
-.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 999px); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+.lp .tag { color: var(--tag-color, var(--accent-blue)); background: var(--tag-bg); border-radius: var(--tag-radius, 2em); padding: var(--tag-padding-y, 0) var(--tag-padding-x, 4px); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); font-weight: var(--tag-weight, inherit); }
+/* stock live preview draws the tag pill on .cm-hashtag-begin ('#', start corners) + .cm-hashtag-end (name, end
+   corners), the spans Ed.inline now emits; the .lp a.tag wrapper only keeps text styling. :where() keeps these at
+   class specificity so a theme's .cm-hashtag.cm-hashtag-end rule (Solarized: border-radius unset) wins as in stock. */
+.lp a.tag, .lp a.tag:hover { background: none; border-width: 0; border-radius: 0; padding: 0 }
+:where(.lp a.tag) > .cm-hashtag { background: var(--tag-bg); border-color: var(--tag-border-color, currentColor); border-style: solid; border-width: var(--tag-border-width, 0); padding-top: var(--tag-padding-y, 0); padding-bottom: var(--tag-padding-y, 0) }
+:where(.lp a.tag) > .cm-hashtag-begin { border-radius: var(--tag-radius, 2em) 0 0 var(--tag-radius, 2em); border-right-width: 0; padding-left: var(--tag-padding-x, 7px) }
+:where(.lp a.tag) > .cm-hashtag-end { border-radius: 0 var(--tag-radius, 2em) var(--tag-radius, 2em) 0; border-left-width: 0; padding-right: var(--tag-padding-x, 7px) }
+:where(.lp a.tag:hover) > .cm-hashtag { background: var(--tag-background-hover, var(--tag-bg-hover)); border-color: var(--tag-border-color-hover, var(--tag-border-color, currentColor)) }
 .lp .task, .lp .hr, .lp .tbl { font-family: var(--font-monospace) }
-.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--bg-surface);
+.lp .fence { display: block; font-family: var(--font-monospace); font-size: 13px; background: var(--code-background);   /* #331: stock paints LP code rows with --code-background */
              padding: 0 8px; white-space: pre; overflow-x: auto }
+.lp .lprow.HyperMD-codeblock { background-color: var(--code-background) }   /* #331: every fence row (body + delimiters, Ed.lpFenceRows), not only the ``` rows */
 .lp .bq { color: var(--blockquote-color, inherit) }   /* geometry (border + padding) is R15.13 below */
 /* R14 settings modal (Ctrl+,) — setcenter R1/R2: centred on both axes by flex,
    sized by the viewport-relative rule below; recentres on resize with no JS.
@@ -1517,10 +1562,10 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 #sbody { flex: 1; display: flex; min-height: 0 }
 #snav { width: 180px; box-sizing: border-box; background: var(--bg-base); border-right: 1px solid var(--border);
         padding: 8px 0; overflow-y: auto }
-.snavh { padding: 4px 14px; color: var(--text-chrome-faint); font-size: 11px; text-transform: uppercase }
+.snavh { padding: 4px 14px; color: var(--text-chrome-faint); font-size: 11px; font-weight: 600; text-transform: uppercase }   /* #350: stock nav group heading weight 600, faint ink (#352) */
 .snavi { padding: 5px 14px; cursor: pointer; color: var(--text-chrome) }
-.snavi:hover { background: var(--bg-surface) }
-.snavi.sel { background: var(--border) }
+.snavi:where(:hover) { background: var(--bg-surface) }   /* #328: one class so theme .vertical-tab-nav-item:hover rules win; .sel below still beats it */
+.snavi:where(.sel) { background: var(--background-modifier-hover); color: var(--nav-item-color-active) }   /* #328: stock active settings nav item fill = --background-modifier-hover (Solarized L sets --nav-item-background-active = accent/.1, stock still paints 0,0,0/.07); one class (0,1,0 + :where) so theme .vertical-tab-nav-item.is-active rules win */
 #spage { flex: 1; min-width: 0; padding: var(--size-4-4, 16px); box-sizing: border-box; display: flex; flex-direction: column }
 /* R30 row panes: card inset, a fixed row height for a one-line description
    growing per extra line, a separator inset to the card, controls flush right
@@ -1530,13 +1575,13 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 #spage.rows { display: block; overflow-y: auto; padding: 16px 20px }
 .ssec { font-weight: var(--font-semibold, 600); color: var(--text-chrome); margin: 24px 0 8px; font-size: 13px }
 #spage.rows > .ssec:first-child { margin-top: 0 }
-.scard { background: var(--bg-base); border: 1px solid var(--bg-surface); border-radius: 6px }
+.scard { background: var(--background-primary-alt);   /* #350: stock cards L 250 / D 35 */ border: 1px solid var(--bg-surface); border-radius: 6px }
 .srow { display: flex; align-items: center; gap: 16px; min-height: 76px; box-sizing: border-box;
         padding: var(--size-4-5, 20px) 17px; border-bottom: 1px solid var(--bg-surface) }
 .scard > .srow:last-child { border-bottom: 0 }
 .sinfo { flex: 1; min-width: 0 }
 .slabel { font-size: var(--font-ui-medium, 14px); line-height: 19px; color: var(--text-chrome) }
-.sdesc { font-size: 13px; line-height: 16px; color: var(--text-chrome-faint); margin-top: 2px }
+.sdesc { font-size: 13px; line-height: 16px; color: var(--text-chrome-muted); margin-top: 2px }   /* #350: stock descriptions = --text-muted */
 .slink { color: var(--accent-blue) }
 /* the ONE disabled treatment (R30): not focusable (no control is a form element),
    not clickable, aria-disabled in the DOM — grey paint is the least of it. */
@@ -1555,14 +1600,15 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .sctl.toggle.on > i { left: calc(var(--toggle-width, 40px) - var(--toggle-thumb-width, 16px) - var(--toggle-border-width, 2px) - 1px); background: var(--bg-base) }
 .sctl.toggle:active > i { opacity: var(--toggle-thumb-opacity-active, 1) }
 .sctl.dropdown { width: 141px; height: 24px; box-sizing: border-box; padding: var(--dropdown-padding, 0 8px); background: var(--dropdown-background, var(--bg-sidebar));
-                 border: 1px solid var(--border); border-radius: 4px; white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
+                 border: 0; box-shadow: var(--input-shadow, inset 0 0 0 1px var(--border)); border-radius: 4px;   /* #337: stock border-width 0 (frame = input shadow) */
+                 white-space: nowrap; overflow: hidden; font-weight: var(--input-font-weight, inherit); }
 .sctl.dropdown { background-position-x: var(--inset-end, 0%) }   /* own rule: keeps the background shorthand above serialisable in CSSOM */
 /* .live = the one dropdown in this pane with a handler behind it (Appearance ▸
    Themes; the palette axis that used to sit beside it is gone — themeone item 7). Every other control here is a transcription of
    Obsidian's settings with no behaviour, rendered inert; this one gets the affordances that
    inertness withholds — a pointer, a hover, and a visible focus ring, because
    it IS a tab stop. */
-.sctl.dropdown.live { cursor: pointer; background: var(--bg-surface) }
+.sctl.dropdown.live { cursor: pointer }   /* #337: same --dropdown-background as every stock dropdown */
 .sctl.dropdown.live:hover { border-color: var(--border-strong); background-color: var(--dropdown-background-hover, var(--bg-surface)); }
 .sctl.dropdown.live:focus-visible { outline: var(--input-border-width-focus, 2px) solid var(--border-focus-ring); outline-offset: 1px }
 .sctl.text { width: 141px; height: var(--input-height, 24px); box-sizing: border-box; padding: 0 8px; background: var(--bg-sidebar);
@@ -1614,6 +1660,9 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .sbtn, .supdlink, #sbox [role=button], #sbox button { cursor: pointer }
 #sbox [aria-disabled="true"], #sbox .srow.dis .sbtn { cursor: default }
 .supd { margin-top: 4px }
+/* #294: the signed sha256 line (copyable, sha256sum format) and one line per warning */
+.supdsha { font-family: var(--font-monospace); user-select: text; overflow-wrap: anywhere; margin-top: 2px }
+.supdwarn { color: var(--text-error); margin-top: 2px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }
@@ -1666,22 +1715,23 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
   --font-text-size: 16px; --font-smaller: 0.92em; --line-height-normal: 1.55; --line-height-tight: 1.25;
   /* ONE spacing unit for the content column (TOKENS.md): every margin, indent, radius and width below is a multiple of it */
   --space-unit: 0.25rem;
-  --font-weight: var(--font-normal, 400); --bold-modifier: 250; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
+  --font-weight: var(--font-normal, 400); --bold-modifier: 200; --bold-weight: min(900, calc(var(--font-weight) + var(--bold-modifier)));
   /* R15.7-9 headings */
-  --h1-size: 1.974em; --h2-size: 1.762em; --h3-size: 1.574em; --h4-size: 1.405em; --h5-size: 1.254em; --h6-size: 1.12em;
+  /* #342: stock 1.13.7 computed h1 h2 h3 h5 h6 = 25.888/23.392/21.088/17.216/16px at 16px (devtools, goal theme-default); h4 1.188em, re-measured on the box (theme-th-default) */
+  --h1-size: 1.618em; --h2-size: 1.462em; --h3-size: 1.318em; --h4-size: 1.188em; --h5-size: 1.076em; --h6-size: 1em;
   --h1-weight: 700; --h2-weight: 600; --h3-weight: 600; --h4-weight: 600; --h5-weight: 600; --h6-weight: 600;
   --h1-line-height: 1.15; --h2-line-height: 1.21; --h3-line-height: 1.27; --h4-line-height: 1.33;
   --h5-line-height: 1.39; --h6-line-height: 1.45;
   --h1-letter-spacing: -0.018em; --h2-letter-spacing: -0.015em; --h3-letter-spacing: -0.012em;
   --h4-letter-spacing: -0.009em; --h5-letter-spacing: -0.006em; --h6-letter-spacing: -0.003em;
-  --p-spacing: calc(var(--space-unit) * 5); --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
+  --p-spacing: 1rem; --p-spacing-empty: 0rem; --heading-spacing: calc(var(--space-unit) * 8);
   /* R15.10-13 lists / checkbox / code / blockquote */
   --list-indent: calc(var(--indent-unit, calc(var(--space-unit) * 7 / 4)) * var(--indent-size, 4));
   --list-indent-editing: calc(var(--space-unit) * 2); --list-spacing: calc(var(--space-unit) / 2); --list-bullet-size: calc(var(--space-unit) * 1.5); --list-bullet-radius: calc(var(--list-bullet-size) / 2);
   --checkbox-size: calc(var(--space-unit) * 3.5); --checkbox-radius: calc(var(--space-unit) * 0.75);
   --checkbox-margin-inline-start: calc(var(--space-unit) * 3); --checklist-done-decoration: line-through 0.06em;
-  --code-size: var(--font-smaller, 0.92em); --code-radius: calc(var(--space-unit) * 1.5);
-  --blockquote-border-thickness: calc(var(--space-unit) * 0.75);
+  --code-size: var(--font-smaller, 0.92em); --code-radius: var(--radius-s, 4px);   /* #343: stock inline code corner 4px */
+  --blockquote-border-thickness: 2px;   /* #347: stock default (was 3px) */
   /* THE SEVEN COLOUR ROWS OF THIS BLOCK LIVE ON `body`, NOT HERE — see the
      "R15.10-13 CONTENT COLOURS" comment in the body token block at the top of
      this file: --list-marker-color, --checkbox-border-color, --checkbox-color,
@@ -1819,7 +1869,7 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    is nothing to cover, the ::before is already invisible underneath. */
 .lp.titling::before, .preview.titling::before, .lp.cmown .cm-scroller.titling::before { visibility: hidden }
 /* R34.18 — THE ROOT CAUSE, AND WHY THE FIX IS HERE AND NOT ON .titleedit.
-   The shared rule above is written in em and tokens: `--h1-size: 1.974em` and
+   The shared rule above is written in em and tokens: `--h1-size: 1.618em` and
    `--h1-letter-spacing: -0.018em`. `em` resolves against the element's INHERITED
    font-size, and `color: inherit` / an undeclared font-family resolve against
    the inherited value — so identical declarations produce different type when
@@ -1845,6 +1895,12 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 }
 .lp .lprow { width: 100% }
 .lp .lprow:has(> .h) + .lprow:not(:has(> .h)) { padding-top: var(--p-spacing-empty, 0) }   /* stock: the line under a heading (HyperMD-header + .cm-line) */
+/* #319: stock 1.13.7 heading LINE spacing (stock CSS, computed H1 16px / H2-after-blank 0 in the theme-th-editor phase):
+   a heading line is pushed down by --p-spacing, the text line right under a heading by --p-spacing-empty, and a
+   heading that follows heading + blank line gets 0 (beats a theme's plain .cm-s-obsidian .cm-line.HyperMD-header). */
+.cm-s-obsidian .cm-line.HyperMD-header { padding-top: var(--p-spacing) }
+.cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):not(:has(> br:only-child)) { padding-top: var(--p-spacing-empty) }
+.cm-s-obsidian .cm-line.HyperMD-header + .cm-line:not(.HyperMD-header):has(> br:only-child) + .cm-line.HyperMD-header { padding-top: 0 }
 .lp h1, .preview h1, .lp h2, .preview h2, .lp h3, .preview h3, .lp h4, .preview h4, .lp h5, .preview h5, .lp h6, .preview h6 {
   color: var(--text-heading, currentColor); font-style: normal; font-variant: normal; border: 0 }   /* wasp: see .lp .h */
 .lp h1, .preview h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line-height); letter-spacing: var(--h1-letter-spacing); color: var(--h1-color, var(--text-heading, currentColor)); font-family: var(--h1-font, inherit); font-style: var(--h1-style, normal); font-variant: var(--h1-variant, normal); }
@@ -1911,6 +1967,10 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    ran through a nested item's literal indent, left of the box; stock leaves the indent unpainted */
 .lp .tkx { text-decoration: none }
 .lp .tkx .tkt { text-decoration: var(--checklist-done-decoration) }
+/* #341: SOURCE mode is raw markdown — stock neither strikes nor dims a done task there (src computed: --text-normal, no line-through) */
+.lp.src .tkx, .lp.src .tkx .tkt { text-decoration: none; color: inherit }
+/* #341: raw frontmatter lines (source mode / Properties shown as source; props.js line class fmrow) = stock muted ink at 14px (16px editor) */
+.lp .lprow.fmrow { color: var(--text-muted); font-size: 0.875em }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);
   border: 1px solid var(--checkbox-border-color); flex-shrink: 0; padding: 0; margin: 0; width: var(--checkbox-size); height: var(--checkbox-size);
   position: relative; top: 0.2em; margin-inline-end: 0.6em; cursor: pointer; vertical-align: baseline }
@@ -1932,6 +1992,26 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .preview a.ext { padding-inline-end: 0.9em; background-repeat: no-repeat; background-position: 100% 4px; background-size: 0.825em;   /* REQ-6 */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 3h6v6'/%3E%3Cpath d='M10 14 21 3'/%3E%3Cpath d='M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6'/%3E%3C/svg%3E") }
 .preview a.wiki-unresolved { font-style: normal; text-decoration-color: var(--link-unresolved-decoration-color, var(--link-unresolved-underline)); text-decoration-style: var(--link-unresolved-decoration-style, solid); filter: var(--link-unresolved-filter, none); opacity: var(--link-unresolved-opacity, 1); }   /* REQ-15 */
+/* #339: canvas cards render markdown outside .lp/.preview (text card div.canvas-text.markdown-rendered,
+   note card div.canvas-file-embed > .markdown-embed-content), so no link rule reached their anchors and the
+   UA blue + underline won. Stock gives card links the app link styling: --link-color, --link-decoration (default underline, a theme sets none). */
+:is(.canvas-text, .canvas-file-embed) a.wiki { color: var(--link-color, var(--accent-blue)); cursor: var(--cursor-link, pointer); font-weight: var(--link-weight, inherit) }
+/* #339: the card link decoration at (0,1,1), under a theme's own .markdown-rendered .internal-link rule (AnuPpuccin none, (0,2,0)) as in stock;
+   default = --link-decoration (stock underline), Minimal/Gruvbox/Solarized set the variable none */
+:where(.canvas-text, .canvas-file-embed) a.wiki { text-decoration: var(--link-decoration, underline) }
+:is(.canvas-text, .canvas-file-embed) a.wiki-unresolved { color: var(--link-unresolved-color, var(--link-unresolved)); font-style: normal; opacity: var(--link-unresolved-opacity, 1); filter: var(--link-unresolved-filter, none) }
+:is(.canvas-text, .canvas-file-embed) a.ext { color: var(--link-external-color, var(--accent-blue)); text-decoration: var(--link-external-decoration, underline) var(--link-decoration-thickness, auto); cursor: pointer; filter: var(--link-external-filter, none) }
+/* #353: the heading / bold / italic colour rules were scoped to .lp/.preview, so canvas card markdown painted
+   them in body ink; stock paints card headings --hN-color and bold --bold-color as in the note view (Gruvbox red /
+   orange). Colours only: card heading sizes and spacing are the default-theme card typography (#342). */
+:is(.canvas-text, .canvas-file-embed) h1 { color: var(--h1-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h2 { color: var(--h2-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h3 { color: var(--h3-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h4 { color: var(--h4-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h5 { color: var(--h5-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) h6 { color: var(--h6-color, var(--text-heading, currentColor)) }
+:is(.canvas-text, .canvas-file-embed) :is(b, strong) { color: var(--bold-color, inherit) }
+:is(.canvas-text, .canvas-file-embed) em { color: var(--italic-color, inherit) }
 .preview li > :is(ul, ol) { position: relative }                                            /* REQ-9: indent guide at parent text x - 13 */
 .preview li > :is(ul, ol)::before { content: ""; position: absolute; inset-inline-start: -13px; top: 0; bottom: 0; width: var(--indentation-guide-width, 1px);
   background: var(--indentation-guide-color); pointer-events: none }
@@ -1963,12 +2043,12 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
 .token.regex, .token.important { color: var(--code-important, inherit) }
 /* R15.13 blockquote: 2px accent inline-start border, 24px padding, no margin (LP: 14px text offset) */
 .lp blockquote, .preview blockquote { border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background: var(--transparent);
+  padding: 0 0 0 var(--size-4-6); margin-inline: 0; font-style: var(--blockquote-font-style, normal); color: var(--blockquote-color, inherit); background-color: var(--blockquote-background-color);   /* #330 */
   position: relative; inset-inline-start: 2px }   /* the border sits on the h1 "H" ink x; the content box is 2px left of it */
 .preview > blockquote { margin-inline: auto }    /* keep the 700px column centring (the rule above outranks .preview > *) */
 .preview blockquote > :first-child { margin-top: 0 }
 .preview blockquote > :last-child { margin-bottom: 0 }
-.lp blockquote { padding-inline-start: 11px }
+.lp blockquote { padding-inline-start: 12px }   /* #347: 2px bar + 12px = text at +14 like stock (gate LP_BQ_TEXT_X=14) */
 /* R15.10-13 in LIVE PREVIEW, on the R17 flat row DOM (ui/editor.js emits ONE
    div.lprow per source line — there is no ul/ol/li/blockquote to select, so
    the semantic rules above are reading-mode only). The reading-view offsets are
@@ -1978,30 +2058,41 @@ body.is-focused .mod-active .workspace-tab-header-container .workspace-tab-heade
    indent — real text in the row — shifts marker and text together for free.
    Revealing the markers (.cur row / source mode) drops the box: the source
    line then measures exactly as it reads. */
-.lp .li > .mk.lim { display: inline-block; min-width: 23px; position: relative; color: var(--transparent) }
-.lp .li > .mk.lim::before { content: ""; position: absolute; inset-inline-start: 14px; top: 0.6em;
+.lp .li > .lpre > .mk.lim { display: inline-block; min-width: 23px; position: relative; color: var(--transparent) }
+.lp .li > .lpre > .mk.lim::before { content: ""; position: absolute; inset-inline-start: 14px; top: 0.6em;
   width: var(--list-bullet-size); height: var(--list-bullet-size);
   border-radius: var(--list-bullet-radius); background: var(--list-marker-color); border: var(--list-bullet-border, none); transform: var(--list-bullet-transform, none); }
-.lp .li.ord > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
-.lp .li.ord > .mk.lim::before { content: none }
-.lp .tk:not(.ord) > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
-.lp .tk > .mk.lim::before { content: none }
+.lp .li.ord > .lpre > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
+.lp .li.ord > .lpre > .mk.lim::before { content: none }
+.lp .tk:not(.ord) > .lpre > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
+.lp .tk > .lpre > .mk.lim::before { content: none }
 /* the selector must out-specify `.lp input[type=checkbox]` above (0,2,1): an
    attribute selector weighs as much as a class, so a bare `.lp .tbox` loses */
 .lp input[type=checkbox].tbox { margin-inline-start: 9px; margin-inline-end: calc(0.6em - 4px) }   /* box at +7, text at +27 */
 /* markers revealed: the box collapses, the line renders as its raw source.
    Per TOKEN (.rv) now, not per row — the list marker opens only when the
    selection actually touches "- " (R17.6 D6 vs E6). */
-.lp.src .li > .mk.lim, .lp .li > .mk.lim.rv {
+.lp.src .li > .lpre > .mk.lim, .lp .li > .lpre > .mk.lim.rv {
   display: inline; min-width: 0; padding: 0; color: var(--text-chrome-dim) }
-.lp.src .li > .mk.lim::before, .lp .li > .mk.lim.rv::before { content: none }
-.lp.src .li > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
+.lp.src .li > .lpre > .mk.lim::before, .lp .li > .lpre > .mk.lim.rv::before { content: none }
+.lp.src .li > .lpre > .mk.lim { padding-inline-start: var(--list-indent-source, 0) }
+/* #272 hanging indent: a list row = span.lpre (indent + marker + checkbox) + span.lbody (text),
+   editor.js Ed.block. Side by side as flex items, the body is its own box, so a WRAPPED line
+   starts under the item text, not at the row edge (stock 1.13.7: continuation x = text x).
+   Baseline-aligned: line 1 keeps its exact x and y; lpre lays its marker/checkbox out inline
+   exactly as before (vertical-align, R15.11 offsets) — only the body is moved into a box.
+   Both boxes must be adjacent, else the row keeps the plain inline flow (fail closed: an
+   overlay-split or embed-only row looks as before), and lpre must open the row: a list inside a
+   quote (span.bq > ">" marker + lpre) keeps its inline flow. Source mode is untouched (raw lines). */
+.lp:not(.src) .li:has(> .lpre:first-child + .lbody) { display: flex; align-items: baseline }
+.lp:not(.src) .li > .lpre:first-child:has(+ .lbody) { flex: none; white-space: pre }
+.lp:not(.src) .li > .lpre:first-child + .lbody { flex: 1 1 0; min-width: 0 }
 /* R15.13 blockquote in LP: the span.bq is the line's block box — border ink on
-   the h1 "H" ink x (+2 from the column), text 11px past it */
-.lp .bq { display: block; margin-inline-start: 2px;
+   the h1 "H" ink x (+2 from the column), text 12px past the 2px bar (#347: +14 like stock) */
+.lp .bq { display: block; margin-inline-start: 2px; background-color: var(--blockquote-background-color);   /* #330 */
   border-inline-start: var(--blockquote-border-thickness) solid var(--blockquote-border-color);
-  padding-inline-start: 11px }
-.lp .bq .bq { margin-inline-start: 0 }                          /* nested "> >": only the outer one is offset */
+  padding-inline-start: 12px }
+.lp .bq .bq { margin-inline-start: 0; background-color: transparent }                         /* nested "> >": only the outer one is offset and painted (#330: no double alpha) */
 
 /* perf (INTEGRATE): compositor floor probe target — a real 1px style+paint
    invalidation so floorProbe() measures a frame, not an elided class flip.
@@ -2289,6 +2380,11 @@ span.is-flashing { background: var(--highlight-yellow) }
   background: var(--bg-button-plain); color: var(--bg-base); font-size: 13px; font-weight: 500; cursor: pointer }
 #ldcard .ldbtns button:focus { box-shadow: 0 0 0 2px var(--border-focus-ring) }
 .ssecrestartbtn { margin-left: 6px; height: 22px; padding: 0 8px; border: 0; border-radius: 4px; font-size: 12px; cursor: pointer }
+/* #295 Settings › Security › Microphone: ask | always allow | off (ui/security.js micRow) */
+.ssecmicseg { gap: 4px }
+.ssecmicseg .sbtn { font-size: 13px; color: var(--text-normal) }
+.ssecmicseg .sbtn.acc { color: var(--bg-ribbon) }
+.srow.dis .ssecmicseg .sbtn { opacity: .55 }
 /* issue #44: the PDF view (a "pdf" leaf, main.js PDFV) — the same frame, filling the pane */
 .os-pv > .view-content.pdf-view { padding: 0; overflow: hidden; display: flex; flex-direction: column }
 .pdf-view > .pdf-embed { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; width: 100%;
@@ -2490,6 +2586,16 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .cm-callout { padding: 0; margin: 0 }
 .cm-callout .callout { margin: 0 }
 .cm-callout .callout-content .callout { margin: 1em 0 }
+/* #324: the live-preview callout widget is a rendered fragment (stock DOM div.cm-embed-block.markdown-rendered.cm-callout,
+   ui/editor.js Ed.coField): stock spaces its blocks exactly like the reading view (--p-spacing), so the reading-view block
+   spacing rules above apply to it too. Same specificity as the .preview rules: theme sheets still win on order. */
+.cm-callout :is(p, ul, ol, table, pre, blockquote) { margin-block: var(--p-spacing) }
+.cm-callout :is(h1, h2, h3, h4, h5, h6) { margin-block: var(--p-spacing) }
+.cm-callout :is(p, pre, table, ul, ol) + :is(h1, h2, h3, h4, h5, h6) { margin-top: var(--heading-spacing) }
+.cm-callout li > p { margin-block: 0 }
+/* #324: the widget holds rendered HTML, not source text: stock's .cm-embed-block resets the editor's pre-wrap. Without
+   it the renderer's trailing "\n" after </p> is a whole extra 24px line box at the bottom of .callout-content. */
+.cm-callout { white-space: normal; overflow-wrap: normal; word-break: normal }
 /* #119 Properties (ui/props.js): stock's class names, so a theme's metadata rules apply too */
 /* the live-preview block widget contains its child margins (flow-root): CM6
    measures a block widget by its border box, and .metadata-container's 4px/14px
@@ -2511,6 +2617,9 @@ svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block;
 .metadata-input-checkbox { margin: 6px; }
 .multi-select-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; }
 .multi-select-pill { display: inline-flex; align-items: center; gap: 2px; padding: 1px 8px; border-radius: 12px; background: var(--border); font-size: 13px; }
+/* #334: a tags-property pill is a tag: stock paints it --tag-color on --tag-background (Gruvbox L ink
+   rgb(76,122,93) on rgb(235,219,178)); other list pills (aliases) keep the neutral pill above. */
+.metadata-property[data-property-type="tags"] .multi-select-pill { color: var(--tag-color); background-color: var(--tag-background) }
 .multi-select-pill-remove-button { cursor: pointer; opacity: .6; padding: 0 2px; }
 .multi-select-pill-remove-button:hover { opacity: 1; }
 .multi-select-input { flex: 1 1 60px; width: auto; }

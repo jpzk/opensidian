@@ -1,0 +1,89 @@
+# opensidian v0.9.6 x86_64 portable AppImage: every bundled library/helper (box-unpacked, 7a0d9938bbb4b9a3c42752415c235cf69946ed86dbb8d511cb6f3098c9778266)
+# file	sha256	source-package	version	direct-needed-by (LD_DEBUG=files, union over all bundle ELFs)
+usr/lib/libatk-1.0.so.0	08346e9481ee7a4b0a8f08d1cc8298c6212e175eb76da6afdac5a72c38a2aa39	at-spi2-core	2.60.4-0ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libatk-bridge-2.0.so.0,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libatk-bridge-2.0.so.0	f15ca1b81111a2255d523da5601daa3a18de61d9d3b18a2f6cc12532f3e3bd5b	at-spi2-core	2.60.4-0ubuntu0.1	libgtk-3.so.0
+usr/lib/libatomic.so.1	eac440708f874c4d446671efb5353cebeaa829bd1f18cd8d5065cd6efefa387b	gcc-16	16-20260322-1ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libglib-2.0.so.0,libjavascriptcoregtk-4.1.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libatspi.so.0	068e164f938fb6414b7ef44bd7fb3835d71d35c7a3edd58d0367bd4a8b12e8e1	at-spi2-core	2.60.4-0ubuntu0.1	libatk-bridge-2.0.so.0
+usr/lib/libblkid.so.1	c6c40ef148122df950ba53c4e44f7b45860da2381bf59fa8d4a645e7bfa55cb8	util-linux	2.41.3-3ubuntu2.2	libmount.so.1
+usr/lib/libbrotlicommon.so.1	79902d8a4eb1d715c5f3288a98afba2028606f75893d0aa17e501123ca429466	brotli	1.2.1	libbrotlidec.so.1,libbrotlienc.so.1
+usr/lib/libbrotlidec.so.1	2089e8f34c9066731ceca19287b19aa757bb02944e01bc088b1ec7d2dd00fcb3	brotli	1.2.1	libfreetype.so.6,libjxl.so.0.11,libsoup-3.0.so.0
+usr/lib/libbrotlienc.so.1	e31270979a9df8aa76e35ac0def5da59912eee56bc5bd78291231a6e81f1e071	brotli	1.2.1	libjxl.so.0.11
+usr/lib/libbz2.so.1.0	7138aeb748f73c150b1d34d67de69139a441910cd7b269076ba3c8b986dea9a7	bzip2	1.0.8-6ubuntu0.1	
+usr/lib/libcairo-gobject.so.2	3a7ae8610a5608a7d416e02eb5ea1c7f17b127729baf2b7bc0fbb7175662b081	cairo	1.18.4-3	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libgdk-3.so.0,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libcairo.so.2	f8ed09b8ed35a1c19be81434bf7cb0fde1c1a0355b8ac74b7d3cf97788bdffe6	cairo	1.18.4-3	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libcairo-gobject.so.2,libgdk-3.so.0,libgtk-3.so.0,libpangocairo-1.0.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libdatrie.so.1	4f82932cdedfe2cfa2e306fddb71c770249cc45375176b850ac3e25f2cc9c7e2	libdatrie	0.2.14-1	libthai.so.0
+usr/lib/libdbus-1.so.3	bb0b37afa67c7b6d664ca189f63fb92e75a690a340c4c13a149cc4dfbd8249ff	dbus	1.16.2-2ubuntu4	libatk-bridge-2.0.so.0,libatspi.so.0,opensidian
+usr/lib/libenchant-2.so.2	554a705118b92c7247d094733601bab4d2f703bcac2b2af4a86db617957a02bd	enchant-2	2.8.2+dfsg1-3build1	
+usr/lib/libepoxy.so.0	67533f0552bc23d90402a0df7bed6f4f40d8ec1946782b3f9d245c0e46a758ef	libepoxy	1.5.10-2build1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libgdk-3.so.0,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libffi.so.8	1a0dc86f787f73e025a6e521056360afcbe70f2a82cd808132fefc2b4ee95daa	libffi	3.5.2-4	libgobject-2.0.so.0
+usr/lib/libfribidi.so.0	c122a34c3e9cab264c9a07b21b75f16443a646cc8db4e84ac91e800daa7e03ce	fribidi	1.0.16-5	libgdk-3.so.0,libgtk-3.so.0,libpango-1.0.so.0
+usr/lib/libgcrypt.so.20	caec49e99c245de42e4d1fb28f1a31291d85313c88dafcdfea851b064aa766f1	libgcrypt20	1.12.0-2ubuntu1.1	libsecret-1.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgdk-3.so.0	47bb58ca25405353b0546b932ddc5a92e74ee006a1904e4d0eca3df162ddd562	gtk+3.0	3.24.52-0ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libgdk_pixbuf-2.0.so.0	cff4a3872f06723a646be0e086d0e3b385a50bc3d27fac5ebfb83875b03c2c3a	gdk-pixbuf	2.44.5+dfsg-4ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libgdk-3.so.0,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libgio-2.0.so.0	015bde05a0741bbc56b5af15f87eac3eb6e25767c69d8a499686a533b69a35d4	glib2.0	2.88.0-1ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libatk-bridge-2.0.so.0,libatspi.so.0,libgdk-3.so.0,libgdk_pixbuf-2.0.so.0,libglycin-2.so.0,libgtk-3.so.0,libjavascriptcoregtk-4.1.so.0,libpango-1.0.so.0,libpangoft2-1.0.so.0,libsecret-1.so.0,libsoup-3.0.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libglib-2.0.so.0	3cc1aeae827f436a296ec488b80e6c45c150dccfb4525e7db275cc08772d322f	glib2.0	2.88.0-1ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libatk-1.0.so.0,libatk-bridge-2.0.so.0,libatspi.so.0,libcairo-gobject.so.2,libenchant-2.so.2,libgdk-3.so.0,libgdk_pixbuf-2.0.so.0,libgio-2.0.so.0,libglycin-2.so.0,libgmodule-2.0.so.0,libgobject-2.0.so.0,libgstallocators-1.0.so.0,libgstapp-1.0.so.0,libgstaudio-1.0.so.0,libgstbase-1.0.so.0,libgstfft-1.0.so.0,libgstgl-1.0.so.0,libgstpbutils-1.0.so.0,libgstreamer-1.0.so.0,libgsttag-1.0.so.0,libgstvideo-1.0.so.0,libgtk-3.so.0,libgudev-1.0.so.0,libharfbuzz.so.0,libjavascriptcoregtk-4.1.so.0,libpango-1.0.so.0,libpangocairo-1.0.so.0,libpangoft2-1.0.so.0,libsecret-1.so.0,libsoup-3.0.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libglycin-2.so.0	631f4349222697432f6b39258f1ba2a9fb3316d1e00dc097abbe5c439b91a10f	glycin	2.1.5+ds-0ubuntu0.2	libgdk_pixbuf-2.0.so.0
+usr/lib/libgmodule-2.0.so.0	aa2f41237a20b7b28e99ef9706d2b0bad3097e313f51272cfd14dadff8b195cb	glib2.0	2.88.0-1ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libenchant-2.so.2,libgdk_pixbuf-2.0.so.0,libgio-2.0.so.0,libgstgl-1.0.so.0,libgstreamer-1.0.so.0,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libgobject-2.0.so.0	8137127af8315f304e7099591a37a5a922801aaa39e10dc03daaf3c725066975	glib2.0	2.88.0-1ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libatk-1.0.so.0,libatk-bridge-2.0.so.0,libatspi.so.0,libcairo-gobject.so.2,libenchant-2.so.2,libgdk-3.so.0,libgdk_pixbuf-2.0.so.0,libgio-2.0.so.0,libglycin-2.so.0,libgstallocators-1.0.so.0,libgstapp-1.0.so.0,libgstaudio-1.0.so.0,libgstbase-1.0.so.0,libgstgl-1.0.so.0,libgstpbutils-1.0.so.0,libgstreamer-1.0.so.0,libgsttag-1.0.so.0,libgstvideo-1.0.so.0,libgtk-3.so.0,libgudev-1.0.so.0,libjavascriptcoregtk-4.1.so.0,libpango-1.0.so.0,libpangocairo-1.0.so.0,libpangoft2-1.0.so.0,libsecret-1.so.0,libsoup-3.0.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libgraphite2.so.3	3f1376e8965733a4d31386d5de99c829b7704beba3b07987da9220d53f192da2	graphite2	1.3.14-11ubuntu1.1	libharfbuzz.so.0
+usr/lib/libgssapi_krb5.so.2	18e2ba0b2f421b780e7265337e52996f382857df63d0f9e63f391a75a14cdbe7	krb5	1.22.1-2ubuntu4.1	libsoup-3.0.so.0
+usr/lib/libgstallocators-1.0.so.0	48df2557be0d9fafc5835216396e8ce46abc345e5079aa3af117b098333bf94c	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libgstgl-1.0.so.0,libgstvideo-1.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgstapp-1.0.so.0	e26cd00b5df03b91a2671da3080d2e5eeff13d5cf81d480192de365391e99641	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libwebkit2gtk-4.1.so.0
+usr/lib/libgstaudio-1.0.so.0	f9c21df5b428476a798739b4df8382df9a8567f9290f96bbdf9331ece51e2d88	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libgstpbutils-1.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgstbase-1.0.so.0	7ccb3c151df0aa7d750e310e407423abaac31123496eb6affffcfd5ee68804f8	gstreamer1.0	1.28.2-1ubuntu0.1	libgstapp-1.0.so.0,libgstaudio-1.0.so.0,libgstgl-1.0.so.0,libgstpbutils-1.0.so.0,libgsttag-1.0.so.0,libgstvideo-1.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgstfft-1.0.so.0	92836dae37a5537fc019378ce9c8c19ec13f3413e9f0c0cd8980227f465f1a57	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libwebkit2gtk-4.1.so.0
+usr/lib/libgstgl-1.0.so.0	fad15f27478f93f2f785a44cb67c9e5b70fd4c9a26724dfde83580710f5f5b29	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libwebkit2gtk-4.1.so.0
+usr/lib/libgstpbutils-1.0.so.0	2448d0e5b0257a13513e27bb7e0c5821787a398b6a23c291678150a991653501	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libwebkit2gtk-4.1.so.0
+usr/lib/libgstreamer-1.0.so.0	136f1c022d5a146d0089dccf274105adcf1c6217ce31a279adf185dc7fcdf956	gstreamer1.0	1.28.2-1ubuntu0.1	libgstallocators-1.0.so.0,libgstapp-1.0.so.0,libgstaudio-1.0.so.0,libgstbase-1.0.so.0,libgstgl-1.0.so.0,libgstpbutils-1.0.so.0,libgsttag-1.0.so.0,libgstvideo-1.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgsttag-1.0.so.0	f34b8a17b8f8ec1b115bfc5ef1e9610cd8c9eef9872749a3ca8a1aeb3dc78d75	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libgstaudio-1.0.so.0,libgstpbutils-1.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgstvideo-1.0.so.0	cb5b38674829d38170433340c8ba5c862a9ae4c15895af12d97f628cacf05d4b	gst-plugins-base1.0	1.28.2-1ubuntu0.3	libgstgl-1.0.so.0,libgstpbutils-1.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libgtk-3.so.0	8dc29a8cc4eabd2f08316dbb74bb585a2738aba4e4895450487d736792eda425	gtk+3.0	3.24.52-0ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libgudev-1.0.so.0	1d6ec44c8e94f50697487e39c731b2bf83777bd6399c814e052a9aeeae4a2d55	libgudev	238-7build1	
+usr/lib/libharfbuzz-icu.so.0	93ea46d00cd81d5b6dc8f2d001325593001ee0c2907419b9a24c2a8cbd88ea25	harfbuzz	12.3.2-2	libwebkit2gtk-4.1.so.0
+usr/lib/libharfbuzz.so.0	b330ca2b82b22fbce5e1a15dabfeffdd97e9976c3a3e48a2696628bfd34526d5	harfbuzz	12.3.2-2	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libfreetype.so.6,libgtk-3.so.0,libharfbuzz-icu.so.0,libpango-1.0.so.0,libpangocairo-1.0.so.0,libpangoft2-1.0.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libhwy.so.1	5c0606edcfa98ed9a9ae251074b0154a39c2f4ada88f0a677e78ad19583f1486	highway	1.3.0-2	libjxl.so.0.11,libjxl_cms.so.0.11
+usr/lib/libhyphen.so.0	9d16220a139ea30f8b8dd41887b38dd67d35bb409241efe359d5909995c6270c	hyphen	2.8.8-7build4	
+usr/lib/libicudata.so.78	3a08c11ef1d168a1edc3b0437cecb8b42e621f67706980a0502c97364bf744a7	icu	78.2-2ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libicuuc.so.78,libjavascriptcoregtk-4.1.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libicui18n.so.78	14b42ecb935cb21758a24a61052e7b4cd410553e4deae37736cd8c748a1511f4	icu	78.2-2ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libjavascriptcoregtk-4.1.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libicuuc.so.78	1eb54ce8839e953fbaa755522f3488039d879be3a61b272df3cabd6c00f08d2d	icu	78.2-2ubuntu1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libharfbuzz-icu.so.0,libicui18n.so.78,libjavascriptcoregtk-4.1.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libidn2.so.0	cdb48484c43a795c3722e286c31eb6238b4b7c3780043895dd9fa6b6041f78da	libidn2	2.3.8-4build1	libpsl.so.5
+usr/lib/libjavascriptcoregtk-4.1.so.0	be39738eec978dab632c32ec15345a107ecedabf5350bba5b8f39d440ac346aa	webkit2gtk	2.52.6-0ubuntu0.26.04.2	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libjpeg.so.8	90a1eebead4d7c1abc46cf9c66c5392c60fc2c16f038af20fc7efbd0d8dd427f	libjpeg-turbo	2.1.5-4ubuntu4	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libjxl.so.0.11	f6d96ce21d5d4b1ccac292ed3b5f92ce8fa77703d626edfc81ec1243c486b495	jpeg-xl	0.11.1-6ubuntu4.2	libwebkit2gtk-4.1.so.0
+usr/lib/libjxl_cms.so.0.11	066577157ef78a8d1c3b045a0a5dc2148c0683a163115bb8f4e086edb91a7a9a	jpeg-xl	0.11.1-6ubuntu4.2	libjxl.so.0.11
+usr/lib/libk5crypto.so.3	ee77156da39841edfaa7c5fcdca4cf98ae34d60323095617b484188a4d9965e3	krb5	1.22.1-2ubuntu4.1	libgssapi_krb5.so.2,libkrb5.so.3
+usr/lib/libkrb5.so.3	aca607790a4349c5053390fa22b24e717b2c5ea101d7b468ece6507140c6ff7b	krb5	1.22.1-2ubuntu4.1	libgssapi_krb5.so.2
+usr/lib/libkrb5support.so.0	8cc61cecc016710e7134c1621b5a6537c55eea91d2a074f6f05fa6f6e36ec8d6	krb5	1.22.1-2ubuntu4.1	libgssapi_krb5.so.2,libk5crypto.so.3,libkrb5.so.3
+usr/lib/liblcms2.so.2	046e89ccd894994728028a8f00c2424b79cff4e3d9832530f964edddf1078d1b	lcms2	2.17-1ubuntu0.2	libglycin-2.so.0,libjxl_cms.so.0.11,libwebkit2gtk-4.1.so.0
+usr/lib/libmount.so.1	ada01a744a6b665fae43097f3b93400aa74b20d6b59e2d51b9dd28c8747cccbb	util-linux	2.41.3-3ubuntu2.2	libgio-2.0.so.0
+usr/lib/libnghttp2.so.14	2655558fee787cb4724ad59c72ce75b20847efc92a1c52fc202aea1d812c9b20	nghttp2	1.68.0-2ubuntu0.2	libsoup-3.0.so.0
+usr/lib/liborc-0.4.so.0	b7d5b4a3c00708c00c7ce89d52e3da4bd8b5354139cd8a003035c7b4eb472767	orc	1:0.4.42-2	libgstaudio-1.0.so.0,libgstvideo-1.0.so.0
+usr/lib/libpango-1.0.so.0	5c2d126df8d1e1beb793bf400c9bed6a3384e95b16d54cea85643bad046973f3	pango1.0	1.57.0-1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libgdk-3.so.0,libgtk-3.so.0,libpangocairo-1.0.so.0,libpangoft2-1.0.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libpangocairo-1.0.so.0	c159cd8c2f4b85893bd8a0a5247c0c65cd12b4b8d0a74a5ee36aa844fb7850fb	pango1.0	1.57.0-1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libgdk-3.so.0,libgtk-3.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libpangoft2-1.0.so.0	e80bafce7e827bc43dd5d519a6332786943ee167dddb698cdcbef15387c97dc2	pango1.0	1.57.0-1	libgtk-3.so.0,libpangocairo-1.0.so.0
+usr/lib/libpcre2-8.so.0	1896c0dee31c0b04cf749092fafc383178817b02a2304e9128246108920d5156	pcre2	10.46-1ubuntu0.1	libglib-2.0.so.0,libselinux.so.1
+usr/lib/libpixman-1.so.0	8740b21b15423da495da1c89e83d0fb64ca871bd4da47341d0422d7afb3b25e3	pixman	0.46.4-1	libcairo.so.2
+usr/lib/libpng16.so.16	2a570998f08a406b4083b06888e528fa0c5d6cc3bef77b40026d661c91cbfb90	libpng1.6	1.6.57-1ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libcairo.so.2,libfreetype.so.6,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libpsl.so.5	18d125c725a498d66f971ceb60bfc7cf660f6a0149b54e5caa3f4651c3d2b3c6	libpsl	0.21.2-1.1build2	libsoup-3.0.so.0
+usr/lib/libseccomp.so.2	df995d80c824876afc38528b5e71d258e1844eb524cd9d34f9a7898562fd99e7	libseccomp	2.6.0-2ubuntu5	libglycin-2.so.0
+usr/lib/libsecret-1.so.0	39c9d3e087e129ce61d38dc168c1646295111f8361ad480811629ddef52f8a2b	libsecret	0.21.7-2build1	
+usr/lib/libselinux.so.1	7538ee77765a27966563c0d22437a3080dcdb346ff76cc16d71a3ce3379a716a	libselinux	3.9-4build1	libgio-2.0.so.0,libmount.so.1
+usr/lib/libsharpyuv.so.0	fced0bf76ec62fcce9b2cea1a91a9c61fbf6828e9e66b194cc6d779798907ff2	libwebp	1.5.0-0.1build1	libwebp.so.7
+usr/lib/libsoup-3.0.so.0	c22c36ed76a48f159d5fc64092fe7f543abcffa504aeff7d888e2abafc159aa2	libsoup3	3.6.6-1ubuntu0.3	libwebkit2gtk-4.1.so.0,opensidian
+usr/lib/libsqlite3.so.0	4633a4be13fdf05cb0f859e04fb06077a1fe30a90e405721a23873bd1f3d88a8	sqlite3	3.46.1-9ubuntu0.3	libsoup-3.0.so.0,libwebkit2gtk-4.1.so.0
+usr/lib/libsystemd.so.0	7c8bd89f59b9f96fdb933eb1414f449c2db45fbb078c8d793cc46f9173be7934	systemd	259.9-0ubuntu0.1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libdbus-1.so.3,libjavascriptcoregtk-4.1.so.0,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libtasn1.so.6	1255353abfae7b9f52aedb0264876cd4c852f13c2acf3e2203ebd2aab79bce02	libtasn1-6	4.21.0-2	
+usr/lib/libthai.so.0	dedacba149b8f955a4f37eb5793fad3128adcbfb4796da963e4a4a640f96e670	libthai	0.1.30-1	libpango-1.0.so.0
+usr/lib/libudev.so.1	f1e45a4aff33dcd3bfd2f9903eb5858d9702c247653b6f4f6acdfaf19f62d157	systemd	259.9-0ubuntu0.1	libgudev-1.0.so.0
+usr/lib/libunistring.so.5	c762a289c02f716a12549d544a811715126067b9a6377057671d3fad9453a1fc	libunistring	1.3-2build1	libidn2.so.0,libpsl.so.5
+usr/lib/libwebkit2gtk-4.1.so.0	a4520cf7e6311d498a898369c7be5e437d1f0a6ec7e02a3dd585efa0f28816c1	webkit2gtk	2.52.6-0ubuntu0.26.04.2	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libwebkit2gtkinjectedbundle.so,opensidian
+usr/lib/libwebp.so.7	0b477702bb43d90a1205813a9c211faa8dfef025a258b9d60663b37311b87c08	libwebp	1.5.0-0.1build1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so,libwebpdemux.so.2,libwebpmux.so.3
+usr/lib/libwebpdemux.so.2	6ed497e52e0340e5aa80076a99fb4e4abe56f1b23f60c6f06cf383ae4cdb4a6b	libwebp	1.5.0-0.1build1	libwebkit2gtk-4.1.so.0
+usr/lib/libwebpmux.so.3	73bf84036a6e1c50971a159484ae8f194b4f5109348e680e3b01d5141f83478b	libwebp	1.5.0-0.1build1	WebKitGPUProcess,WebKitNetworkProcess,WebKitWebProcess,libwebkit2gtk-4.1.so.0,libwebkit2gtkinjectedbundle.so
+usr/lib/libxkbcommon.so.0	8b7d244ea1df8b1c073069344f8c705bab90d6b6bcafb96f1c2eccc2312f4946	libxkbcommon	1.13.1-1	libgdk-3.so.0
+usr/lib/libxml2.so.16	302dfa1295c6f917758243ef0f118f7144026b51a5f5cd1610fba849c968f73b	libxml2	2.15.2+dfsg-0.1ubuntu0.3	libwebkit2gtk-4.1.so.0,libxslt.so.1
+usr/lib/libxslt.so.1	9bcd8ca5d3ac056dae5cb0705f0252af5cb42f8bccc41d4ae9613384470fc237	libxslt	1.1.45-0.1	libwebkit2gtk-4.1.so.0
+usr/lib/webkit2gtk-4.1/WebKitGPUProcess	4e41ccbe37463a85fe990c8eccff0065365880dbecdbc924df7fa679fcdd993a	webkit2gtk	2.52.6-0ubuntu0.26.04.2	
+usr/lib/webkit2gtk-4.1/WebKitNetworkProcess	e76009f0f3d95fe2e9e7877aff482024382db9e31ef5ca91fa44d6c06a54a738	webkit2gtk	2.52.6-0ubuntu0.26.04.2	
+usr/lib/webkit2gtk-4.1/WebKitWebProcess	6ab12c2b8c97c8ef01107ab2528201b084bebb78a52a421a66f68efc0661f224	webkit2gtk	2.52.6-0ubuntu0.26.04.2	
+usr/lib/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so	93bc1cd0fe85aa7e9c50d9a06c99b23a3d235f3c7678bc4985e504dccdf6c130	webkit2gtk	2.52.6-0ubuntu0.26.04.2	

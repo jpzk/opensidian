@@ -223,7 +223,8 @@ pub fn write_into(
 
 /// app.json -> (attachmentFolderPath, useMarkdownLinks)
 pub fn app_cfg(root: &Path) -> (String, bool) {
-    let v = std::fs::read_to_string(root.join(".obsidian/app.json"))
+    // #250: vaultfs fd read (no symlink, regular file by fstat, capped on the fd)
+    let v = crate::vaultfs::read_string(root, Path::new(".obsidian/app.json"), crate::vaultfs::CFG_MAX)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .unwrap_or_default();

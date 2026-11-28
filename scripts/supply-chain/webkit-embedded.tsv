@@ -1,0 +1,15 @@
+# webkit-embedded.tsv — components compiled INTO libwebkit2gtk-4.1 (Source/ThirdParty of the upstream
+# WebKitGTK release) that no package database and no scanner can see. Read by webkit-bundle-sbom.sh,
+# emitted as nested components of the webkit2gtk component. Keyed by the UPSTREAM webkitgtk version
+# (deb source version without epoch / Debian revision). A webkit version with no rows here -> the
+# generator FAILS CLOSED: re-derive this table from the new tarball before shipping (#299).
+# Evidence (2.52.6): webkitgtk-2.52.6.tar.xz sha256 179a2ea3f8f6edd4be7f31fdc55afc57bd0729f1fba648c61d4181539ac116fc
+# (== webkitgtk.org .sums), Source/ThirdParty/{skia,ANGLE,pdfjs,libsysprof-capture,xdgmime}; version strings /
+# symbols confirmed in the shipped libwebkit2gtk-4.1.so.0 of v0.9.6 (RESULT.md §A.2 of #299).
+# Not listed (checked): gtest, unifdef (build/test only); libwebrtc, woff2 (not in the tarball).
+# webkit	name	version	purl	license	evidence
+2.52.6	skia	m145	pkg:generic/skia@m145	BSD-3-Clause	Source/ThirdParty/skia/include/core/SkMilestone.h SK_MILESTONE 145
+2.52.6	angle	2.1.26418	pkg:generic/angle@2.1.26418?vcs_url=git%2Bhttps://chromium.googlesource.com/angle/angle%4044b01c9698fb	BSD-3-Clause	ANGLE version string 2.1.26418 git hash 44b01c9698fb in the shipped .so
+2.52.6	pdfjs-dist	6.1.200	pkg:npm/pdfjs-dist@6.1.200	Apache-2.0	Source/ThirdParty/pdfjs/build/pdf.mjs version 6.1.200 (built-in PDF viewer, separate from ui/vendor pdf.js)
+2.52.6	libsysprof-capture	48.1	pkg:generic/sysprof-capture@48.1	BSD-2-Clause-Patent	Source/ThirdParty/libsysprof-capture (sysprof 48.1, commit d767849717e6)
+2.52.6	xdgmime	e70017739ff7	pkg:generic/xdgmime@e70017739ff7?vcs_url=git%2Bhttps://gitlab.freedesktop.org/xdg/xdgmime%40e70017739ff7	AFL-2.0 OR LGPL-2.0-or-later	Source/ThirdParty/xdgmime (revision e70017739ff7)

@@ -31,7 +31,8 @@ pub fn mode_of(v: Option<&serde_json::Value>) -> &'static str {
 
 /// lowercase name -> assigned type (an unparsable file reads as no assignment)
 pub fn types_in(root: &Path) -> BTreeMap<String, String> {
-    let cur = std::fs::read_to_string(root.join(TYPES_REL)).unwrap_or_default();
+    // #250: vaultfs fd read (no symlink, regular file by fstat, capped on the fd)
+    let cur = crate::vaultfs::read_string(root, Path::new(TYPES_REL), crate::vaultfs::CFG_MAX).unwrap_or_default();
     let mut out = BTreeMap::new();
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cur) {
         if let Some(t) = v.get("types").and_then(|t| t.as_object()) {

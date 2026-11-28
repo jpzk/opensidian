@@ -6,8 +6,8 @@
    and $HOME is not readable as a whole — dir listing only (for the picker),
    plus READ on the three R31.12 drop-source folders (see DROP_READ_DIRS),
    which is what makes drag & drop of an image possible at all.
-   Best-effort: kernels without Landlock (< 5.13 / LSM disabled) run as
-   before (stderr says why). Threads restrict only
+   FAIL CLOSED (#293): a kernel without Landlock (< 5.13 / LSM disabled) or any enforce error
+   with the switch on binds NO vault (boot_may_bind below). Threads restrict only
    themselves, hence "once, at boot" — switching vaults needs a restart.
    FIRST RUN (audit #3): a boot with the switch on but NO vault (no argv, no
    VAULT_DIR, no last vault) has nothing to confine to, so no ruleset is
@@ -152,6 +152,218 @@ pub fn landlock_enabled() -> bool {
 pub fn boot_pick_must_restart(landlock_on: bool, confined: bool) -> bool {
     landlock_on && !confined
 }
+
+/* #293 (audit F-7) FAIL CLOSED. The switch on means the user asked for the sandbox; a boot that
+   could not enforce it used to print one stderr line ("landlock: off (...)") and bind the vault
+   UNCONFINED — the picker's restart child (audit #3) and every vault-switch child take that same
+   boot path, so "never bind unconfined" was defeated exactly where it was promised.
+   Now: what enforce() achieved is an `Outcome`, published once (OUTCOME), and `boot_may_bind` is
+   the ONE decision every bind consults (main() before bind_vault_boot_after, and claim_vault,
+   which every bind goes through). Requested + anything short of the vault rules being enforced
+   => Refuse: main() shows `refused_dialog` (Rust text, ONE button: Quit — no "continue
+   unconfined") and exits REFUSED_EXIT. The only way past it is not asking for the sandbox
+   (no OPENSIDIAN_LANDLOCK=1, or OPENSIDIAN_NO_LANDLOCK=1); there is no in-app switch for it.
+
+   WHAT THE CRATE REPORTS, AND THE ABI/RULE MAPPING (landlock 0.4.7, enforce() below):
+     ABI v1 (Linux 5.13) Execute WriteFile ReadFile ReadDir RemoveDir RemoveFile MakeChar MakeDir
+       MakeReg MakeSock MakeFifo MakeBlock MakeSym — handled as CompatLevel::HardRequirement, and
+       the read rules too: a kernel that cannot enforce any of them makes the crate return Err.
+     ABI v2 (Linux 5.19) Refer — the ONLY BestEffort right (R24, on the write roots). Without it
+       the kernel refuses every cross-directory rename/link, so its absence is STRICTER, never
+       looser: it is the only entry of OPTIONAL_RIGHTS.
+     v3+ (Truncate, network, ioctl, scopes) are not handled at all (audit F-16, a separate fix).
+   So RulesetStatus::PartiallyEnforced can only mean "a BestEffort right was dropped"; which
+   ones is asked of the crate the same way (a HardRequirement ruleset built and dropped per
+   right, `kernel_knows`). A partial result whose dropped set is empty (unexplained) or names
+   anything outside OPTIONAL_RIGHTS is treated as not enforced. */
+
+/// rights of our ruleset whose absence leaves every filesystem rule we rely on enforced
+pub const OPTIONAL_RIGHTS: [&str; 1] = ["refer"];
+
+/// exit status of a boot that refused to bind its vault because the sandbox failed
+pub const REFUSED_EXIT: i32 = 78;
+
+/// the dialog's fixed text (#293): the reason and the vault path are the only inserted values
+pub const REFUSED_TITLE: &str = "Sandbox unavailable";
+pub const REFUSED_HEAD: &str = "The sandbox you turned on could not be enabled on this system, so this vault was not opened.";
+pub const REFUSED_HOWTO: &str = "To open this vault without the sandbox, start Opensidian without OPENSIDIAN_LANDLOCK=1 (or with OPENSIDIAN_NO_LANDLOCK=1). Only do that for a vault and plugins you trust.";
+
+/// what `enforce()` achieved, in the terms the bind decision needs
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// RulesetStatus::FullyEnforced: every handled right is enforced
+    Full,
+    /// RulesetStatus::PartiallyEnforced; `dropped` = the rights of our ruleset this kernel lacks
+    Partial { dropped: Vec<&'static str> },
+    /// RulesetStatus::NotEnforced
+    NotEnforced,
+    /// enforce() returned Err (no Landlock, LSM off, canonicalize, restrict_self, non-Linux)
+    Failed(String),
+}
+
+impl Outcome {
+    /// main()'s one stderr line, worded as before #293 (phases llpick / lloff read it verbatim)
+    pub fn log_line(&self) -> String {
+        match self {
+            Outcome::Full => "landlock: FullyEnforced".into(),
+            Outcome::Partial { .. } => "landlock: PartiallyEnforced".into(),
+            Outcome::NotEnforced => "landlock: NotEnforced".into(),
+            Outcome::Failed(e) => format!("landlock: off ({e})"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootBind {
+    Bind,
+    Refuse(String),
+}
+
+/// #293: may this process bind a vault? `requested` = the switch (landlock_enabled()),
+/// `outcome` = what enforce() achieved in THIS process (None = it never ran). Pure.
+pub fn boot_may_bind(requested: bool, outcome: Option<&Outcome>) -> BootBind {
+    if !requested {
+        return BootBind::Bind;
+    }
+    match outcome {
+        Some(Outcome::Full) => BootBind::Bind,
+        Some(Outcome::Partial { dropped }) if !dropped.is_empty() && dropped.iter().all(|r| OPTIONAL_RIGHTS.contains(r)) => BootBind::Bind,
+        Some(Outcome::Partial { dropped }) if dropped.is_empty() => {
+            BootBind::Refuse("Landlock reported a partially enforced ruleset and could not say which rules are missing".into())
+        }
+        Some(Outcome::Partial { dropped }) => BootBind::Refuse(format!("this kernel does not enforce these Landlock rules: {}", dropped.join(", "))),
+        Some(Outcome::NotEnforced) => BootBind::Refuse("Landlock reported that no rule was enforced".into()),
+        Some(Outcome::Failed(e)) => BootBind::Refuse(format!("Landlock could not be enforced: {e}")),
+        None => BootBind::Refuse("no Landlock ruleset was applied to this process".into()),
+    }
+}
+
+static OUTCOME: OnceLock<Outcome> = OnceLock::new();
+
+/// what enforce() achieved in this process (None = it never ran)
+pub fn outcome() -> Option<&'static Outcome> {
+    OUTCOME.get()
+}
+
+/// main()'s one call: classify enforce()'s answer (`outcome_of`) and publish it, once
+pub fn record(r: Result<RulesetStatus, Box<dyn std::error::Error>>) -> &'static Outcome {
+    let o = outcome_of(r, dropped_rights);
+    let _ = OUTCOME.set(o);
+    OUTCOME.get().expect("set above")
+}
+
+/// enforce()'s answer as an Outcome; `dropped` is asked only for a partial result. Pure but
+/// for the callback (the kernel probe in production, a fixed list in the tests).
+pub fn outcome_of(r: Result<RulesetStatus, Box<dyn std::error::Error>>, dropped: impl FnOnce() -> Vec<&'static str>) -> Outcome {
+    match r {
+        Err(e) => Outcome::Failed(e.to_string()),
+        Ok(s) => status_outcome(s, dropped),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn status_outcome(s: RulesetStatus, dropped: impl FnOnce() -> Vec<&'static str>) -> Outcome {
+    match s {
+        RulesetStatus::FullyEnforced => Outcome::Full,
+        RulesetStatus::PartiallyEnforced => Outcome::Partial { dropped: dropped() },
+        RulesetStatus::NotEnforced => Outcome::NotEnforced,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn status_outcome(_s: RulesetStatus, _dropped: impl FnOnce() -> Vec<&'static str>) -> Outcome {
+    Outcome::NotEnforced
+}
+
+/// Does the running kernel enforce `a`? Asked as a HardRequirement ruleset that is built and
+/// dropped — nothing is restricted by it (the same probe the R24 test uses for REFER).
+#[cfg(target_os = "linux")]
+fn kernel_knows(a: AccessFs) -> bool {
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(a)
+        .and_then(|r| r.create())
+        .is_ok()
+}
+
+/// the BestEffort rights of enforce()'s ruleset this kernel does not enforce
+#[cfg(target_os = "linux")]
+fn dropped_rights() -> Vec<&'static str> {
+    let mut v = Vec::new();
+    if !kernel_knows(AccessFs::Refer) {
+        v.push("refer");
+    }
+    v
+}
+
+#[cfg(not(target_os = "linux"))]
+fn dropped_rights() -> Vec<&'static str> {
+    Vec::new()
+}
+
+/// Settings › Security (#293): "off" (not requested), "enforced", or "not-enforced", from THIS
+/// process's switch and outcome; `detail` names what is missing / why.
+pub fn state_json() -> serde_json::Value {
+    let requested = landlock_enabled();
+    let (state, detail) = state_of(requested, outcome());
+    serde_json::json!({ "state": state, "detail": detail })
+}
+
+/// pure half of state_json
+pub fn state_of(requested: bool, o: Option<&Outcome>) -> (&'static str, String) {
+    if !requested {
+        return ("off", String::new());
+    }
+    match boot_may_bind(true, o) {
+        BootBind::Bind => match o {
+            Some(Outcome::Partial { dropped }) => ("enforced", format!("without: {}", dropped.join(", "))),
+            _ => ("enforced", String::new()),
+        },
+        BootBind::Refuse(why) => ("not-enforced", why),
+    }
+}
+
+/// the dialog body: reason, vault, how to turn the sandbox off (all text but `why`/`vault` fixed)
+pub fn refused_text(why: &str, vault: &Path) -> String {
+    format!("Reason: {why}\n\nVault: {}\n\n{REFUSED_HOWTO}", vault.display())
+}
+
+/// #293: the boot refused to bind `vault` — say so in a BLOCKING native dialog with ONE button
+/// (Quit; there is no way to continue from here), then exit REFUSED_EXIT. Runs before any
+/// window or webview exists. No display => stderr only, same exit.
+pub fn refuse_and_exit(why: &str, vault: &Path) -> ! {
+    let body = refused_text(why, vault);
+    eprintln!("[sandbox] refused: {REFUSED_HEAD} {body:?} (exit {REFUSED_EXIT})");
+    refused_dialog(&body);
+    eprintln!("[sandbox] refused: exiting {REFUSED_EXIT}, vault not bound");
+    std::process::exit(REFUSED_EXIT)
+}
+
+#[cfg(target_os = "linux")]
+fn refused_dialog(body: &str) {
+    use gtk::prelude::*;
+    if gtk::init().is_err() {
+        eprintln!("[sandbox] refused: no display for the dialog");
+        return;
+    }
+    let d = gtk::MessageDialog::new(None::<&gtk::Window>, gtk::DialogFlags::MODAL, gtk::MessageType::Error, gtk::ButtonsType::None, REFUSED_HEAD);
+    d.set_title(REFUSED_TITLE);
+    d.set_secondary_text(Some(body));
+    let _ = d.add_button("_Quit", gtk::ResponseType::Close);
+    d.set_default_response(gtk::ResponseType::Close);
+    d.set_keep_above(true);
+    eprintln!("[sandbox] refused dialog shown");
+    let r = d.run();
+    eprintln!("[sandbox] refused dialog closed ({r:?})");
+    // SAFETY: the dialog is ours alone; nothing else holds it after run() returned
+    unsafe { d.destroy() };
+    while gtk::events_pending() {
+        gtk::main_iteration();
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn refused_dialog(_body: &str) {}
 
 /// The ruleset opensidian hands the kernel, AS DATA — the three vectors and the
 /// access class each is granted. `enforce()` below builds its rules from THIS
@@ -735,5 +947,142 @@ mod tests {
                 assert_eq!(other_w, Err(Some(13)), "a write into another vault under $HOME must be EACCES");
             }
         }
+    }
+
+    /* #293 (audit F-7): the boot bind decision. Requested + not enforced => Refuse, whatever the
+       way it was not enforced; not requested => Bind, whatever enforce() did or did not do. */
+    fn refuses(b: BootBind) -> bool {
+        matches!(b, BootBind::Refuse(ref why) if !why.is_empty())
+    }
+
+    #[test]
+    fn ll293_requested_and_enforce_err_refuses() {
+        assert!(refuses(boot_may_bind(true, Some(&Outcome::Failed("Landlock is not supported by the running kernel".into())))));
+        let o = outcome_of(Err("canonicalize: No such file or directory".into()), || panic!("dropped is asked only for a partial result"));
+        assert_eq!(o, Outcome::Failed("canonicalize: No such file or directory".into()));
+        match boot_may_bind(true, Some(&o)) {
+            BootBind::Refuse(why) => assert!(why.contains("canonicalize"), "the reason names the error: {why}"),
+            b => panic!("an enforce error must refuse: {b:?}"),
+        }
+    }
+
+    #[test]
+    fn ll293_requested_and_not_enforced_refuses() {
+        assert!(refuses(boot_may_bind(true, Some(&Outcome::NotEnforced))));
+        assert_eq!(outcome_of(Ok(RulesetStatus::NotEnforced), || panic!("not partial")), Outcome::NotEnforced);
+    }
+
+    #[test]
+    fn ll293_requested_and_never_enforced_refuses() {
+        // a process that never ran enforce() (e.g. the unconfined first-run picker) binds nothing
+        assert!(refuses(boot_may_bind(true, None)));
+    }
+
+    #[test]
+    fn ll293_requested_and_partial_missing_a_filesystem_rule_refuses() {
+        for dropped in [vec!["write_file"], vec!["refer", "read_file"], vec!["make_sym"], vec!["truncate"]] {
+            match boot_may_bind(true, Some(&Outcome::Partial { dropped: dropped.clone() })) {
+                BootBind::Refuse(why) => assert!(why.contains(dropped.iter().copied().find(|r| !OPTIONAL_RIGHTS.contains(r)).unwrap()), "{why}"),
+                b => panic!("partial without {dropped:?} must refuse: {b:?}"),
+            }
+        }
+        // a partial result nobody can explain is not enforced either
+        assert!(refuses(boot_may_bind(true, Some(&Outcome::Partial { dropped: vec![] }))));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")] // RulesetStatus::PartiallyEnforced is the crate's (Linux only)
+    fn ll293_partial_status_asks_which_rights_were_dropped() {
+        assert_eq!(outcome_of(Ok(RulesetStatus::PartiallyEnforced), || vec!["refer"]), Outcome::Partial { dropped: vec!["refer"] });
+        assert_eq!(outcome_of(Ok(RulesetStatus::PartiallyEnforced), Vec::new), Outcome::Partial { dropped: vec![] });
+        assert!(refuses(boot_may_bind(true, Some(&outcome_of(Ok(RulesetStatus::PartiallyEnforced), Vec::new)))));
+        assert_eq!(outcome_of(Ok(RulesetStatus::FullyEnforced), || panic!("not partial")), Outcome::Full);
+    }
+
+    #[test]
+    fn ll293_requested_and_fully_enforced_binds() {
+        assert_eq!(boot_may_bind(true, Some(&Outcome::Full)), BootBind::Bind);
+        // only REFER missing (ABI v1 kernel): stricter, every v1 rule is enforced
+        assert_eq!(boot_may_bind(true, Some(&Outcome::Partial { dropped: vec!["refer"] })), BootBind::Bind);
+        assert_eq!(OPTIONAL_RIGHTS, ["refer"], "a new optional right needs a reason in the #293 comment");
+    }
+
+    #[test]
+    fn ll293_not_requested_binds_whatever_the_outcome() {
+        for o in [None, Some(Outcome::Full), Some(Outcome::NotEnforced), Some(Outcome::Failed("x".into())), Some(Outcome::Partial { dropped: vec!["write_file"] })] {
+            assert_eq!(boot_may_bind(false, o.as_ref()), BootBind::Bind, "{o:?}");
+        }
+    }
+
+    #[test]
+    fn ll293_settings_state_is_off_enforced_or_not_enforced() {
+        assert_eq!(state_of(false, None).0, "off");
+        assert_eq!(state_of(false, Some(&Outcome::Full)).0, "off");
+        assert_eq!(state_of(true, Some(&Outcome::Full)), ("enforced", String::new()));
+        assert_eq!(state_of(true, Some(&Outcome::Partial { dropped: vec!["refer"] })).0, "enforced");
+        for o in [None, Some(Outcome::NotEnforced), Some(Outcome::Failed("e".into())), Some(Outcome::Partial { dropped: vec!["write_file"] })] {
+            let (s, why) = state_of(true, o.as_ref());
+            assert_eq!(s, "not-enforced", "{o:?}");
+            assert!(!why.is_empty(), "{o:?}");
+        }
+    }
+
+    #[test]
+    fn ll293_dialog_text_is_fixed_names_the_reason_and_the_way_out() {
+        assert_eq!(REFUSED_HEAD, "The sandbox you turned on could not be enabled on this system, so this vault was not opened.");
+        let t = refused_text("Landlock could not be enforced: E2BIG", Path::new("/home/u/v"));
+        assert!(t.contains("Reason: Landlock could not be enforced: E2BIG") && t.contains("/home/u/v"), "{t}");
+        assert!(t.contains(LANDLOCK_ENV) && t.contains(NO_LANDLOCK_ENV), "how to turn it off: {t}");
+        assert_ne!(REFUSED_EXIT, 0);
+        // fail closed: the dialog offers no way on — one Quit button, nothing that continues
+        let src = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/sandbox.rs")).unwrap();
+        let d = src.find("\nfn refused_dialog(body: &str) {").expect("refused_dialog");
+        let db = &src[d..d + src[d..].find("\n}\n").expect("end")];
+        assert_eq!(db.matches(".add_button(").count(), 1, "exactly one button");
+        assert!(db.contains(r#".add_button("_Quit", gtk::ResponseType::Close)"#));
+        let lower = db.to_lowercase();
+        for no in ["continue", "unconfined", "anyway", "accept", "apply"] {
+            assert!(!lower.contains(no), "the refused dialog must not offer '{no}'");
+        }
+        let r = src.find("\npub fn refuse_and_exit(").expect("refuse_and_exit");
+        let rb = &src[r..r + src[r..].find("\n}\n").expect("end")];
+        assert!(rb.find("refused_dialog(&body)").unwrap() < rb.find("std::process::exit(REFUSED_EXIT)").unwrap(), "exit after the dialog, always");
+    }
+
+    /// Settings › Security shows the state Rust reports, in all six locales: every secsb-* key is
+    /// in every locale file, the English text is the page's fallback, and the page knows exactly
+    /// the three states state_of() can answer
+    #[test]
+    fn ll293_settings_row_strings_in_every_locale_and_the_page_reads_rust() {
+        let keys = ["secsb-section", "secsb-label", "secsb-enforced", "secsb-not-enforced", "secsb-off", "secsb-desc-enforced", "secsb-desc-not-enforced", "secsb-desc-off"];
+        let ui = include_str!("../../ui/security.js");
+        for lang in ["en", "zh-CN", "ko", "ru", "es", "ja"] {
+            let src = crate::i18n::ftl(lang).unwrap_or_else(|| panic!("{lang}"));
+            for k in keys {
+                let line = src.lines().find(|l| l.starts_with(&format!("{k} = "))).unwrap_or_else(|| panic!("{lang} lacks {k}"));
+                let val = &line[k.len() + 3..];
+                assert!(!val.trim().is_empty(), "{lang} {k} is empty");
+                if lang == "en" {
+                    assert!(ui.contains(&format!("\"{k}\", \"{val}\"")), "ui/security.js fallback for {k} is not the English text {val:?}");
+                } else if k.starts_with("secsb-desc-") {
+                    assert!(val.contains("OPENSIDIAN_LANDLOCK=1") || k == "secsb-desc-not-enforced", "{lang} {k} must name the switch");
+                }
+            }
+        }
+        for s in ["enforced", "not-enforced", "off"] {
+            assert!(ui.contains(&format!("\n    \"{s}\": [\"secsb-{s}\"")), "the page has no text for state {s}");
+        }
+        assert!(ui.contains("const S = R && R.sandbox, t = S && SB_TEXT[S.state];"), "the row is drawn from security_get .sandbox");
+        assert!(ui.contains("    sandboxRow(pg);\n  }\n  function tok() {"), "build() draws the row");
+    }
+
+    /// the boot's stderr line keeps its pre-#293 words: phases llpick / lloff match them verbatim
+    #[test]
+    fn ll293_log_line_keeps_its_words() {
+        assert_eq!(Outcome::Full.log_line(), "landlock: FullyEnforced");
+        assert_eq!(Outcome::Partial { dropped: vec!["refer"] }.log_line(), "landlock: PartiallyEnforced");
+        assert_eq!(Outcome::NotEnforced.log_line(), "landlock: NotEnforced");
+        assert_eq!(Outcome::Failed("E2BIG".into()).log_line(), "landlock: off (E2BIG)");
+        assert_ne!(Outcome::Failed("E2BIG".into()).log_line(), OFF_LINE, "a failure never reads like the default off");
     }
 }

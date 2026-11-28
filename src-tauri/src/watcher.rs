@@ -205,8 +205,13 @@ pub fn diff(prev: &Snapshot, cur: &Snapshot) -> Diff {
 /// upserts under that same lock) is either fully before or fully after us.
 pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     let mut c = Change::default();
+    // #250: one vault fd per tick; every note is read by the no-follow fd walk
+    // with the note cap on the opened fd. A note (or a parent) swapped for a
+    // symlink after snapshot() is refused and skipped, like an unreadable one
+    let vfs = crate::vaultfs::Vault::open(root).ok();
+    let read = |n: &str| vfs.as_ref()?.read_string(Path::new(&format!("{n}.md")), crate::index::MAX_NOTE_BYTES).ok();
     for n in &d.modified {
-        let Ok(s) = fs::read_to_string(note_file(root, n)) else { continue };
+        let Some(s) = read(n) else { continue };
         if ix.content(n) == Some(s.as_str()) {
             continue; // own write (or a touch): index already has these bytes
         }
@@ -220,7 +225,7 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     let adds: Vec<(String, String)> = d
         .added
         .iter()
-        .filter_map(|n| fs::read_to_string(note_file(root, n)).ok().map(|s| (n.clone(), s)))
+        .filter_map(|n| read(n).map(|s| (n.clone(), s)))
         .collect();
     for (n, s) in &adds {
         if ix.content(n) == Some(s.as_str()) {
@@ -254,6 +259,21 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     }
     c.removed = removed;
     c
+}
+
+/// #289 review (CodeAnt): an ADDED note whose read failed in `reconcile` (refused by the
+/// no-follow fd read, over the cap, unreadable) is not in the Index. Left in the snapshot
+/// that becomes the next baseline, it would never be "added" again: a later edit is only
+/// "modified" (which the UI's file model ignores for a file it does not have), and a note
+/// made readable again without a new mtime/size (chmod) would never appear at all. So it
+/// is taken out of `cur`: the next tick sees it as added and reads it again.
+/// Caller holds the index lock (the same one reconcile ran under).
+pub fn forget_unread(d: &Diff, ix: &Index, cur: &mut Snapshot) -> Vec<String> {
+    let gone: Vec<String> = d.added.iter().filter(|n| ix.content(n).is_none()).cloned().collect();
+    for n in &gone {
+        cur.remove(n);
+    }
+    gone
 }
 
 /* ---------- GHOSTS: our own create, deleted from outside before a walk saw it ----------
@@ -639,6 +659,86 @@ mod tests {
         assert_eq!(ix.names(), ["A"]);
         assert!(ix.backlinks("A").is_empty());
         // own delete-equivalent: a name the index never had vanishing is silent
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #289 review (CodeAnt): a note added while its read fails (here: over the note cap)
+    /// is not in the Index; the next tick still reports it ADDED once it can be read,
+    /// not "modified" for a file the UI's model does not have
+    #[test]
+    fn added_note_whose_read_failed_is_added_on_a_later_tick() {
+        let root = tmp("unread289");
+        w(&root, "A", "alpha\n");
+        let mut ix = Index::build(&root);
+        let tick = |prev: &Snapshot, ix: &mut Index| {
+            let mut cur = snapshot(&root);
+            let d = diff(prev, &cur);
+            let c = reconcile(&root, &d, ix);
+            forget_unread(&d, ix, &mut cur);
+            (c, cur)
+        };
+        let s0 = snapshot(&root);
+        let big = note_file(&root, "big");
+        fs::OpenOptions::new().create(true).write(true).open(&big).unwrap().set_len(crate::index::MAX_NOTE_BYTES + 1).unwrap();
+        let (c1, s1) = tick(&s0, &mut ix);
+        assert!(!c1.added.contains(&"big".to_string()) && ix.content("big").is_none(), "an over-cap note is not read: {c1:?}");
+        // it becomes readable (shrunk by whoever wrote it)
+        fs::write(&big, "now readable\n").unwrap();
+        let (c2, s2) = tick(&s1, &mut ix);
+        assert_eq!(c2.added, vec!["big".to_string()], "{c2:?}");
+        assert!(c2.modified.is_empty(), "{c2:?}");
+        assert_eq!(ix.content("big"), Some("now readable\n"));
+        // steady state afterwards
+        let (c3, _) = tick(&s2, &mut ix);
+        assert!(c3.is_empty(), "{c3:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #289 review (CodeAnt): a note added while its read fails (here: mode 000, the open is
+    /// refused; the walk and lstat still list it) is not in the Index. Once it can be read it is
+    /// reported ADDED — both when only the mode is restored (mtime and size unchanged, so the
+    /// fingerprint is the same: it would never be reported at all) and when it is also edited
+    /// (it would be "modified", which the UI's file model ignores for a file it does not have).
+    /// (root ignores the mode bits: nothing to check then, as in the GHOSTS test)
+    #[test]
+    fn unreadable_added_note_is_added_once_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unread289m");
+        w(&root, "A", "alpha\n");
+        let mut ix = Index::build(&root);
+        let tick = |prev: &Snapshot, ix: &mut Index| {
+            let mut cur = snapshot(&root);
+            let d = diff(prev, &cur);
+            let c = reconcile(&root, &d, ix);
+            forget_unread(&d, ix, &mut cur);
+            (c, cur)
+        };
+        let s0 = snapshot(&root);
+        w(&root, "edited", "draft\n");
+        w(&root, "locked", "kept\n");
+        for n in ["edited", "locked"] {
+            fs::set_permissions(note_file(&root, n), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        if fs::read(note_file(&root, "locked")).is_ok() {
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
+        let (c1, s1) = tick(&s0, &mut ix);
+        assert!(c1.added.is_empty() && ix.content("locked").is_none() && ix.content("edited").is_none(), "an unreadable note is not read: {c1:?}");
+        assert!(s1.contains_key("A"));
+        // readable again: "locked" by chmod only (same fingerprint), "edited" also rewritten
+        for n in ["edited", "locked"] {
+            fs::set_permissions(note_file(&root, n), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        fs::write(note_file(&root, "edited"), "final text\n").unwrap();
+        let (c2, s2) = tick(&s1, &mut ix);
+        assert_eq!(c2.added, vec!["edited".to_string(), "locked".to_string()], "{c2:?}");
+        assert!(c2.modified.is_empty(), "{c2:?}");
+        assert_eq!(ix.content("locked"), Some("kept\n"));
+        assert_eq!(ix.content("edited"), Some("final text\n"));
+        // steady state afterwards
+        let (c3, _) = tick(&s2, &mut ix);
+        assert!(c3.is_empty(), "{c3:?}");
         let _ = fs::remove_dir_all(&root);
     }
 }

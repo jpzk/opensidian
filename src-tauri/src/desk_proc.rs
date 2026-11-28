@@ -1754,13 +1754,16 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")] // reads /proc/self/cmdline
+    // probe = GNU grep -z (echoes NUL-separated records verbatim): /bin/cat is a uutils multicall
+    // binary on Ubuntu 26.04 that dispatches on argv0, so it cannot carry an arbitrary argv0
+    // (the CI build container is 26.04); the assertion is unchanged: exact argv bytes + exit 0
     fn desk_argv0_is_the_asked_name_while_the_absolute_path_is_execd() {
-        let mut sp = spec("/bin/cat", &["/proc/self/cmdline"], &std::env::temp_dir());
-        sp.argv0 = Some("cat-as-asked".into());
+        let mut sp = spec("/bin/grep", &["-az", "^", "/proc/self/cmdline"], &std::env::temp_dir());
+        sp.argv0 = Some("grep-as-asked".into());
         let r = start(ready(sp), &lifecycle()).unwrap();
         r.end();
         let (o, _, c) = drain(&r);
-        assert_eq!(o, b"cat-as-asked\0/proc/self/cmdline\0");
+        assert_eq!(o, b"grep-as-asked\0-az\0^\0/proc/self/cmdline\0");
         assert_eq!(c.exit, Some(0));
     }
 

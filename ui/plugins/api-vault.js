@@ -156,6 +156,16 @@
        watcher reconciles against the index and reports none of them, so the model kept the old path: a canvas file card
        relinked to the new name painted "not found". A Vault "rename", as for a plugin's renameFile. */
     host.noteMoved = (o, n) => { if (!K.st.filesOn || typeof o !== "string" || typeof n !== "string" || o === n) return; applyChange({ renamed: [[o, n]] }); };
+    /* CodeAnt #262/#283: the core's media_rename (a canvas media card's Rename in a restricted vault, where
+       renameFile hits EPERM) moves the file on disk only, and the watcher reports notes only — so the model kept
+       the old path and the relinked image card painted "missing". The same model move + Vault "rename" as
+       renameFile's own tail. A no-op until ensureFiles is up, for a path the model does not hold, or a note. */
+    host.mediaMoved = (o, n) => {
+      if (!K.st.filesOn || typeof o !== "string" || typeof n !== "string" || o === n || noteOf(o) != null) return;
+      const f = files.get(o);
+      if (!(f instanceof TFile) || files.has(n)) return;
+      movePath(f, n); vault.trigger("rename", f, o);
+    };
     /* the runtime a plugin needs before its main.js is evaluated: moment (vendored,
        pinned — ui/vendor/moment.min.js), the file model (ensureFiles), the vault
        config and the metadata sweep. Idempotent; first enable() pays it. */

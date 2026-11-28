@@ -21,6 +21,21 @@ set-general-plugin-api-version = 플러그인 API 버전 { $v }
 set-general-plugin-api-version-desc = 이 빌드가 구현한 플러그인 API입니다. 더 높은 minAppVersion을 요구하는 플러그인은 거부됩니다.
 set-general-automatic-updates = 자동 업데이트
 set-general-automatic-updates-desc = 자동 업데이트는 당분간 꺼져 있습니다. 새 서명된 릴리스를 찾으려면 "업데이트 확인"을 사용하세요.
+# #294 Check for updates: the verdict (updates.rs check_with) and its line in Settings
+update-none = Opensidian이 최신 상태입니다({ $v }). 게시된 릴리스를 찾지 못했습니다.
+update-available = Opensidian { $version }을(를) 사용할 수 있습니다. 체크섬은 { $key } 키로 서명되었습니다. 다운로드한 파일을 이 해시로 확인하세요.
+update-current = Opensidian이 최신 상태입니다({ $v }). 최신 릴리스 { $version }: 체크섬은 { $key } 키로 서명되었습니다.
+update-unsigned = 최신 릴리스 { $version }은(는) 서명되지 않았거나 서명이 유효하지 않아 무시했습니다.
+update-mismatch = 최신 릴리스 { $version }: 릴리스 파일이 서명된 체크섬과 일치하지 않아 무시했습니다.
+update-rollback = 이전에 서명된 릴리스 { $version }을(를) 확인했지만 지금 검증되는 가장 새로운 릴리스는 { $v }입니다. 더 오래된 릴리스는 제안하지 않습니다.
+update-warn-unsigned = 더 새로운 릴리스 { $version }은(는) 서명되지 않았거나 서명이 유효하지 않아 무시했습니다.
+update-warn-mismatch = 더 새로운 릴리스 { $version }: 릴리스 파일이 서명된 체크섬과 일치하지 않아 무시했습니다.
+update-no-artefact = 서명된 체크섬에 이 플랫폼용 릴리스 파일이 없습니다.
+update-artefact-missing = 이 플랫폼용 서명된 릴리스 파일({ $file })이 릴리스에 첨부되어 있지 않습니다.
+update-rollback-none = 이전에 서명된 릴리스 { $version }을(를) 확인했지만 지금 GitHub에 표시되는 릴리스가 없습니다. 아무것도 제안하지 않습니다.
+update-checking = GitHub에서 서명된 릴리스를 확인하는 중…
+update-view-release = 릴리스 보기
+update-error = 업데이트를 확인할 수 없습니다: { $error }
 set-general-language = 언어
 set-general-language-desc = 표시 언어를 바꿉니다. | Opensidian에 새 언어를 추가하는 방법 알아보기
 set-general-help = 도움말
@@ -150,6 +165,17 @@ set-fileslinks-allow-uri-callbacks = URI 콜백 허용
 set-fileslinks-allow-uri-callbacks-desc = Opensidian URI를 처리할 때 x-success 또는 x-error를 통한 x-callback-url 사용을 허용합니다. | 자세히 알아보기
 set-fileslinks-rebuild-vault-cache = 보관함 캐시 다시 만들기
 set-fileslinks-rebuild-vault-cache-desc = 보관함 크기에 따라 캐시를 다시 만드는 데 몇 초에서 몇 분이 걸릴 수 있습니다. | 자세히 알아보기
+
+## Settings > Security > Sandbox (#293)
+
+secsb-section = 샌드박스
+secsb-label = Landlock 샌드박스
+secsb-enforced = 적용됨
+secsb-not-enforced = 적용되지 않음
+secsb-off = 꺼짐
+secsb-desc-enforced = 이 창은 보관함과 앱에 필요한 폴더에만 쓸 수 있습니다. 시작할 때 OPENSIDIAN_LANDLOCK=1로 켭니다.
+secsb-desc-not-enforced = 샌드박스가 켜져 있지만 이 창에는 적용되지 않았으므로 여기서는 보관함을 열지 않습니다.
+secsb-desc-off = 켜져 있지 않습니다. OPENSIDIAN_LANDLOCK=1로 Opensidian을 시작하면 보관함 안으로 제한됩니다(Linux 전용).
 
 ## Command palette and Settings > Hotkeys
 
@@ -358,3 +384,24 @@ menu-zoom-to-selection = 선택 영역으로 확대
 menu-as-obsidian-url = Obsidian URL로
 menu-from-system-root = 시스템 루트 기준
 menu-from-vault-folder = 보관함 폴더 기준
+
+## Settings > Security > Privacy > Microphone (#295)
+
+secdev-section = 기기 접근
+secdev-camera = 카메라
+secdev-camera-desc = 앱과 커뮤니티 플러그인의 카메라 접근. 카메라가 켜져 있는 동안 창 제목이 "● Camera"로 시작합니다.
+secdev-location = 위치
+secdev-location-desc = 앱과 커뮤니티 플러그인에 제공되는 사용자의 위치.
+secdev-notifications = 알림
+secdev-notifications-desc = 앱과 커뮤니티 플러그인의 데스크톱 알림.
+secdev-pointerlock = 포인터 잠금
+secdev-pointerlock-desc = 클릭한 뒤 앱이나 커뮤니티 플러그인이 마우스 포인터를 숨기고 붙잡을 수 있습니다(3D 보기, 게임). Esc를 누르면 풀립니다.
+secdev-values = 묻기: 요청할 때마다 별도의 시스템 창에서 묻습니다. 항상 허용: 그 창 없이 허용합니다(이 선택은 시스템 창에서 한 번만 확인합니다). 끄기: 모든 요청을 거부하고 창도 표시하지 않습니다.
+secdev-na = 사용할 수 없음
+secdev-na-desc = 앱에도 플러그인에도 허용되지 않으며 창도 표시되지 않습니다: 화면 캡처, 기기 이름, 보호된 미디어(EME), 웹사이트 데이터 접근, WebXR, MIDI.
+secmic-label = 마이크
+secmic-desc = 묻기: 녹음기가 녹음을 시작할 때마다 별도의 시스템 창에서 묻습니다. 항상 허용: 그 창 없이 녹음을 시작합니다(이 선택은 시스템 창에서 한 번만 확인합니다). 끄기: 모든 녹음을 거부하고 창도 표시하지 않습니다. 마이크가 켜져 있는 동안 창 제목은 "● Recording"으로 시작합니다.
+secmic-ask = 묻기
+secmic-always = 항상 허용
+secmic-off = 끄기
+secmic-forced = { $name }에 의해 강제로 꺼져 있습니다.

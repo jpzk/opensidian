@@ -341,6 +341,8 @@
       fn({
         state: () => invoke("plugins_state").then(cspCheck),
         set: a => invoke("plugins_set", a).then(cspCheck),
+        // #251: the native "allow plugin code?" question for ids that are new / changed on disk (Rust measures + asks)
+        ack: ids => invoke("plugins_pin_ack", { ids }).then(cspCheck),
         io: (id, op, data) => invoke("plugin_io", data === undefined ? { id, op } : { id, op, data }),
         invoke,   // api.js's own vault calls (read/modify/...) — never handed to a plugin
         listen,   // api.js subscribes to vault-changed (Vault create/modify/delete/rename events)

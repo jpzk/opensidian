@@ -1,0 +1,67 @@
+     WebKitGTK 2.54.0 released! - The WebKitGTK Project
+                    planet.webkitgtk.org
+                    webkit.org
+                    GNOME.org
+                WebKitGTK
+WebKitGTK 2.54.0 released!
+This is the first stable release in the 2.54 series.
+Highlights of the WebKitGTK 2.54.0 release
+  Switch web process compositor to use Skia instead of TextureMapper.
+  Improved damage handling that is now also used during the composition to limit the composited areas.
+  Implement GPU atlas creation and replay substitution for batched raster image uploads.
+  Media capability reporting is more accurate.
+  Video decoding limits are now respected in media capabilities queries.
+  Add new improved API for page favicons.
+  Add magnification property to WebKitWebView to handle visual scaling.
+  Add new API to allow setting a per-navigation custom User-Agent to WebKitWebsitePolicies.
+  Remove the option to use cairo for 2D rendering.
+For more details about all the changes included in WebKitGTK 2.54 see
+the NEWS file that is included in the tarball.
+Thanks to all the contributors who made possible this release.
+                        Latest News
+                                    &#8227; WebKitGTK 2.54.3 released!
+                                        18 NOVEMBER 2026
+                                    &#8227; WebKitGTK 2.54.2 released!
+                                        23 OCTOBER 2026
+                            (more)
+                        Security Advisories
+                                &#8227; WebKitGTK and WPE WebKit Security Advisory WSA-2026-0007
+                                    18 NOVEMBER 2026
+                                &#8227; WebKitGTK and WPE WebKit Security Advisory WSA-2026-0006
+                                    29 SEPTEMBER 2026
+                            (more)
+                        Releases
+                            &#8227; Stable tarball
+                                WebKitGTK 2.54.3
+                            &#8227; Unstable tarball
+                                WebKitGTK 2.53.92
+                            &#8227; All releases
+                            &#8227; Verifying releases
+                        Documentation
+                            &#8227; Stable API Reference
+                                WebKit
+                                WebKitWebProcessExtension
+                                JavaScriptCore
+                            &#8227; Unstable API Reference
+                                WebKit
+                                WebKitWebProcessExtension
+                                JavaScriptCore
+                            &#8227; Deprecated API Reference
+                                WebKit2
+                                WebKit1
+                        Contact
+                            &#8227; Mailing lists
+                                webkit-gtk
+                                webkit-help
+                                webkit-dev
+                            &#8227; #webkitgtk:matrix.org
+                            &#8227; @WebKitGTK on Mastodon
+                            &#8227; @WebKitGTK on Bluesky
+                        Contribute
+                            &#8227; File a bug
+                            &#8227; Get the code
+                            &#8227; How to build
+                            &#8227; How to submit code
+                            &#8227; Stable branch
+            Copyright © 2009‒2026 The WebKitGTK Team
+            Hosting kindly provided by Igalia.

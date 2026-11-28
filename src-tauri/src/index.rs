@@ -5,7 +5,6 @@
 //! backlinks, resolve and render_blocks serve from here: zero disk reads.
 //! LATER: file watcher for external edits (docs/perf.md).
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -431,13 +430,17 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
         }
         let p = &e.path;
         // S2: lstat, never follow — a symlinked dir/file is not part of the
-        // vault (it would index and serve whatever it points at)
-        let Ok(m) = fs::symlink_metadata(p) else { return false };
-        if m.is_symlink() {
+        // vault (it would index and serve whatever it points at). #250: type
+        // and size come from fstatat on the directory fd walk_tree holds
+        let Some(t) = e.ft else { return false };
+        if t.is_symlink() {
             return false;
         }
-        if m.is_dir() {
+        if t.is_dir() {
             return true;
+        }
+        if !t.is_file() {
+            return false;
         }
         if let Some(rel) = img_rel(p, base, &name) {
             // R29.6: image files are vault MEMBERS but never notes. They ride
@@ -446,7 +449,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
             // extension — which is what `resolve` matches on for `![[pic.png]]`.
             imgs.push(rel);
         } else if let Some(stem) = name.strip_suffix(".md") {
-            if m.len() > MAX_NOTE_BYTES {
+            if e.len > MAX_NOTE_BYTES {
                 warn_oversized(p);
                 return false;
             }
@@ -468,7 +471,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) 
 /// (scriptable, no sanitizer here), `bmp`, `avif` (scope). main.rs::IMG_TYPES
 /// maps the SAME set to Content-Types and a unit test pins the two together:
 /// a name the index resolves but the byte server refuses is a broken image.
-pub const IMG_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+pub const IMG_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
 
 /// pdfembed: PDFs are embeddable vault members too (`![[f.pdf]]`). They ride
 /// the SAME list as images (one walk, one symlink policy, one resolver), and
@@ -493,29 +496,26 @@ fn img_rel(p: &Path, base: &Path, name: &str) -> Option<String> {
 /// extension, sorted — same dotfile + no-symlink policy as `walk`. Only the
 /// filtered graph view asks, and only when an attachment can be on screen.
 pub fn attachments_of(root: &Path) -> Vec<String> {
-    fn go(dir: &Path, base: &Path, out: &mut Vec<String>) {
-        let Ok(rd) = fs::read_dir(dir) else { return };
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            let p = e.path();
-            let Ok(m) = fs::symlink_metadata(&p) else { continue };
-            if m.is_symlink() {
-                continue;
-            }
-            if m.is_dir() {
-                go(&p, base, out);
-            } else if !name.ends_with(".md") {
-                if let Ok(rel) = p.strip_prefix(base) {
-                    out.push(crate::vaultfs::rel_slash(rel));
-                }
-            }
-        }
-    }
+    // #250: the fd-based walk (no directory is opened by path)
     let mut out = Vec::new();
-    go(root, root, &mut out);
+    crate::vaultfs::walk_tree(root, usize::MAX, |e, _| {
+        let name = e.name.to_string_lossy();
+        if name.starts_with('.') {
+            return false;
+        }
+        let Some(t) = e.ft else { return false };
+        if t.is_symlink() {
+            return false;
+        }
+        if t.is_dir() {
+            return true;
+        }
+        // #289 review: a regular file only — a FIFO, socket or device is no attachment node
+        if t.is_file() && !name.ends_with(".md") {
+            out.push(e.rel.to_string_lossy().into_owned());
+        }
+        false
+    });
     out.sort();
     out
 }
@@ -526,8 +526,13 @@ pub fn attachments_of(root: &Path) -> Vec<String> {
 /// ""), same parse; contiguous chunks keep the input order, and the caller
 /// collects into the BTreeMap anyway. std::thread::scope only, no new crate.
 fn read_parse_all(root: &Path, notes: Vec<String>) -> Vec<(String, NoteMeta)> {
+    // #250: one vault fd for the whole build; each note is read through the
+    // no-follow fd walk with the note cap on the opened fd, so a note (or a
+    // parent folder) swapped for a symlink after the walk reads as ""
+    let vfs = crate::vaultfs::Vault::open(root).ok();
+    let vfs = &vfs;
     let one = |n: String| {
-        let c = fs::read_to_string(format!("{}.md", root.join(&n).display())).unwrap_or_default();
+        let c = read_note_fd(vfs.as_ref(), &n);
         let m = parse(c);
         (n, m)
     };
@@ -548,6 +553,13 @@ fn read_parse_all(root: &Path, notes: Vec<String>) -> Vec<(String, NoteMeta)> {
             .collect();
         hs.into_iter().flat_map(|h| h.join().expect("index read worker")).collect()
     })
+}
+
+/// #250: the text of note `n` (vault-relative name without `.md`) through
+/// `Vault::read_string` with MAX_NOTE_BYTES on the fd; unreadable, refused
+/// (symlink / non-regular / over the cap) or not UTF-8 -> "", as before
+pub fn read_note_fd(vfs: Option<&crate::vaultfs::Vault>, n: &str) -> String {
+    vfs.and_then(|v| v.read_string(Path::new(&format!("{n}.md")), MAX_NOTE_BYTES).ok()).unwrap_or_default()
 }
 
 /// sorted note names under root (the one and only vault walk)
@@ -820,8 +832,9 @@ impl Index {
             let from = format!("{old}.md");
             let mut cvs = Vec::new();
             canvas_walk(root, &mut cvs);
+            let vfs = crate::vaultfs::Vault::open(root).ok();
             for p in cvs {
-                let hits = canvas_cards_naming(&p, &from);
+                let hits = canvas_cards_naming(vfs.as_ref(), &p, &from);
                 if hits > 0 {
                     links += hits;
                     files += 1;
@@ -832,23 +845,24 @@ impl Index {
     }
 }
 
-/// CVR-A-088: the vault's .canvas files, same policy as `walk` — dot entries and
-/// symlinks are not part of the vault; depth-bounded (directories down to depth
-/// 64 are read, as before) and iterative (vaultfs::walk_tree)
+/// CVR-A-088: the vault's .canvas files (vault-relative), same policy as
+/// `walk` — dot entries and symlinks are not part of the vault; depth-bounded
+/// (directories down to depth 64 are read, as before) and iterative
+/// (vaultfs::walk_tree, fd-based since #250)
 fn canvas_walk(dir: &Path, out: &mut Vec<PathBuf>) {
     crate::vaultfs::walk_tree(dir, 65, |e, _| {
         if e.name.to_string_lossy().starts_with('.') {
             return false;
         }
-        let Ok(m) = fs::symlink_metadata(&e.path) else { return false };
-        if m.is_symlink() {
+        let Some(t) = e.ft else { return false };
+        if t.is_symlink() {
             return false;
         }
-        if m.is_dir() {
+        if t.is_dir() {
             return true;
         }
-        if m.is_file() && e.name.to_string_lossy().ends_with(".canvas") && m.len() <= CANVAS_COUNT_MAX {
-            out.push(e.path.clone());
+        if t.is_file() && e.name.to_string_lossy().ends_with(".canvas") && e.len <= CANVAS_COUNT_MAX {
+            out.push(e.rel.clone());
         }
         false
     })
@@ -857,10 +871,11 @@ fn canvas_walk(dir: &Path, out: &mut Vec<PathBuf>) {
 /// a canvas larger than this is not counted (canvasfs refuses to read it as well)
 const CANVAS_COUNT_MAX: u64 = 16 << 20;
 
-/// how many file cards of the canvas at `p` name `file`; an unreadable or
-/// non-JSON-Canvas file counts 0
-fn canvas_cards_naming(p: &Path, file: &str) -> usize {
-    let Ok(s) = fs::read_to_string(p) else { return 0 };
+/// how many file cards of the canvas `rel` name `file`; an unreadable or
+/// non-JSON-Canvas file counts 0. #250: read through the no-follow fd walk,
+/// with the cap on the opened fd
+fn canvas_cards_naming(vfs: Option<&crate::vaultfs::Vault>, rel: &Path, file: &str) -> usize {
+    let Some(Ok(s)) = vfs.map(|v| v.read_string(rel, CANVAS_COUNT_MAX)) else { return 0 };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else { return 0 };
     let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) else { return 0 };
     nodes
@@ -1051,4 +1066,23 @@ pub fn link_mention(content: &str, base: &str, line: u32, col: u32, len: u32) ->
     let nl = format!("{}[[{}]]{}", &l[..a], hit, &l[b..]);
     lines[line as usize] = &nl;
     Some(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    /// #289 review (CodeAnt nitpick index.rs:513): only regular files are attachments —
+    /// a FIFO with a non-.md name is not offered to the filtered graph as a file node
+    #[test]
+    fn attachments_are_regular_files_only() {
+        let root = std::env::temp_dir().join(format!("osd-attach289-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("img.png"), b"png").unwrap();
+        std::fs::write(root.join("sub/doc.pdf"), b"pdf").unwrap();
+        std::fs::write(root.join("note.md"), b"n").unwrap();
+        let c = std::ffi::CString::new(root.join("pipe.png").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert_eq!(super::attachments_of(&root), vec!["img.png".to_string(), "sub/doc.pdf".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

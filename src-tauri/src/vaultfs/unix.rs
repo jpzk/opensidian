@@ -334,6 +334,109 @@ impl Vault {
             .is_ok_and(|st| is_reg(&st))
     }
 
+    /// #250: THE read primitive. Every read of a file INSIDE the vault goes
+    /// through here (the guard test `vault_reads_go_through_vaultfs` fails
+    /// otherwise), the mirror of the write side above:
+    ///   - the parents are walked from the held root fd, openat(O_NOFOLLOW|
+    ///     O_DIRECTORY) per component: a symlinked directory is refused, even
+    ///     one that points back inside the vault;
+    ///   - a leaf that is already not a regular file (symlink, FIFO, device,
+    ///     socket, directory) is refused BEFORE any open;
+    ///   - the leaf is then opened O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
+    ///     so a leaf swapped for a symlink after that check is ELOOP, and a
+    ///     leaf swapped for a FIFO cannot block the open;
+    ///   - fstat on the OPENED fd must say regular file.
+    /// The returned File is the inode that was checked; size caps belong on
+    /// it (`read_fd`), never on a path.
+    pub fn open_read(&self, rel: &Path) -> io::Result<File> {
+        let (d, leaf) = self.parent(rel, false)?;
+        match stat_at(d.fd.as_raw_fd(), &leaf) {
+            Ok(st) if is_reg(&st) => {}
+            Ok(st) if st.st_mode & libc::S_IFMT == libc::S_IFLNK => return Err(refused(rel, "symlink in vault path")),
+            Ok(_) => return Err(refused(rel, "not a regular file")),
+            Err(e) => return Err(e),
+        }
+        // test seam: the leaf passed the check above; a test swaps it here
+        hook("open_read:checked");
+        // SAFETY: valid dir fd + NUL-terminated name; the fd is owned by the File below
+        let raw = cvt(unsafe {
+            libc::openat(
+                d.fd.as_raw_fd(),
+                leaf.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY,
+            )
+        })
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ELOOP) => refused(rel, "symlink in vault path"),
+            _ => e,
+        })?;
+        let f = unsafe { File::from_raw_fd(raw) };
+        if !is_reg(&fstat(f.as_raw_fd())?) {
+            return Err(refused(rel, "not a regular file"));
+        }
+        Ok(f)
+    }
+
+    /// #250: the whole file `rel`, at most `cap` bytes (more = Err
+    /// FileTooLarge), read from the fd `open_read` checked
+    pub fn read(&self, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
+        read_fd(self.open_read(rel)?, cap)
+    }
+
+    /// `read` + UTF-8 (invalid UTF-8 = Err InvalidData, like fs::read_to_string)
+    pub fn read_string(&self, rel: &Path, cap: u64) -> io::Result<String> {
+        String::from_utf8(self.read(rel, cap)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+/// #250: all of an opened file, refused when over `cap`. The size check is on
+/// the fd (fstat), and the read itself stops at cap+1 bytes, so a file that
+/// grows (or lies about its size) after the check still cannot exceed the cap.
+pub fn read_fd(mut f: File, cap: u64) -> io::Result<Vec<u8>> {
+    let n = fstat(f.as_raw_fd())?.st_size.max(0) as u64;
+    if n > cap {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, format!("file too large ({n} > {cap} bytes)")));
+    }
+    let mut v = Vec::with_capacity(n as usize);
+    (&mut f).take(cap.saturating_add(1)).read_to_end(&mut v)?;
+    if v.len() as u64 > cap {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, format!("file too large (> {cap} bytes)")));
+    }
+    Ok(v)
+}
+
+/// #250: `rel` under `root` (the vault the caller holds as a path), through
+/// `Vault::read`. One-shot callers; a loop should open the Vault once.
+pub fn read(root: &Path, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
+    Vault::open(root)?.read(rel, cap)
+}
+
+/// `read` + UTF-8
+pub fn read_string(root: &Path, rel: &Path, cap: u64) -> io::Result<String> {
+    Vault::open(root)?.read_string(rel, cap)
+}
+
+/// #250: the vault-relative path of `abs` (a path under the vault `root`, as
+/// the path-based callers build it). Refused unless it is lexically under the
+/// root (as given, or canonical); the result still goes through `parts`, so
+/// `..` is refused there.
+pub fn rel_of(root: &Path, abs: &Path) -> io::Result<PathBuf> {
+    if let Ok(r) = abs.strip_prefix(root) {
+        return Ok(r.to_path_buf());
+    }
+    let c = root.canonicalize()?;
+    abs.strip_prefix(&c).map(Path::to_path_buf).map_err(|_| refused(abs, "not under the vault root"))
+}
+
+/// a 4 MiB cap for a vault config / JSON file (.obsidian/*.json, manifests,
+/// plugin data): bigger than any real one, small enough that /dev/zero-like
+/// content cannot exhaust memory
+pub const CFG_MAX: u64 = 4 * 1024 * 1024;
+/// an 8 MiB cap for CSS (themes, snippets, plugin styles)
+pub const CSS_MAX: u64 = 8 * 1024 * 1024;
+
+impl Vault {
+
     /// durable replace of `rel` with `bytes`. Parents are created. A leaf that
     /// exists and is not a regular file (a symlink) is refused. `durable`
     /// additionally fsyncs the parent directory so the rename survives a crash.
@@ -1115,12 +1218,32 @@ pub fn mkdir_p(root: &Path, rel: &Path) -> io::Result<()> {
     Vault::open(root)?.mkdir_p(rel)
 }
 
-/// one entry of a directory listed by `walk_tree`: its path, file name and
-/// DirEntry::file_type (which does NOT follow symlinks; None if unknown)
+/// the type of a `walk_tree` entry, from fstatat(AT_SYMLINK_NOFOLLOW) on the
+/// held parent fd: a symlink is a symlink, never what it points at
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ft(u32);
+impl Ft {
+    pub fn is_dir(&self) -> bool {
+        self.0 == libc::S_IFDIR as u32
+    }
+    pub fn is_file(&self) -> bool {
+        self.0 == libc::S_IFREG as u32
+    }
+    pub fn is_symlink(&self) -> bool {
+        self.0 == libc::S_IFLNK as u32
+    }
+}
+
+/// one entry of a directory listed by `walk_tree`: its path (root-joined, for
+/// display and keys — never open it by that path, use `rel` with the Vault),
+/// vault-relative path, file name, type and size (lstat of the entry relative
+/// to the held directory fd; None if it vanished)
 pub struct WalkEntry {
     pub path: PathBuf,
+    pub rel: PathBuf,
     pub name: std::ffi::OsString,
-    pub ft: Option<std::fs::FileType>,
+    pub ft: Option<Ft>,
+    pub len: u64,
 }
 
 /// pre-order directory walk with constant stack use. `visit(entry, depth)` is
@@ -1137,12 +1260,18 @@ pub struct WalkEntry {
 /// work lives on the heap and a directory's entries are collected (its
 /// handle closed) before any child is opened, so one handle is open at a
 /// time whatever the depth.
+///
+/// #250: every directory is opened from the root fd by the O_NOFOLLOW walk
+/// (`Vault::dir`), never by path, and entries are typed by fstatat on that
+/// fd. A directory swapped for a symlink between being listed and being
+/// descended is refused (skipped), not followed out of the vault.
 pub fn walk_tree(root: &Path, max_depth: usize, mut visit: impl FnMut(&WalkEntry, usize) -> bool) {
+    let Ok(v) = Vault::open(root) else { return };
     // each level: the not-yet-visited entries of one directory, and the
     // depth of the entries themselves
     let mut stack: Vec<(std::vec::IntoIter<WalkEntry>, usize)> = Vec::new();
     if max_depth > 0 {
-        stack.push((list_dir(root).into_iter(), 1));
+        stack.push((list_dir(&v, root, Path::new("")).into_iter(), 1));
     }
     while let Some((it, depth)) = stack.last_mut() {
         let depth = *depth;
@@ -1153,15 +1282,48 @@ pub fn walk_tree(root: &Path, max_depth: usize, mut visit: impl FnMut(&WalkEntry
         // checked BEFORE opening: the entry at `depth` is opened only while
         // depth < max_depth, the old early `return` at the top of the callee
         if visit(&e, depth) && depth < max_depth {
-            stack.push((list_dir(&e.path).into_iter(), depth + 1));
+            hook("walk_tree:descend");
+            stack.push((list_dir(&v, root, &e.rel).into_iter(), depth + 1));
         }
     }
 }
 
-/// the entries of `dir` in read_dir order; the handle is closed on return
-fn list_dir(dir: &Path) -> Vec<WalkEntry> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-    rd.flatten().map(|e| WalkEntry { path: e.path(), name: e.file_name(), ft: e.file_type().ok() }).collect()
+/// the entries of the vault directory `rel` in readdir order, listed from the
+/// fd the no-follow walk opened; the handle is closed on return
+fn list_dir(v: &Vault, root: &Path, rel: &Path) -> Vec<WalkEntry> {
+    let Ok(d) = v.dir(rel, false) else { return Vec::new() };
+    let Ok(dup) = d.fd.try_clone() else { return Vec::new() };
+    // SAFETY: fdopendir takes ownership of the dup'd fd; closedir frees both
+    let dp = unsafe { libc::fdopendir(dup.as_raw_fd()) };
+    if dp.is_null() {
+        return Vec::new();
+    }
+    std::mem::forget(dup);
+    let mut out = Vec::new();
+    loop {
+        // SAFETY: dp is a valid DIR*; the entry is copied out before the next call
+        let e = unsafe { libc::readdir(dp) };
+        if e.is_null() {
+            break;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr((*e).d_name.as_ptr()) }.to_owned();
+        if name.as_bytes() == b"." || name.as_bytes() == b".." {
+            continue;
+        }
+        let st = stat_at(d.fd.as_raw_fd(), &name).ok();
+        let os = OsStr::from_bytes(name.as_bytes()).to_os_string();
+        let r = rel.join(&os);
+        out.push(WalkEntry {
+            path: root.join(&r),
+            rel: r,
+            name: os,
+            ft: st.map(|s| Ft(s.st_mode as u32 & libc::S_IFMT as u32)),
+            len: st.map_or(0, |s| s.st_size.max(0) as u64),
+        });
+    }
+    // SAFETY: dp from fdopendir above
+    unsafe { libc::closedir(dp) };
+    out
 }
 
 /// tree walk that never descends a symlinked directory (audit #9) — the same
@@ -1489,6 +1651,181 @@ mod tests {
         // symlinks are not listed (nothing to follow out)
         let l = pop(&root, "list", "a", None, None).unwrap();
         assert_eq!(l, serde_json::json!([["b", "folder"]]));
+    }
+
+    // ---- #250: the read primitive ----
+    fn fifo(p: &Path) {
+        let c = CString::new(p.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    }
+
+    /// run `f` on a worker and fail unless it returns within 5 s: a read that
+    /// follows a FIFO or /dev/zero would block or run until OOM instead
+    fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("vault read did not return within 5 s")
+    }
+
+    #[test]
+    fn read250_regular_file_reads_exactly() {
+        let (root, _out) = fresh("r250-ok");
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("a/b/n.md"), "hello").unwrap();
+        fs::write(root.join("empty.md"), "").unwrap();
+        let v = Vault::open(&root).unwrap();
+        assert_eq!(v.read(Path::new("a/b/n.md"), 5).unwrap(), b"hello");
+        assert_eq!(v.read_string(Path::new("a/b/n.md"), 1 << 20).unwrap(), "hello");
+        assert_eq!(v.read(Path::new("empty.md"), 0).unwrap(), b"");
+        assert_eq!(read_string(&root, Path::new("a/b/n.md"), 64).unwrap(), "hello");
+        assert_eq!(v.read(Path::new("missing.md"), 64).unwrap_err().kind(), io::ErrorKind::NotFound);
+        // a symlinked vault ROOT is the user's choice and keeps working
+        let alias = root.parent().unwrap().join("alias");
+        let _ = fs::remove_file(&alias);
+        symlink(&root, &alias).unwrap();
+        assert_eq!(read_string(&alias, Path::new("a/b/n.md"), 64).unwrap(), "hello");
+        assert_eq!(rel_of(&alias, &alias.join("a/b/n.md")).unwrap(), Path::new("a/b/n.md"));
+        assert_eq!(rel_of(&alias, &root.canonicalize().unwrap().join("x.md")).unwrap(), Path::new("x.md"));
+        assert!(rel_of(&root, Path::new("/etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn read250_leaf_symlink_out_of_vault_is_refused() {
+        let (root, out) = fresh("r250-leaf");
+        fs::write(out.join("secret.json"), "{\"secret\":1}").unwrap();
+        symlink(out.join("secret.json"), root.join("graph.json")).unwrap();
+        // even a symlink to a file INSIDE the vault: the reader never follows
+        fs::write(root.join("real.md"), "inside").unwrap();
+        symlink(root.join("real.md"), root.join("alias.md")).unwrap();
+        let v = Vault::open(&root).unwrap();
+        for f in ["graph.json", "alias.md"] {
+            let e = v.read(Path::new(f), 1 << 20).unwrap_err();
+            assert!(e.to_string().contains("refused"), "{f}: {e}");
+        }
+        assert!(v.open_read(Path::new("graph.json")).is_err());
+    }
+
+    #[test]
+    fn read250_dev_zero_and_fifo_are_refused_without_blocking() {
+        let (root, _out) = fresh("r250-dev");
+        symlink("/dev/zero", root.join("app.json")).unwrap();
+        fifo(&root.join("pipe.json"));
+        fs::create_dir_all(root.join("dir.md")).unwrap();
+        let r = root.clone();
+        let errs = bounded(move || {
+            let v = Vault::open(&r).unwrap();
+            ["app.json", "pipe.json", "dir.md"].map(|f| v.read(Path::new(f), 1 << 20).map(|b| b.len()))
+        });
+        for (f, e) in ["app.json", "pipe.json", "dir.md"].iter().zip(errs) {
+            let e = e.unwrap_err();
+            assert!(e.to_string().contains("refused"), "{f}: {e}");
+        }
+    }
+
+    #[test]
+    fn read250_one_byte_over_the_cap_is_refused() {
+        let (root, _out) = fresh("r250-cap");
+        fs::write(root.join("big.css"), vec![b'a'; 101]).unwrap();
+        fs::write(root.join("fit.css"), vec![b'a'; 100]).unwrap();
+        let v = Vault::open(&root).unwrap();
+        assert_eq!(v.read(Path::new("big.css"), 100).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+        assert_eq!(v.read(Path::new("fit.css"), 100).unwrap().len(), 100);
+        // the cap holds on the fd even when the file grows after the size check
+        let f = v.open_read(Path::new("fit.css")).unwrap();
+        fs::OpenOptions::new().append(true).open(root.join("fit.css")).unwrap().write_all(b"more").unwrap();
+        assert_eq!(read_fd(f, 100).unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+    }
+
+    #[test]
+    fn read250_directory_component_symlink_is_refused() {
+        let (root, out) = fresh("r250-dir");
+        fs::write(out.join("graph.json"), "{\"secret\":1}").unwrap();
+        symlink(&out, root.join(".obsidian")).unwrap();
+        fs::create_dir_all(root.join("real")).unwrap();
+        fs::write(root.join("real/n.md"), "x").unwrap();
+        symlink(root.join("real"), root.join("loop")).unwrap();
+        let v = Vault::open(&root).unwrap();
+        for f in [".obsidian/graph.json", "loop/n.md"] {
+            let e = v.read(Path::new(f), 1 << 20).unwrap_err();
+            assert!(e.to_string().contains("refused"), "{f}: {e}");
+        }
+        for f in ["../outside/graph.json", "/etc/passwd", "a/./b", ""] {
+            assert!(v.read(Path::new(f), 1 << 20).is_err(), "{f}");
+        }
+    }
+
+    #[test]
+    fn read250_leaf_swapped_for_symlink_after_the_check_is_refused() {
+        let (root, out) = fresh("r250-swap");
+        fs::write(out.join("id_ed25519"), "PRIVATE").unwrap();
+        fs::write(root.join("pic.png"), "PNG").unwrap();
+        let v = Vault::open(&root).unwrap();
+        for target in [out.join("id_ed25519"), PathBuf::from("/dev/zero")] {
+            let (r2, t2) = (root.clone(), target.clone());
+            set_hook(Some(Box::new(move |at| {
+                if at == "open_read:checked" {
+                    let _ = fs::remove_file(r2.join("pic.png"));
+                    symlink(&t2, r2.join("pic.png")).unwrap();
+                }
+            })));
+            let r = v.read(Path::new("pic.png"), 1 << 20);
+            set_hook(None);
+            let e = r.expect_err("the swapped leaf must be refused");
+            assert!(e.to_string().contains("refused"), "{}: {e}", target.display());
+            fs::remove_file(root.join("pic.png")).unwrap();
+            fs::write(root.join("pic.png"), "PNG").unwrap();
+        }
+        // swapped for a FIFO: refused by fstat on the fd, and the open does not block
+        let r2 = root.clone();
+        let res = bounded(move || {
+            let v = Vault::open(&r2).unwrap();
+            let r3 = r2.clone();
+            set_hook(Some(Box::new(move |at| {
+                if at == "open_read:checked" {
+                    fs::remove_file(r3.join("pic.png")).unwrap();
+                    fifo(&r3.join("pic.png"));
+                }
+            })));
+            let r = v.read(Path::new("pic.png"), 1 << 20).map(|b| b.len());
+            set_hook(None);
+            r
+        });
+        assert!(res.unwrap_err().to_string().contains("refused"));
+    }
+
+    #[test]
+    fn read250_walk_tree_does_not_descend_a_dir_swapped_for_a_symlink() {
+        let (root, out) = fresh("r250-walk");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/a.md"), "x").unwrap();
+        fs::write(out.join("leak.md"), "y").unwrap();
+        let r2 = root.clone();
+        let o2 = out.clone();
+        let mut fired = false;
+        set_hook(Some(Box::new(move |at| {
+            if at == "walk_tree:descend" && !fired {
+                fired = true;
+                fs::rename(r2.join("sub"), r2.join(".moved")).unwrap();
+                symlink(&o2, r2.join("sub")).unwrap();
+            }
+        })));
+        let mut seen = Vec::new();
+        walk_tree(&root, 8, |e, _| {
+            seen.push(e.rel.display().to_string());
+            e.ft.is_some_and(|t| t.is_dir())
+        });
+        set_hook(None);
+        assert_eq!(seen, vec!["sub".to_string()], "nothing below the swapped dir is listed");
+        // entries are typed without following: the planted link is a symlink
+        let mut kinds = Vec::new();
+        walk_tree(&root, 1, |e, _| {
+            kinds.push((e.rel.display().to_string(), e.ft.is_some_and(|t| t.is_symlink())));
+            false
+        });
+        kinds.sort();
+        assert_eq!(kinds, vec![(".moved".into(), false), ("sub".into(), true)]);
     }
 
     #[test]

@@ -180,45 +180,19 @@ pub fn vault_bookmarks(vault: &Path) -> Option<PathBuf> {
 const MAX_BM_BYTES: u64 = 4 * 1024 * 1024;
 
 fn carry_vault_file(vault: &Path, old: &str, new: &str) -> io::Result<Carry> {
-    use std::io::Read;
     if fs::symlink_metadata(vault.join(new)).is_ok() {
         return Ok(Carry::NewWins);
     }
-    #[cfg(unix)]
-    let f = {
-        use std::os::unix::fs::OpenOptionsExt;
-        match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(vault.join(old)) {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
-            Err(e) => return Err(e), // ELOOP: a symlinked old dotfile is not carried
+    // #250: the vaultfs read primitive (O_NOFOLLOW|O_NONBLOCK leaf, regular
+    // file by fstat, cap on the fd): a symlinked / FIFO old dotfile is not carried
+    let bytes = match crate::vaultfs::read(vault, Path::new(old), MAX_BM_BYTES) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
+        Err(e) if e.kind() == io::ErrorKind::FileTooLarge => {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "bookmark dotfile too large"))
         }
+        Err(e) => return Err(e),
     };
-    // Windows: the file is opened as ITSELF (a reparse point is not followed) and one is refused
-    #[cfg(windows)]
-    let f = {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        match fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(vault.join(old)) {
-            Ok(f) => {
-                if f.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "a symlinked old dotfile is not carried"));
-                }
-                f
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Carry::Neither),
-            Err(e) => return Err(e),
-        }
-    };
-    let m = f.metadata()?;
-    if !m.is_file() {
-        return Ok(Carry::Neither);
-    }
-    let mut bytes = Vec::new();
-    f.take(MAX_BM_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_BM_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bookmark dotfile too large"));
-    }
     crate::vaultfs::write_atomic(vault, Path::new(new), &bytes)?;
     Ok(Carry::Copied)
 }

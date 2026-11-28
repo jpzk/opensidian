@@ -17,8 +17,9 @@
                              read HERE from <vault>/.obsidian/plugins/<id>/ — never taken
                              from the webview (ADDENDUM 1): a new plugin version asks again;
              programSha256 = sha256 of the PINNED program (the open file the exec runs,
-                             desk_proc::pin), cached by (dev, ino, size, mtime, ctime): a
-                             plugin that rewrites a program in the vault cannot ride an old
+                             desk_proc::pin), cached by (dev, ino, size, mtime, ctime) once both
+                             times are older than HASH_RACY_MARGIN (racy rule): a plugin
+                             that rewrites a program in the vault cannot ride an old
                              grant, and an update of /usr/bin/git asks once more.
            A grant whose fingerprints no longer match stays listed ("outdated") until it is
            revoked or replaced by a new Always for the same key; it is never used.
@@ -38,7 +39,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -141,13 +141,8 @@ pub fn fingerprint_parts(parts: &[&[u8]]) -> String {
 /// vault). Err = not fingerprintable -> no Always is offered, the question is asked as before.
 pub fn plugin_fingerprint(root: &Path, id: &str) -> Result<(String, String), String> {
     let read = |f: &str| -> Result<Vec<u8>, String> {
-        let p = crate::plugins::plugin_file_in(root, id, f, PLUGIN_FILE_MAX).map_err(|e| format!("{id}/{f}: {e}"))?.ok_or_else(|| format!("{id}/{f}: missing"))?;
-        let mut b = Vec::new();
-        std::fs::File::open(&p).and_then(|mut fh| fh.by_ref().take(PLUGIN_FILE_MAX + 1).read_to_end(&mut b)).map_err(|e| format!("{id}/{f}: {e}"))?;
-        if b.len() as u64 > PLUGIN_FILE_MAX {
-            return Err(format!("{id}/{f}: too big"));
-        }
-        Ok(b)
+        // #250: rule 5 + the fd read: the bytes hashed are the bytes of the inode that was checked
+        crate::plugins::plugin_read_in(root, id, f, PLUGIN_FILE_MAX).map_err(|e| format!("{id}/{f}: {e}"))?.ok_or_else(|| format!("{id}/{f}: missing"))
     };
     let (main, manifest) = (read("main.js")?, read("manifest.json")?);
     let version = serde_json::from_slice::<serde_json::Value>(&manifest).ok().and_then(|m| m["version"].as_str().map(String::from)).unwrap_or_default();
@@ -158,8 +153,27 @@ pub fn plugin_fingerprint(root: &Path, id: &str) -> Result<(String, String), Str
 type StatKey = (u64, u64, u64, (i64, i64), (i64, i64));
 static HASHES: Mutex<Option<HashMap<StatKey, String>>> = Mutex::new(None);
 
-/// sha256 of the bytes behind `f`, cached by `key`
+/* #74 racy-hash rule (as git's "racily clean" index entries): a cached hash is only as good as
+   the promise that any later change of the file moves its stat key. That holds only once the
+   file's timestamps are older than the clock granularity that stamps the NEXT change: a
+   same-size rewrite with mtime restored, in the same tick as the previous change, keeps
+   (dev, ino, size, mtime, ctime) — Linux < 6.13 stamps ctime from the coarse clock (one jiffy,
+   up to 10 ms), ext3/HFS+/most network fs store whole seconds, FAT/exFAT 2 s. So a hash is
+   CACHED only when both mtime and ctime are older than now - HASH_RACY_MARGIN; a younger
+   program is hashed and returned uncached, and the next call reads it again. 3 s = FAT's 2 s
+   granularity + 1 s for filesystems that round up and for the few microseconds between the
+   caller's stat and the clock read here. Timestamps in the future (clock skew) are never old
+   enough. Limit: a network fs whose server clock lags ours by more than the margin can still
+   alias; such a program is re-hashed whenever its key moves, as before. */
+const HASH_RACY_MARGIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// sha256 of the bytes behind `f`, cached by `key` once the file is old enough (racy rule above)
 pub fn program_sha256(key: StatKey, f: impl FnOnce() -> std::io::Result<std::fs::File>) -> Result<String, String> {
+    program_sha256_at(key, std::time::SystemTime::now(), f)
+}
+
+/// program_sha256 with the clock read by the caller (`now` is taken before the file is read)
+fn program_sha256_at(key: StatKey, now: std::time::SystemTime, f: impl FnOnce() -> std::io::Result<std::fs::File>) -> Result<String, String> {
     if let Some(h) = HASHES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get(&key) {
         return Ok(h.clone());
     }
@@ -167,6 +181,9 @@ pub fn program_sha256(key: StatKey, f: impl FnOnce() -> std::io::Result<std::fs:
     let mut h = Sha256::new();
     std::io::copy(&mut file, &mut h).map_err(|e| format!("program hash: {e}"))?;
     let d = hex(&h.finalize());
+    if !stat_is_old(&key, now) {
+        return Ok(d);
+    }
     let mut m = HASHES.lock().unwrap_or_else(|e| e.into_inner());
     let m = m.get_or_insert_with(HashMap::new);
     if m.len() > 1024 {
@@ -174,6 +191,14 @@ pub fn program_sha256(key: StatKey, f: impl FnOnce() -> std::io::Result<std::fs:
     }
     m.insert(key, d.clone());
     Ok(d)
+}
+
+/// both mtime and ctime of `key` are older than `now` - HASH_RACY_MARGIN
+fn stat_is_old(key: &StatKey, now: std::time::SystemTime) -> bool {
+    let ns = |(s, n): (i64, i64)| s as i128 * 1_000_000_000 + n as i128;
+    let Ok(now) = now.duration_since(std::time::UNIX_EPOCH) else { return false };
+    let limit = now.as_nanos() as i128 - HASH_RACY_MARGIN.as_nanos() as i128;
+    ns(key.3) < limit && ns(key.4) < limit
 }
 
 /// a grant as Settings lists it: the entry plus whether its fingerprints still match disk
@@ -318,6 +343,59 @@ mod tests {
         let h3 = hash();
         assert_eq!(h3, fingerprint_hex_of(b"#!/bin/sh\necho C\n"));
         assert!(!granted(&cfg, &Want { program_sha256: h3, ..w1.clone() }), "a replaced program rode the grant");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /* #74 racy rule, without kernel tick timing: the key of a fresh program is reused AS IS
+       for the rewrite — the worst case of a coarse clock (same-size rewrite, mtime restored,
+       ctime in the same tick). A program hashed right after its change is not cached, so the
+       rewrite is read again and gives another hash. */
+    #[test]
+    fn spawn_allow_racily_new_program_is_not_cached() {
+        let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-racy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let prog = d.join("prog");
+        crate::testutil::write_exe(&prog, "#!/bin/sh\necho A\n").unwrap();
+        let pin = crate::desk_proc::pin(prog.to_str().unwrap()).unwrap();
+        let key = pin.stat_key();
+        // hashed in the very tick of its last change: now = max(mtime, ctime)
+        let t = |(s, n): (i64, i64)| std::time::UNIX_EPOCH + std::time::Duration::new(s as u64, n as u32);
+        let at = t(key.3).max(t(key.4));
+        let h1 = program_sha256_at(key, at, || pin.open_read()).unwrap();
+        assert_eq!(h1, fingerprint_hex_of(b"#!/bin/sh\necho A\n"));
+        // exactly at the margin: still too new, so nothing was cached and the next call reads
+        assert_eq!(program_sha256_at(key, at + HASH_RACY_MARGIN, || pin.open_read()).unwrap(), h1);
+        assert!(program_sha256_at(key, at, || Err(std::io::Error::other("re-read"))).is_err(), "a racily-new program was cached");
+        // same size, mtime restored, SAME key: the rewrite must be read, not served from cache
+        let mtime = std::fs::metadata(&prog).unwrap().modified().unwrap();
+        std::fs::write(&prog, "#!/bin/sh\necho B\n").unwrap();
+        std::fs::File::options().write(true).open(&prog).unwrap().set_modified(mtime).unwrap();
+        let h2 = program_sha256_at(key, at, || std::fs::File::open(&prog)).unwrap();
+        assert_eq!(h2, fingerprint_hex_of(b"#!/bin/sh\necho B\n"), "a racily-new rewrite kept the old hash");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /* #74: the cache still does its job: an unchanged program whose mtime and ctime are older
+       than the margin is hashed once and then served from the cache (no re-read). */
+    #[test]
+    fn spawn_allow_old_unchanged_program_is_cached() {
+        let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let prog = d.join("prog");
+        crate::testutil::write_exe(&prog, "#!/bin/sh\necho old\n").unwrap();
+        let pin = crate::desk_proc::pin(prog.to_str().unwrap()).unwrap();
+        let key = pin.stat_key();
+        // hashed a margin and a second after its last change (the clock seam: no sleeping)
+        let t = |(s, n): (i64, i64)| std::time::UNIX_EPOCH + std::time::Duration::new(s as u64, n as u32);
+        let later = t(key.3).max(t(key.4)) + HASH_RACY_MARGIN + std::time::Duration::from_secs(1);
+        let h1 = program_sha256_at(key, later, || pin.open_read()).unwrap();
+        assert_eq!(h1, fingerprint_hex_of(b"#!/bin/sh\necho old\n"));
+        let h2 = program_sha256_at(key, later, || Err(std::io::Error::other("re-read"))).expect("an old unchanged program was re-read");
+        assert_eq!(h2, h1);
+        // the public path serves it from the cache too
+        assert_eq!(program_sha256(key, || Err(std::io::Error::other("re-read"))).unwrap(), h1);
         let _ = std::fs::remove_dir_all(&d);
     }
 

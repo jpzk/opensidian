@@ -28,6 +28,7 @@
    Read-modify-write is serialized by one process-wide lock: two mutations from one window can
    not interleave and lose one another. */
 use serde_json::{Map, Value};
+#[cfg(test)]
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -63,23 +64,14 @@ fn is_doc(v: &Value) -> bool {
 }
 
 /// read <root>/.obsidian/workspaces.json without following a symlink anywhere below the vault root
+/// (#250: by the vaultfs fd walk; the type and size checks are on the opened fd)
 pub fn read_in(root: &Path) -> OnDisk {
-    let dir = root.join(".obsidian");
-    match fs::symlink_metadata(&dir) {
-        Ok(m) if m.is_dir() => {}
-        Ok(_) => return OnDisk::Corrupt, // a symlinked / non-dir .obsidian: not ours to read or write
-        Err(_) => return OnDisk::Absent,
-    }
-    let p = root.join(WSS_REL);
-    let m = match fs::symlink_metadata(&p) {
-        Ok(m) => m,
+    let s = match crate::vaultfs::read_string(root, Path::new(WSS_REL), WSS_MAX_BYTES) {
+        Ok(s) => s,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return OnDisk::Absent,
+        // a symlinked / non-dir .obsidian, a symlinked / non-regular / oversized leaf: not ours
         Err(_) => return OnDisk::Corrupt,
     };
-    if !m.is_file() || m.len() > WSS_MAX_BYTES {
-        return OnDisk::Corrupt;
-    }
-    let Ok(s) = fs::read_to_string(&p) else { return OnDisk::Corrupt };
     match serde_json::from_str::<Value>(&s) {
         Ok(v) if is_doc(&v) => OnDisk::Doc(v),
         _ => OnDisk::Corrupt,
@@ -324,6 +316,42 @@ mod tests {
         std::os::unix::fs::symlink(out.join(".obsidian"), root.join(".obsidian")).unwrap();
         assert!(mutate_in(&root, |d| op_save(d, "A", &lay("a.md"))).is_err());
         assert!(!out.join(WSS_REL).exists(), "nothing written through the symlink");
+    }
+
+    #[test]
+    fn read250_leaf_symlink_devzero_fifo_and_oversize_are_not_read() {
+        let root = tmp("r250");
+        let out = tmp("r250out");
+        let doc = r#"{"workspaces":{"secret":{}},"active":"secret"}"#;
+        fs::write(out.join("w.json"), doc).unwrap();
+        let p = root.join(WSS_REL);
+        let fifo = |p: &Path| {
+            let c = std::ffi::CString::new(p.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        };
+        for case in ["outside", "devzero", "fifo", "over"] {
+            let _ = fs::remove_file(&p);
+            match case {
+                "outside" => std::os::unix::fs::symlink(out.join("w.json"), &p).unwrap(),
+                "devzero" => std::os::unix::fs::symlink("/dev/zero", &p).unwrap(),
+                "fifo" => fifo(&p),
+                _ => {
+                    // a VALID document one byte over the cap (trailing JSON whitespace)
+                    let mut b = doc.as_bytes().to_vec();
+                    b.resize(WSS_MAX_BYTES as usize + 1, b' ');
+                    fs::write(&p, b).unwrap()
+                }
+            }
+            let r = root.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || tx.send(matches!(read_in(&r), OnDisk::Corrupt)).unwrap());
+            let corrupt = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_else(|_| panic!("{case}: read_in hung"));
+            assert!(corrupt, "{case}: must not be read as a document");
+        }
+        // a regular file is still read
+        let _ = fs::remove_file(&p);
+        fs::write(&p, doc).unwrap();
+        assert!(matches!(read_in(&root), OnDisk::Doc(_)));
     }
 
     #[test]
