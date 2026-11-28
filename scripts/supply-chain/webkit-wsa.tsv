@@ -1,0 +1,14 @@
+# webkit-wsa.tsv - WebKitGTK security advisories (https://webkitgtk.org/security.html) and the
+# upstream WebKitGTK version that fixes ALL CVEs of each advisory ("before X" in the advisory text).
+# Used by webkit-wsa-gate.sh: osv.dev has no Fedora ecosystem, so pkg:rpm/fedora purls are not
+# scored by osv-scanner; the bundled webkit2gtk4.1 version must be >= every fixed-in below.
+# Add a row for every new WSA (fetched 2026-11-28; newest WSA-2026-0007, 2026-11-18).
+# wsa	reported	fixed_in
+WSA-2025-0010	2025-12-17	2.50.4
+WSA-2026-0001	2026-03-18	2.52.0
+WSA-2026-0002	2026-03-28	2.52.1
+WSA-2026-0003	2026-06-02	2.52.4
+WSA-2026-0004	2026-07-10	2.52.5
+WSA-2026-0005	2026-08-20	2.52.6
+WSA-2026-0006	2026-09-29	2.54.0
+WSA-2026-0007	2026-11-18	2.54.3
