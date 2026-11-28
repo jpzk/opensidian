@@ -112,7 +112,7 @@ rm "$W/WebKitGPUProcess"
 expect_fail "missing webkit helper" "missing root" run
 : >"$W/WebKitGPUProcess"; chmod +x "$W/WebKitGPUProcess"
 NOTFOUND=libmissing.so.9 expect_fail "ldd => not found is fatal" "ldd cannot resolve (=> not found): libmissing.so.9" run
-DISTRO=fedora-44 expect_fail "non-deb distro" "is not ubuntu" run
+DISTRO=arch-rolling expect_fail "unknown distro" "is not ubuntu" run
 DISTRO=debian-13 run >"$t/sbom.json" 2>/dev/null && chk "debian-13 namespace" 'all(.components[]|select(.purl|startswith("pkg:deb")); .purl|test("^pkg:deb/debian/.*distro=debian-13$"))'
 
 
@@ -178,8 +178,8 @@ grep -v '^2\.50\.1' "$t/emb.tsv" >"$t/emb2.tsv"
 WK_EMBEDDED=$t/emb2.tsv expect_fail "G1: webkit version absent from table fails closed" "no embedded-component rows for webkit 2.50.1" run
 printf '2.50.1\tskia\tm140\t\tBSD-3-Clause\tx\n' >"$t/emb3.tsv"
 WK_EMBEDDED=$t/emb3.tsv expect_fail "G1: row without purl fails closed" "bad row" run
-# the REAL table covers the webkit the AppImage build pins (packaging/ci/appimage-build.sh)
-pin=$(sed -n 's/.*libwebkit2gtk-4\.1-0=\([0-9.]*\)-.*/\1/p' "$here/../../packaging/ci/appimage-build.sh" | head -1)
+# the REAL table covers the webkit the AppImage build pins (packaging/ci/fedora-pkgset.lock.tsv, every arch)
+pin=$(awk -F"\t" '!/^#/ && $2=="webkit2gtk4.1" {e=$3; sub(/^[0-9]+:/,"",e); sub(/-.*/,"",e); print e}' "$here/../../packaging/ci/fedora-pkgset.lock.tsv" | sort -u | tr "\n" " " | sed "s/ $//")
 real=$(awk -F'\t' -v v="$pin" '!/^#/ && $1==v && $2!="" && $3!="" && $4 ~ /^pkg:/ && $5!="" && $6!=""' "$here/webkit-embedded.tsv" | cut -f2 | sort | tr '\n' ' ')
 [ "$real" = "angle libsysprof-capture pdfjs-dist skia xdgmime " ] && ok "G1: webkit-embedded.tsv covers pinned webkit $pin: $real" || bad "G1: webkit-embedded.tsv rows for pinned webkit '$pin': '$real'"
 
@@ -197,5 +197,59 @@ jq '.results[0].packages[0].package.ecosystem="Ubuntu"' "$t/o1.json" >"$t/o4.jso
 gate "$t/o4.json"; [ "$rc" -ne 0 ] && ok "gate: release dropped by scanner -> fails closed rc=$rc" || { cat "$t/g"; bad "gate prefix"; }
 echo '{}' >"$t/o5.json"; gate "$t/o5.json"; [ "$rc" -ne 0 ] && ok "gate: not osv json -> rc=$rc" || bad "gate bad json"
 jq -n '{results:[]}' >"$t/o6.json"; gate "$t/o6.json"; [ "$rc" -eq 0 ] && ok "gate: no findings -> rc=0" || bad "gate empty"
+
+# ---- fedport: rpm database (Fedora 44 build env) ----
+# rpm stub: -qf <path> -> owner name.arch; -q --qf <fmt> <name.arch> -> the fixture fields
+cat >"$t/bin/rpm" <<'S'
+#!/bin/sh
+if [ "$1" = -qf ]; then
+  b=$(basename "$4"); grep -qx "$b" "$UNOWNED" 2>/dev/null && { echo "file $4 is not owned by any package"; exit 1; }
+  case "$b" in
+    libwebkit2gtk-4.1.so.0|WebKit*Process|libwebkit2gtkinjectedbundle.so) echo webkit2gtk4.1.x86_64;;
+    libjavascriptcoregtk-4.1.so.0) echo javascriptcoregtk4.1.x86_64;;
+    libgtk-3.so.0|libgdk-3.so.0) echo gtk3.x86_64;;
+    libsoup-3.0.so.0) echo libsoup3.x86_64;;
+    libgcrypt.so.20) echo libgcrypt.x86_64;;
+    *) echo "file $4 is not owned by any package"; exit 1;;
+  esac; exit 0
+fi
+[ "$1" = -q ] || exit 2
+case "$3" in *SOURCERPM*) m=s;; *) m=x;; esac
+case "$4" in
+  webkit2gtk4.1.x86_64)        n=webkit2gtk4.1 e=0 vr=2.54.3-2.fc44 s=webkitgtk-2.54.3-2.fc44.src.rpm l="LGPL-2.1-only AND BSD-2-Clause";;
+  javascriptcoregtk4.1.x86_64) n=javascriptcoregtk4.1 e=0 vr=2.54.3-2.fc44 s=webkitgtk-2.54.3-2.fc44.src.rpm l="LGPL-2.1-only AND BSD-2-Clause";;
+  gtk3.x86_64)                 n=gtk3 e=0 vr=3.24.52-2.fc44 s=gtk3-3.24.52-2.fc44.src.rpm l="LGPL-2.0-or-later";;
+  libsoup3.x86_64)             n=libsoup3 e=0 vr=3.6.6-1.fc44 s=libsoup3-3.6.6-1.fc44.src.rpm l="LGPL-2.0-or-later";;
+  libgcrypt.x86_64)            n=libgcrypt e=1 vr=1.11.2-1.fc44 s=libgcrypt-1.11.2-1.fc44.src.rpm l="LGPL-2.1-or-later";;
+  *) echo "package $4 is not installed"; exit 1;;
+esac
+if [ $m = s ]; then printf '%s.x86_64\t%s:%s\t%s\n' "$n" "$e" "$vr" "$s"
+else printf '%s.x86_64\t%s\tx86_64\t%s\t%s\t%s\n' "$n" "$n" "$e" "$vr" "$l"; fi
+S
+chmod +x "$t/bin/rpm"
+printf "2.54.3\tskia\tm154\tpkg:generic/skia@m154\tBSD-3-Clause\tSkMilestone.h 154\n" >"$t/emb-rpm.tsv"
+{ printf '# fedora 44 pinned set\n# package\tevr\tarch\trpm-sha256\n'
+  printf 'gtk3\t0:3.24.52-2.fc44\tx86_64\t%s\n' "$H3"; printf 'javascriptcoregtk4.1\t0:2.54.3-2.fc44\tx86_64\t%s\n' "$H2"
+  printf 'libgcrypt\t1:1.11.2-1.fc44\tx86_64\t%s\n' "$H4"; printf 'libsoup3\t0:3.6.6-1.fc44\tx86_64\t%s\n' "$H4"
+  printf 'webkit2gtk4.1\t0:2.54.3-2.fc44\tx86_64\t%s\n' "$H1"; } >"$t/rpmset.tsv"
+: >"$t/unowned"
+rrun() { DISTRO=fedora-44 WK_EMBEDDED=$t/emb-rpm.tsv run "$@"; }
+rrun --pkgset "$t/rpmset.tsv" >"$t/sbom.json" 2>"$t/err" && ok "rpm: rc=0" || { cat "$t/err"; bad "rpm: rc!=0"; }
+chk "rpm: one component per binary rpm + brotli" '(.components|length)==6'
+chk "rpm: webkit purl pkg:rpm/fedora" 'any(.components[]; .purl=="pkg:rpm/fedora/webkit2gtk4.1@2.54.3-2.fc44?arch=x86_64&distro=fedora-44")'
+chk "rpm: epoch qualifier" 'any(.components[]; .purl=="pkg:rpm/fedora/libgcrypt@1.11.2-1.fc44?arch=x86_64&epoch=1&distro=fedora-44" and .version=="1:1.11.2-1.fc44")'
+chk "rpm: License tag -> expression" 'all(.components[]; (.licenses|length)>0) and any(.components[]; .name=="gtk3" and .licenses==[{expression:"LGPL-2.0-or-later"}])'
+chk "rpm: sha256 from pkgset" 'any(.components[]; .name=="webkit2gtk4.1" and .hashes==[{alg:"SHA-256",content:"'"$H1"'"}])'
+chk "rpm: embedded table nested under webkit2gtk4.1 only" '[.components[]|select(has("components"))|.name]==["webkit2gtk4.1"] and (.components[]|select(.name=="webkit2gtk4.1")|.components[0].purl)=="pkg:generic/skia@m154"'
+chk "rpm: source rpm property" 'any(.components[]; .name=="javascriptcoregtk4.1" and any(.properties[]; .name=="opensidian:source-rpm" and .value=="webkitgtk-2.54.3-2.fc44.src.rpm"))'
+chk "rpm: no deb purls, brotli upstream" '(any(.components[]; .purl|startswith("pkg:deb"))|not) and any(.components[]; .purl=="pkg:github/google/brotli@v1.2.1")'
+chk "rpm: unique bom-refs + graph" '([.components[]."bom-ref"]|length)==([.components[]."bom-ref"]|unique|length) and (.dependencies[0].dependsOn|sort)==([.components[]."bom-ref"]|sort)'
+echo libsoup-3.0.so.0 >"$t/unowned"
+expect_fail "rpm: library not owned" "not owned by any rpm package" rrun
+: >"$t/unowned"
+sed 's/^gtk3\t0:3.24.52-2/gtk3\t0:3.24.52-9/' "$t/rpmset.tsv" >"$t/rpmset2.tsv"
+expect_fail "rpm: pkgset != rpmdb fails closed" "pkgset says 0:3.24.52-9.fc44, rpm says 0:3.24.52-2.fc44" rrun --pkgset "$t/rpmset2.tsv"
+grep -v '^webkit2gtk4.1' "$t/rpmset.tsv" >"$t/rpmset3.tsv"
+expect_fail "rpm: bundled rpm missing from pkgset" "webkit2gtk4.1.x86_64: not in pkgset" rrun --pkgset "$t/rpmset3.tsv"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           if git diff --quiet; then echo "no pin changed: no PR"; exit 0; fi
-          snap=$(sed -n 's/^SNAP=\([0-9]\{8\}T[0-9]\{6\}Z\).*/\1/p' packaging/ci/appimage-build.sh | head -1)
+          snap=$(date -u +%Y%m%dT%H0000Z)   # fedport: no ubuntu SNAP any more (Fedora lock = maintainer re-resolve); the bump's own UTC hour
           br="bot/pin-bump-$snap"
           [[ "$br" =~ ^bot/pin-bump-[0-9]{8}T[0-9]{6}Z$ ]] || { echo "::error::refusing branch '$br'"; exit 1; }
           case "$br" in main|develop|refs/heads/main|refs/heads/develop) echo "::error::refusing to push $br"; exit 1 ;; esac

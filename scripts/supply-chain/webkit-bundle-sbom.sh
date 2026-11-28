@@ -50,7 +50,6 @@ while [ $# -gt 0 ]; do case "$1" in
   --bin) BIN=${2:?--bin needs a path}; shift 2;;
   --pkgset) PKGSET=${2:?--pkgset needs a path}; shift 2;;
   *) die "usage: $0 [--bin <elf>] [--pkgset <pkgset.tsv>]";; esac; done
-for c in ldd dpkg dpkg-query jq awk sort; do command -v "$c" >/dev/null || die "missing $c"; done
 
 recipe="$root/packaging/ci/build-appimage.sh"
 EXCL=$(sed -n "s/^ *EXCL='\(.*\)'$/\1/p" "$recipe")
@@ -61,8 +60,12 @@ if [ -z "${DISTRO:-}" ]; then
   # shellcheck disable=SC1091
   DISTRO=$( . /etc/os-release && echo "${ID}-${VERSION_ID}")
 fi
-case "$DISTRO" in ubuntu-*|debian-*) ;; *) die "DISTRO=$DISTRO is not ubuntu-* / debian-*";; esac
+# fedport (2026-11-28): the release build env is Fedora 44 (packaging/ci/fedora-env.sh) -> rpm
+# database; ubuntu/debian (dpkg) stays for local/podman runs of the old env and the tests.
+case "$DISTRO" in ubuntu-*|debian-*) PM=dpkg ;; fedora-*) PM=rpm ;; *) die "DISTRO=$DISTRO is not ubuntu-* / debian-* / fedora-*";; esac
 NS=${DISTRO%%-*}
+if [ $PM = rpm ]; then need="ldd rpm jq awk sort"; else need="ldd dpkg dpkg-query jq awk sort"; fi
+for c in $need; do command -v "$c" >/dev/null || die "missing $c"; done
 ARCH=$(uname -m)
 
 # ---- roots: same search order as build-appimage.sh ----
@@ -108,10 +111,15 @@ nf=$(awk '/=> *not found/ {print $1}' "$t/ldd" | sort -u | tr '\n' ' ')
 grep -q '/libwebkit2gtk-4\.1\.so\.0$' "$t/files" || die "libwebkit2gtk-4.1.so.0 not in the closure"
 
 # ---- dpkg -S: file -> binary package (try the path, its realpath, and the usrmerge twin) ----
+#      (rpm: rpm -qf, same path variants: /lib64 is a symlink to usr/lib64 on Fedora)
 owner() { local p cand
   for p in "$1" "$(readlink -f "$1")"; do
     for cand in "$p" "${p#/usr}" "/usr$p"; do
-      dpkg -S "$cand" 2>/dev/null | awk -F': ' 'NR==1 && $1 !~ /^diversion/ {sub(/,.*/, "", $1); print $1; exit}' | grep . && return 0
+      if [ $PM = rpm ]; then
+        rpm -qf --qf '%{NAME}.%{ARCH}\n' "$cand" 2>/dev/null | awk 'NR==1 && !/not owned|is not/ {print; exit}' | grep . && return 0
+      else
+        dpkg -S "$cand" 2>/dev/null | awk -F': ' 'NR==1 && $1 !~ /^diversion/ {sub(/,.*/, "", $1); print $1; exit}' | grep . && return 0
+      fi
     done; done; return 1; }
 : >"$t/map"; unowned=
 while read -r f; do
@@ -119,14 +127,24 @@ while read -r f; do
   case "$b" in libbrotli*.so.1) printf 'brotli\t%s\n' "$b" >>"$t/map"; continue;; esac
   if pkg=$(owner "$f"); then printf '%s\t%s\n' "$pkg" "$b" >>"$t/map"; else unowned+=" $f"; fi
 done <"$t/files"
-[ -z "$unowned" ] || die "not owned by any dpkg package:$unowned"
+[ -z "$unowned" ] || die "not owned by any $PM package:$unowned"
 
 # ---- dpkg-query: binary package -> version, source package, source version ----
-: >"$t/pkgs"
+# rpm: name.arch -> name, epoch:version-release, source rpm name, its version-release (+ t/rpmx:
+#      arch, LICENSE (Fedora: SPDX expression), epoch)
+: >"$t/pkgs"; : >"$t/rpmx"
 for p in $(awk -F'\t' '$1 != "brotli" {print $1}' "$t/map" | sort -u); do
-  dpkg-query -W -f='${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\n' "$p" >>"$t/pkgs" \
-    || die "dpkg-query failed for $p"
+  if [ $PM = rpm ]; then
+    rpm -q --qf '%{NAME}.%{ARCH}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{SOURCERPM}\n' "$p" \
+      | awk -F'\t' '{s=$3; sub(/\.src\.rpm$/,"",s); n=split(s,a,"-"); sv=a[n-1]"-"a[n]; sn=a[1]; for(i=2;i<=n-2;i++) sn=sn"-"a[i]; print $1"\t"$2"\t"sn"\t"sv}' >>"$t/pkgs" \
+      || die "rpm -q failed for $p"
+    rpm -q --qf '%{NAME}.%{ARCH}\t%{NAME}\t%{ARCH}\t%{EPOCHNUM}\t%{VERSION}-%{RELEASE}\t%{LICENSE}\n' "$p" >>"$t/rpmx" || die "rpm -q failed for $p"
+  else
+    dpkg-query -W -f='${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\n' "$p" >>"$t/pkgs" \
+      || die "dpkg-query failed for $p"
+  fi
 done
+[ "$(wc -l <"$t/pkgs")" -gt 0 ] || die "no packages for the bundle"
 
 
 # ---- #299 G1: components compiled INTO libwebkit2gtk (Skia, ANGLE, pdf.js, ...) ----
@@ -136,13 +154,91 @@ done
 # with no rows (a bump without re-deriving the table), or a malformed row -> rc=1.
 EMB=${WK_EMBEDDED:-$root/scripts/supply-chain/webkit-embedded.tsv}
 [ -f "$EMB" ] || die "embedded-component table $EMB missing"
-wksv=$(awk -F'\t' '$3=="webkit2gtk" {print $4; exit}' "$t/pkgs")
-[ -n "$wksv" ] || die "webkit2gtk source package not in the bundle"
+if [ $PM = rpm ]; then WKSRC=webkitgtk; else WKSRC=webkit2gtk; fi   # Fedora source rpm / Ubuntu source package
+wksv=$(awk -F'\t' -v s="$WKSRC" '$3==s {print $4; exit}' "$t/pkgs")
+[ -n "$wksv" ] || die "$WKSRC source package not in the bundle"
 wkup=${wksv#*:}; wkup=${wkup%%-*}
 awk -F'\t' -v v="$wkup" '!/^#/ && $1==v' "$EMB" >"$t/emb"
 [ -s "$t/emb" ] || die "no embedded-component rows for webkit $wkup in $EMB (re-derive it from the webkitgtk-$wkup tarball, #299)"
 awk -F'\t' 'NF!=6 || $2=="" || $3=="" || $4 !~ /^pkg:[a-z]+\/./ || $5=="" || $6=="" {print; bad=1} END{exit bad}' "$t/emb" >"$t/embbad" \
   || die "bad row in $EMB: $(head -1 "$t/embbad")"
+
+# ---- rpm (Fedora 44 build env): one component per BINARY rpm ----
+#   purl     pkg:rpm/fedora/<name>@<version>-<release>?arch=<arch>[&epoch=N]&distro=fedora-44
+#            (purl-spec rpm type; the source rpm is a property). OSV has no Fedora ecosystem, so
+#            no scanner scores these: the webkit CVE status comes from WebKitGTK's WSA advisories.
+#   license  the rpm's own License: tag (Fedora's SPDX expression) -> licenses[].expression
+#   hash     SHA-256 of the signed rpm from --pkgset (fedora-env.sh install: the lock, re-checked
+#            in the container and rpm -K verified); required in release runs. Disagreement = fail.
+if [ $PM = rpm ]; then
+  : >"$t/sha"
+  while IFS=$'\t' read -r key n a ep vr lic; do
+    [ -n "$lic" ] && [ "$lic" != "(none)" ] || die "$key: rpm has no License tag"
+    h=-
+    if [ -n "$PKGSET" ]; then
+      row=$(awk -F'\t' -v n="$n" -v a="$a" '!/^#/ && $1==n && $3==a' "$PKGSET" | head -1)
+      [ -n "$row" ] || die "$key: not in pkgset $PKGSET"
+      [ "$(cut -f2 <<<"$row")" = "$ep:$vr" ] || die "$key: pkgset says $(cut -f2 <<<"$row"), rpm says $ep:$vr"
+      h=$(cut -f4 <<<"$row"); [[ "$h" =~ ^[0-9a-f]{64}$ ]] || die "$key: bad sha256 '$h'"
+    fi
+    printf '%s\t%s\n' "$key" "$h" >>"$t/sha"
+  done <"$t/rpmx"
+  jq -n --rawfile map "$t/map" --rawfile pkgs "$t/pkgs" --rawfile x "$t/rpmx" --rawfile sha "$t/sha" --rawfile emb "$t/emb" \
+     --arg distro "$DISTRO" --arg arch "$ARCH" --arg brotli "$BROTLI_VER" --arg applic "$applic" --arg wksrc "$WKSRC" \
+     --arg hsrc "$(if [ -n "$PKGSET" ]; then echo "pkgset $(basename "$PKGSET") (packaging/ci/fedora-pkgset.lock.tsv: sha256 of the Fedora-signed rpm, re-checked + rpm -K in the build container)"; else echo "none (no --pkgset)"; fi)" \
+     --arg ts "$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)" '
+    def rows($s): $s | split("\n") | map(select(length>0) | split("\t"));
+    (rows($map) | map({pkg: .[0], lib: .[1]})) as $m
+    | (rows($pkgs) | map({key: .[0], value: {src: .[2], srcver: .[3]}}) | from_entries) as $src
+    | (rows($sha) | map({key: .[0], value: .[1]}) | from_entries) as $h
+    | (rows($emb) | map({name: .[1], version: .[2], purl: .[3], lic: .[4], ev: .[5]})) as $e
+    | (rows($x) | map(
+        . as [$key, $n, $a, $ep, $vr, $lic]
+        | ($src[$key]) as $s
+        | { type: "library", "bom-ref": "rpm:\($n)@\($ep):\($vr).\($a)", name: $n,
+            version: (if $ep == "0" then $vr else "\($ep):\($vr)" end),
+            purl: "pkg:rpm/fedora/\($n)@\($vr)?arch=\($a)\(if $ep == "0" then "" else "&epoch=\($ep)" end)&distro=\($distro)",
+            licenses: [{expression: $lic}] }
+          + (if $h[$key] != "-" then {hashes: [{alg: "SHA-256", content: $h[$key]}]} else {} end)
+          + (if $s.src == $wksrc and ($n | startswith("webkit2gtk4.1")) then {components: ($e | map(
+              { type: "library", "bom-ref": "rpm:\($n)@\($ep):\($vr).\($a)/embedded:\(.name)@\(.version)",
+                name: .name, version: .version, purl: .purl, licenses: [{expression: .lic}],
+                properties: [ {name: "opensidian:embedded-in", value: "\($s.src)@\($s.srcver)"},
+                              {name: "opensidian:evidence", value: .ev},
+                              {name: "opensidian:source", value: "scripts/supply-chain/webkit-embedded.tsv (compiled into libwebkit2gtk-4.1; not in the rpm database, invisible to scanners without this entry, #299)"} ] }))}
+            else {} end)
+          + { properties: ([
+              {name: "opensidian:source-rpm", value: "\($s.src)-\($s.srcver).src.rpm"},
+              {name: "opensidian:bundled-libs", value: ($m | map(select(.pkg == $key)) | map(.lib) | unique | join(","))},
+              {name: "opensidian:arch", value: $arch},
+              {name: "opensidian:license-source", value: "rpm License tag of \($n)-\($vr).\($a) (Fedora SPDX expression)"} ]
+            + (if $h[$key] != "-" then [{name: "opensidian:rpm-sha256", value: $h[$key]}, {name: "opensidian:hash-source", value: $hsrc}]
+               else [{name: "opensidian:hash-note", value: "no --pkgset: rpm SHA-256 not recorded"}] end)) })) as $rpms
+    | ($m | map(select(.pkg == "brotli") | .lib) | unique) as $bl
+    | {
+        bomFormat: "CycloneDX", specVersion: "1.6", version: 1,
+        metadata: { timestamp: $ts,
+          component: { type: "application", "bom-ref": "opensidian-portable-appimage-bundle",
+            name: "opensidian portable AppImage WebKit bundle", version: $distro,
+            licenses: [{expression: $applic}],
+            properties: [{name: "opensidian:aggregate", value: "aggregate part root: the Fedora packages and brotli bundled into the portable AppImage, conveyed as part of the opensidian app under its license (src-tauri/Cargo.toml); each component carries its own license"}] },
+          properties: [ {name: "opensidian:source", value: "rpm database of the AppImage build environment (\($distro), packaging/ci/fedora-pkgset.lock.tsv installed exactly)"},
+                        {name: "opensidian:hash-source", value: $hsrc} ] },
+        components: ($rpms + (if ($bl | length) > 0 then [{
+            type: "library", "bom-ref": "brotli@\($brotli)", name: "brotli", version: $brotli,
+            purl: "pkg:github/google/brotli@v\($brotli)",
+            cpe: "cpe:2.3:a:google:brotli:\($brotli):*:*:*:*:*:*:*",
+            licenses: [{expression: "MIT"}],
+            properties: [ {name: "opensidian:bundled-libs", value: ($bl | join(","))},
+                          {name: "opensidian:note", value: "built from the sha256-pinned upstream tarball by build-appimage.sh; replaces the distro libbrotli"} ] }]
+          else [] end)),
+        dependencies: [ { ref: "opensidian-portable-appimage-bundle",
+          dependsOn: ($rpms | map(."bom-ref")) + ($bl | if length > 0 then ["brotli@\($brotli)"] else [] end) } ]
+          + ($rpms | map(select(has("components")) | {ref: ."bom-ref", dependsOn: (.components | map(."bom-ref"))}))
+      }' >"$t/out"
+  jq -e '.specVersion == "1.6" and (.components | length) > 0 and any(.components[]; .purl | startswith("pkg:rpm/fedora/webkit2gtk4.1@"))' "$t/out" >/dev/null || die "bad SBOM"
+  cat "$t/out"; exit 0
+fi
 
 # ---- per binary package: license (DEP-5 copyright) + SHA-256 of the .deb ----
 # LICENSE: /usr/share/doc/<pkg>/copyright (the ubuntu image's dpkg excludes keep exactly this

@@ -6,9 +6,9 @@
 #
 # Jobs:
 #   test          ubuntu-26.04 (x86_64). packaging/ci/linux-test.sh runs, INSIDE the pinned release
-#                 build container of packaging/ci/appimage-build.sh (image digest, snapshot.ubuntu.com
-#                 date, pkg=version list + appimage-snapshot.lock.tsv .deb sha256, sha256-checked Rust
-#                 1.98.0 - all read from appimage-build.sh, never copied):
+#                 build container (packaging/ci/fedora-env.sh, fedport 2026-11-28: the digest-pinned
+#                 Fedora 44 OCI image + every rpm of packaging/ci/fedora-pkgset.lock.tsv, sha256 + rpm -K
+#                 verified, installed set == lock; sha256-checked Rust 1.98.0 = appimage-build.sh's pins):
 #                   cargo test --locked --no-fail-fast   (src-tauri, = box T0 scope; fails on any red test
 #                                                         AND if fewer than 669 tests / 592 lib tests pass)
 #                   cargo build --locked --profile devfast
@@ -21,7 +21,7 @@
 #     - release.yml has no Linux launch smoke to reuse; Linux GUI smokes run on the box through boxd
 #       display leases (T1 phases), which a GitHub runner does not have.
 #     - a headless launch here needs an X server (xvfb / weston): apt on the runner host outside the
-#       pinned snapshot set, or a NEW pin in appimage-snapshot.lock.tsv (a release-env change), and it
+#       pinned set, or a NEW pin in fedora-pkgset.lock.tsv (a release-env change), and it
 #       would only prove exec + WebKit start, which T1 already proves on every release candidate.
 #     - both AppImages = a copy of the release `appimage` job (podman + appimagetool + a second,
 #       release-profile build) on every PR.
@@ -115,7 +115,7 @@ jobs:
             ${{ runner.temp }}/linux-test/summary.txt
             ${{ runner.temp }}/linux-test/cargo-test.log
             ${{ runner.temp }}/linux-test/cargo-build.log
-            ${{ runner.temp }}/linux-test/apt.log
+            ${{ runner.temp }}/linux-test/rpm.log
             ${{ runner.temp }}/linux-test/pkgset.tsv
           if-no-files-found: warn
           retention-days: 14

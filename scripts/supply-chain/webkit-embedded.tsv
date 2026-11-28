@@ -6,6 +6,8 @@
 # Evidence (2.52.6): webkitgtk-2.52.6.tar.xz sha256 179a2ea3f8f6edd4be7f31fdc55afc57bd0729f1fba648c61d4181539ac116fc
 # (== webkitgtk.org .sums), Source/ThirdParty/{skia,ANGLE,pdfjs,libsysprof-capture,xdgmime}; version strings /
 # symbols confirmed in the shipped libwebkit2gtk-4.1.so.0 of v0.9.6 (RESULT.md §A.2 of #299).
+# Evidence (2.54.3, fedport = Fedora 44 webkitgtk-2.54.3-2.fc44): webkitgtk-2.54.3.tar.xz sha256
+# 2779c1b46f88762e8400650271ba14452dc4e30b37059981552d8b562b7d0862 (== webkitgtk.org .sums); same ThirdParty dir set.
 # Not listed (checked): gtest, unifdef (build/test only); libwebrtc, woff2 (not in the tarball).
 # webkit	name	version	purl	license	evidence
 2.52.6	skia	m145	pkg:generic/skia@m145	BSD-3-Clause	Source/ThirdParty/skia/include/core/SkMilestone.h SK_MILESTONE 145
@@ -13,3 +15,8 @@
 2.52.6	pdfjs-dist	6.1.200	pkg:npm/pdfjs-dist@6.1.200	Apache-2.0	Source/ThirdParty/pdfjs/build/pdf.mjs version 6.1.200 (built-in PDF viewer, separate from ui/vendor pdf.js)
 2.52.6	libsysprof-capture	48.1	pkg:generic/sysprof-capture@48.1	BSD-2-Clause-Patent	Source/ThirdParty/libsysprof-capture (sysprof 48.1, commit d767849717e6)
 2.52.6	xdgmime	e70017739ff7	pkg:generic/xdgmime@e70017739ff7?vcs_url=git%2Bhttps://gitlab.freedesktop.org/xdg/xdgmime%40e70017739ff7	AFL-2.0 OR LGPL-2.0-or-later	Source/ThirdParty/xdgmime (revision e70017739ff7)
+2.54.3	skia	m154	pkg:generic/skia@m154	BSD-3-Clause	Source/ThirdParty/skia/include/core/SkMilestone.h SK_MILESTONE 154
+2.54.3	angle	2.1.29096	pkg:generic/angle@2.1.29096?vcs_url=git%2Bhttps://chromium.googlesource.com/angle/angle%40e9f64dda0c5b	BSD-3-Clause	Source/ThirdParty/ANGLE/WebKit/angle_commit.h ANGLE_COMMIT_POSITION 29096 ANGLE_COMMIT_HASH e9f64dda0c5b (version 2.1.29096)
+2.54.3	pdfjs-dist	6.1.200	pkg:npm/pdfjs-dist@6.1.200	Apache-2.0	Source/ThirdParty/pdfjs/build/pdf.mjs pdfjsVersion 6.1.200 pdfjsBuild 6353acefe (built-in PDF viewer, separate from ui/vendor pdf.js)
+2.54.3	libsysprof-capture	48.1	pkg:generic/sysprof-capture@48.1	BSD-2-Clause-Patent	Source/ThirdParty/libsysprof-capture/README.WebKit (sysprof 48.1, commit d767849717e6)
+2.54.3	xdgmime	e70017739ff7	pkg:generic/xdgmime@e70017739ff7?vcs_url=git%2Bhttps://gitlab.freedesktop.org/xdg/xdgmime%40e70017739ff7	AFL-2.0 OR LGPL-2.0-or-later	Source/ThirdParty/xdgmime/README.webkit (revision e70017739ff7)

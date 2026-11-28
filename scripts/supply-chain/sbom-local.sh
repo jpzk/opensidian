@@ -15,12 +15,13 @@
 #   vendor   vendor-sbom.sh (runs vendor-verify.sh first)        (network: registry.npmjs.org)
 #   flatpak  flatpak-sbom.sh packaging/flatpak/dev.koto.opensidian.yml (offline; the manifest must exist)
 #   webkit   webkit-bundle-sbom.sh [--bin ELF]: the WebKitGTK closure of the PORTABLE AppImage, read
-#            from a dpkg database that holds EXACTLY appimage-build.sh's pinned PKGS at its SNAP:
-#              --webkit native  this machine (Ubuntu 26.04 after scripts/supply-chain/webkit-apt.sh);
-#                               refused unless every PKGS pin is installed at its pinned version
-#              --webkit podman  appimage-build.sh's digest-pinned ubuntu image, apt from the same
-#                               snapshot.ubuntu.com SNAP, PKGS + jq pinned (any Linux host with podman)
-#              --webkit auto    (default) native if libwebkit2gtk-4.1-0 is dpkg-installed, else podman
+#            from an rpm database that holds EXACTLY this arch's rows of packaging/ci/fedora-pkgset.lock.tsv
+#            (fedport 2026-11-28: the build env is Fedora 44, packaging/ci/fedora-env.sh):
+#              --webkit native  this machine = the appimage-build.sh container (release.yml); refused
+#                               unless rpm -qa == the lock exactly
+#              --webkit podman  fedora-env.sh: the digest-pinned Fedora 44 OCI image + the lock's rpms
+#                               (sha256 + rpm -K verified, rpm -U, no repo) (any Linux host with podman)
+#              --webkit auto    (default) native if this is that env, else podman
 #   -> sbom-merge.sh -o <out> -v <ver> <parts>  (dedup + dangling-ref checks, content-derived serial)
 #
 # FAILS CLOSED: a part that fails or is missing aborts the run (nothing written to <out>). The only
@@ -123,54 +124,38 @@ run_part() {  # run_part <part> <cmd...>: stdout -> $t/<part>.cdx.json, stderr -
   say "part $p: $(jq '.components | length' "$t/$p.cdx.json") components"
 }
 
-# ---- WebKit part: the pinned set of packaging/ci/appimage-build.sh ----
-AB=$root/packaging/ci/appimage-build.sh
-ab_var() { sed -n "s/^$1=\"\{0,1\}\([^\"]*\)\"\{0,1\}\$/\1/p" "$AB" | head -1; }
+# ---- WebKit part: the pinned Fedora 44 set of packaging/ci/fedora-env.sh (fedport) ----
+# The rpm database must hold EXACTLY this arch's rows of packaging/ci/fedora-pkgset.lock.tsv
+# (what appimage-build.sh's container installs + verifies), so the SBOM cannot drift from what
+# the portable AppImage bundles.
+LOCK=$root/packaging/ci/fedora-pkgset.lock.tsv
+lock_eq_rpmdb() {  # rc 0 iff rpm -qa (minus gpg-pubkey) == the lock rows of this arch
+  local a; a=$(uname -m)
+  diff <(awk -F'\t' -v a="$a" '!/^#/ && $1==a {print $2"\t"$3"\t"$4}' "$LOCK" | LC_ALL=C sort) \
+       <(rpm -qa --qf '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n' | grep -v '^gpg-pubkey	' | LC_ALL=C sort) >&2
+}
 webkit_native() {
-  bash "$here/webkit-apt.sh" --check >&2 || die "webkit-apt.sh pins != appimage-build.sh"
-  local p n want got
-  for p in $(ab_var PKGS); do
-    n=${p%%=*}; want=${p#*=}
-    got=$(dpkg-query -W -f='${Version}' "$n" 2>/dev/null) || die "native: $n not installed (run scripts/supply-chain/webkit-apt.sh, or --webkit podman)"
-    [ "$got" = "$want" ] || die "native: $n is $got, appimage-build.sh pins $want (the SBOM must describe what the AppImage bundles)"
-  done
+  [ -f /etc/fedora-release ] && command -v rpm >/dev/null || die "native: not the Fedora 44 build env (use --webkit podman)"
+  [ -s "$LOCK" ] || die "no $LOCK"
+  lock_eq_rpmdb || die "native: installed rpm set != $LOCK ($(uname -m)) - the SBOM must describe what the AppImage bundles"
   bash "$here/webkit-bundle-sbom.sh" ${bin:+--bin "$bin"} ${pkgset:+--pkgset "$pkgset"}
 }
-# Literal pins (pin-check #189 reads them from this file); asserted == appimage-build.sh below,
-# like webkit-apt.sh --check, so the SBOM cannot drift from what the AppImage bundles.
-WK_IMG=docker.io/library/ubuntu@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
-# = appimage-build.sh PKGS + jq/libjq1 for webkit-bundle-sbom.sh (same snapshot, resolute-security;
-# not in the WebKit ldd closure, so they add nothing to the SBOM)
-PKGS="build-essential=12.12ubuntu2.26.04.2 pkg-config=2.5.1-4 libssl-dev=3.5.5-1ubuntu3.7 libwebkit2gtk-4.1-dev=2.52.6-0ubuntu0.26.04.2 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.26.04.2 libgtk-3-dev=3.24.52-0ubuntu1 libayatana-appindicator3-dev=0.5.94-1build1 librsvg2-dev=2.61.3+dfsg-3ubuntu0.1 patchelf=0.18.0-1.4build1 file=1:5.46-5build2 ca-certificates=20260816ubuntu0.26.04.2 curl=8.18.0-1ubuntu2.8 xz-utils=5.8.3-1ubuntu0.1 jq=1.8.1-4ubuntu2 libjq1=1.8.1-4ubuntu2"
 webkit_podman() {
-  command -v podman >/dev/null || die "podman: not installed (or use --webkit native on Ubuntu 26.04, or --skip webkit)"
-  local snap ca
-  snap=$(ab_var SNAP)
-  [ -n "$snap" ] || die "cannot read SNAP from $AB"
-  [ "$WK_IMG" = "docker.io/library/ubuntu@$(ab_var DIGEST)" ] || die "WK_IMG $WK_IMG != appimage-build.sh DIGEST $(ab_var DIGEST)"
-  [ "$PKGS" = "$(ab_var PKGS) $(sed -n 's/^SBOM_PKGS="\([^"]*\)".*/\1/p' "$AB" | head -1)" ] || die "sbom-local.sh PKGS != appimage-build.sh PKGS + jq libjq1"
-  ca=${HOST_CA_BUNDLE:-}
-  if [ -z "$ca" ]; then for c in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do [ -s "$c" ] && { ca=$c; break; }; done; fi
-  [ -s "$ca" ] || die "no host CA bundle (set HOST_CA_BUNDLE)"
-  say "webkit via podman: $WK_IMG, apt snapshot $snap"
-  podman image exists "$WK_IMG" || podman pull -q "$WK_IMG" >&2 || die "podman pull $WK_IMG"
-  podman run --rm --network=host -e SNAP="$snap" -e PKGS="$PKGS" -e HASBIN="${bin:+1}" \
-    -v "$ca":/host-ca.crt:ro -v "$root":/src:ro ${bin:+-v "$bin":/opensidian-bin:ro} "$WK_IMG" bash -euo pipefail -c '
-    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* /etc/apt/apt.conf.d/docker-clean
-    printf "Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/%s/\nSuites: resolute resolute-updates resolute-security\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nCheck-Valid-Until: no\n" "$SNAP" > /etc/apt/sources.list.d/snapshot.sources
-    echo "Acquire::https::CAInfo \"/host-ca.crt\";" > /etc/apt/apt.conf.d/99host-ca
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get -q update > /tmp/apt.log 2>&1 || { cat /tmp/apt.log >&2; exit 1; }
-    if grep -E "^(Err:|W:|E:|Error:|Warning:)" /tmp/apt.log >&2; then echo "apt update against the snapshot was not clean" >&2; exit 1; fi
-    apt-get -y -q --no-install-recommends install $PKGS >> /tmp/apt.log 2>&1 || { tail -30 /tmp/apt.log >&2; exit 1; }
-    for p in $PKGS; do n=${p%%=*}; want=${p#*=}; got=$(dpkg-query -W -f="\${Version}" "$n"); [ "$got" = "$want" ] || { echo "$n is $got, pinned $want" >&2; exit 1; }; done
-    echo "pinned set installed: $(echo $PKGS | wc -w) packages" >&2
-    cd /src && bash scripts/supply-chain/webkit-bundle-sbom.sh ${HASBIN:+--bin /opensidian-bin}'
+  command -v podman >/dev/null || die "podman: not installed (or run inside the Fedora 44 build env, or --skip webkit)"
+  local img rpms
+  img=$(bash "$root/packaging/ci/fedora-env.sh" image) || die "fedora-env.sh image"
+  rpms=${FEDORA_RPM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/opensidian-appimage/rpms-$(uname -m)}
+  bash "$root/packaging/ci/fedora-env.sh" fetch "$rpms" >&2 || die "fedora-env.sh fetch"
+  say "webkit via podman: $img + the pinned lock ($(sha256sum "$LOCK" | cut -c1-16))"
+  podman run --rm --network=none -e HASBIN="${bin:+1}" -v "$rpms":/rpms:ro -v "$root":/src:ro \
+    ${bin:+-v "$bin":/opensidian-bin:ro} "$img" bash -euo pipefail -c '
+    bash /src/packaging/ci/fedora-env.sh install /rpms /tmp/pkgset.tsv >&2
+    cd /src && bash scripts/supply-chain/webkit-bundle-sbom.sh ${HASBIN:+--bin /opensidian-bin} --pkgset /tmp/pkgset.tsv'
 }
 webkit_part() {
   local m=$wk
   if [ "$m" = auto ]; then
-    if command -v dpkg-query >/dev/null && dpkg-query -W libwebkit2gtk-4.1-0 >/dev/null 2>&1; then m=native; else m=podman; fi
+    if [ -f /etc/fedora-release ] && rpm -q webkit2gtk4.1 >/dev/null 2>&1 && lock_eq_rpmdb 2>/dev/null; then m=native; else m=podman; fi
   fi
   say "webkit mode: $m"
   "webkit_$m"
