@@ -701,6 +701,7 @@ mod tests {
     /// (it would be "modified", which the UI's file model ignores for a file it does not have).
     /// (root ignores the mode bits: nothing to check then, as in the GHOSTS test)
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn unreadable_added_note_is_added_once_readable() {
         use std::os::unix::fs::PermissionsExt;
         let root = tmp("unread289m");

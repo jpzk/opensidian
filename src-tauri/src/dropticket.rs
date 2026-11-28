@@ -116,11 +116,12 @@ impl Table {
 
 static TICKETS: Table = Table::new();
 
-/// a fresh 128-bit id from the kernel, or None (then nothing is minted: fail closed)
+/// a fresh 128-bit id from the OS CSPRNG, or None (then nothing is minted: fail closed).
+/// vaultfs::os_random, as audiorec's and main.rs's ids: /dev/urandom on unix, the
+/// system RNG on Windows (which has no /dev/urandom: no drop could be registered)
 fn fresh_id() -> Option<String> {
-    use std::io::Read;
     let mut b = [0u8; ID_BYTES];
-    std::fs::File::open("/dev/urandom").ok()?.read_exact(&mut b).ok()?;
+    crate::vaultfs::os_random(&mut b).ok()?;
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
@@ -253,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn the_stored_path_resolves_the_directory_but_not_the_file() {
         let base = std::env::temp_dir().join(format!("dropticket-canon-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

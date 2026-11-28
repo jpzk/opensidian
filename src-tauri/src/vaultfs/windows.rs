@@ -171,6 +171,12 @@ fn file_id_handle(f: &File) -> io::Result<(u32, u64)> {
     Ok((info.volume_serial_number, index))
 }
 
+/// the identity of an opened file (volume serial, file index): the Windows
+/// counterpart of unix (st_dev, st_ino), e.g. for pdf.rs's cache key
+pub fn file_id(f: &File) -> io::Result<(u32, u64)> {
+    file_id_handle(f)
+}
+
 fn wide_z(path: &Path) -> Vec<u16> {
     OsStr::new(path).encode_wide().chain(Some(0)).collect()
 }
@@ -392,10 +398,24 @@ impl Vault {
         let full = d.path.join(&leaf);
         let f = open_nofollow(&full, false)?;
         let meta = f.metadata()?;
-        if is_reparse(&meta) || !meta.is_file() {
+        if is_reparse(&meta) {
+            return Err(refused(rel, "symlink in vault path")); // the unix wording for a symlinked leaf
+        }
+        if !meta.is_file() {
             return Err(refused(rel, "not a regular file"));
         }
         Ok(f)
+    }
+
+    /// #250: the whole file `rel`, at most `cap` bytes (more = Err
+    /// FileTooLarge), read from the handle `open_read` checked
+    pub fn read(&self, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
+        read_fd(self.open_read(rel)?, cap)
+    }
+
+    /// `read` + UTF-8 (invalid UTF-8 = Err InvalidData, like fs::read_to_string)
+    pub fn read_string(&self, rel: &Path, cap: u64) -> io::Result<String> {
+        String::from_utf8(self.read(rel, cap)?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     pub fn write_atomic(&self, rel: &Path, bytes: &[u8], durable: bool) -> io::Result<()> {
@@ -1040,12 +1060,57 @@ pub fn mkdir_p(root: &Path, rel: &Path) -> io::Result<()> {
     Vault::open(root)?.mkdir_p(rel)
 }
 
-/// one entry of a directory listed by `walk_tree`: its path, file name and
-/// DirEntry::file_type (which does NOT follow symlinks; None if unknown)
+/// #250: all of an opened file, refused when over `cap`. The size check is on
+/// the handle, and the read itself stops at cap+1 bytes, so a file that grows
+/// after the check still cannot exceed the cap (same contract as unix).
+pub fn read_fd(mut f: File, cap: u64) -> io::Result<Vec<u8>> {
+    let n = f.metadata()?.len();
+    if n > cap {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, format!("file too large ({n} > {cap} bytes)")));
+    }
+    let mut v = Vec::with_capacity(n as usize);
+    (&mut f).take(cap.saturating_add(1)).read_to_end(&mut v)?;
+    if v.len() as u64 > cap {
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, format!("file too large (> {cap} bytes)")));
+    }
+    Ok(v)
+}
+
+/// #250: `rel` under `root`, through `Vault::read`
+pub fn read(root: &Path, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
+    Vault::open(root)?.read(rel, cap)
+}
+
+/// `read` + UTF-8
+pub fn read_string(root: &Path, rel: &Path, cap: u64) -> io::Result<String> {
+    Vault::open(root)?.read_string(rel, cap)
+}
+
+/// #250: the vault-relative path of `abs` (a path under the vault `root`, as
+/// the path-based callers build it). Refused unless it is lexically under the
+/// root or under its canonical form (same as unix).
+pub fn rel_of(root: &Path, abs: &Path) -> io::Result<PathBuf> {
+    if let Ok(r) = abs.strip_prefix(root) {
+        return Ok(r.to_path_buf());
+    }
+    let c = root.canonicalize()?;
+    abs.strip_prefix(&c).map(Path::to_path_buf).map_err(|_| refused(abs, "not under the vault root"))
+}
+
+/// a 4 MiB cap for a vault config / JSON file (same as unix)
+pub const CFG_MAX: u64 = 4 * 1024 * 1024;
+/// an 8 MiB cap for CSS (themes, snippets, plugin styles)
+pub const CSS_MAX: u64 = 8 * 1024 * 1024;
+
+/// one entry of a directory listed by `walk_tree`: its path, vault-relative
+/// path, file name, DirEntry::file_type and size (both from the directory
+/// listing itself: a symlink or junction is NOT followed; None / 0 if unknown)
 pub struct WalkEntry {
     pub path: PathBuf,
+    pub rel: PathBuf,
     pub name: std::ffi::OsString,
     pub ft: Option<std::fs::FileType>,
+    pub len: u64,
 }
 
 /// pre-order directory walk with constant stack use. `visit(entry, depth)` is
@@ -1059,7 +1124,7 @@ pub struct WalkEntry {
 pub fn walk_tree(root: &Path, max_depth: usize, mut visit: impl FnMut(&WalkEntry, usize) -> bool) {
     let mut stack: Vec<(std::vec::IntoIter<WalkEntry>, usize)> = Vec::new();
     if max_depth > 0 {
-        stack.push((list_dir(root).into_iter(), 1));
+        stack.push((list_dir(root, Path::new("")).into_iter(), 1));
     }
     while let Some((it, depth)) = stack.last_mut() {
         let depth = *depth;
@@ -1068,15 +1133,29 @@ pub fn walk_tree(root: &Path, max_depth: usize, mut visit: impl FnMut(&WalkEntry
             continue;
         };
         if visit(&e, depth) && depth < max_depth {
-            stack.push((list_dir(&e.path).into_iter(), depth + 1));
+            stack.push((list_dir(root, &e.rel).into_iter(), depth + 1));
         }
     }
 }
 
-/// the entries of `dir` in read_dir order; the handle is closed on return
-fn list_dir(dir: &Path) -> Vec<WalkEntry> {
-    let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
-    rd.flatten().map(|e| WalkEntry { path: e.path(), name: e.file_name(), ft: e.file_type().ok() }).collect()
+/// the entries of the directory `rel` under `root`, in read_dir order; the
+/// handle is closed on return. Type and size come from the listing
+/// (DirEntry, no reparse point followed).
+fn list_dir(root: &Path, rel: &Path) -> Vec<WalkEntry> {
+    let Ok(rd) = fs::read_dir(root.join(rel)) else { return Vec::new() };
+    rd.flatten()
+        .map(|e| {
+            let name = e.file_name();
+            let r = rel.join(&name);
+            WalkEntry {
+                path: root.join(&r),
+                rel: r,
+                name,
+                ft: e.file_type().ok(),
+                len: e.metadata().map(|m| m.len()).unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 /// tree walk that never descends a symlink or junction (reparse point): `out`

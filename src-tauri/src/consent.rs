@@ -900,6 +900,10 @@ fn show_dialog(win: &tauri::Window, kind: Kind, q: &Question, tx: std::sync::mps
         Kind::Spawn => (SPAWN_TITLE, "_Deny", "Allow _once"),
         Kind::Security => (SECURITY_TITLE, "_Keep protection", "_Lower protection"),
         Kind::OfflineOpen => (OFFLINE_OPEN_TITLE, "_Cancel", "_Open in browser"),
+        Kind::Mic => (MIC_TITLE, "_Cancel", "_Record"),
+        Kind::Device(_) => (DEVICE_TITLE, "_Cancel", "_Allow once"),
+        Kind::Attach => (ATTACH_TITLE, "_Cancel", "_Attach"),
+        Kind::PluginAck => (PLUGIN_ACK_TITLE, "_Cancel", "_Allow"),
     };
     // GTK mnemonics ("_Trust") are "&Trust" in Win32
     let mn = |s: &str| s.replace('_', "&");

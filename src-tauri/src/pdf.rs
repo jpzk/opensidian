@@ -175,12 +175,22 @@ enum Job {
 
 /// a cache key that goes stale when the file changes on disk: the opened
 /// inode (dev, ino) and its mtime + size, all by fstat on the fd
+/// (Windows: volume serial + file index, last-write FILETIME, size, from the handle)
 type Key = (u64, u64, i64, i64, u64);
 
+#[cfg(unix)]
 fn key_of(f: &File) -> Option<Key> {
     use std::os::unix::fs::MetadataExt;
     let m = f.metadata().ok()?;
     Some((m.dev(), m.ino(), m.mtime(), m.mtime_nsec(), m.len()))
+}
+
+#[cfg(windows)]
+fn key_of(f: &File) -> Option<Key> {
+    use std::os::windows::fs::MetadataExt;
+    let m = f.metadata().ok()?;
+    let (vol, idx) = crate::vaultfs::file_id(f).ok()?;
+    Some((vol as u64, idx, m.last_write_time() as i64, 0, m.len()))
 }
 
 #[derive(Default)]

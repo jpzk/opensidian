@@ -13278,7 +13278,7 @@ mod tests {
         let ix = Index::build(&root);
         assert_eq!(ix.images(), ["logo.svg"]);
         let h = image_html(ix.images(), "logo.svg", "");
-        assert!(h.starts_with("<img ") && h.contains(&format!("src=\"{IMG_SCHEME}://localhost/logo.svg\"")), "{h}");
+        assert!(h.starts_with("<img ") && h.contains(&format!("src=\"{}\"", custom_scheme_url(IMG_SCHEME, "logo.svg"))), "{h}");
         for tag in ["<object", "<iframe", "<embed", "<svg", "<script"] {
             assert!(!h.contains(tag), "{tag} in {h}");
         }
@@ -13312,7 +13312,7 @@ mod tests {
                 }
                 let i = h.find("src=\"").unwrap() + 5;
                 let url = h[i..].split('"').next().unwrap();
-                let target = url.strip_prefix(&format!("{IMG_SCHEME}://localhost/")).expect(url);
+                let target = url.strip_prefix(&custom_scheme_url(IMG_SCHEME, "")).expect(url);
                 let (mime, bytes) = serve_image(&root, target).unwrap_or_else(|| panic!("{md} -> {url} served nothing"));
                 assert_eq!((mime, bytes.as_slice()), ("image/svg+xml", &svg[..]), "{md}");
             }
@@ -13324,6 +13324,7 @@ mod tests {
     /// one is R29.4's banner (no URL); traversal, a symlink out of the vault and
     /// look-alike extensions (svgz, svg.html, a note named x.svg.md) serve nothing.
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn svg_serving_stays_vault_confined_and_exact() {
         use std::os::unix::fs::symlink;
         let root = tmp_vault("svg276neg");
@@ -16110,7 +16111,7 @@ mod callout_render_tests {
    swapped for a symlink between the check and the read (the vaultfs hook
    seam "open_read:checked"). Each reader must return its default / refuse,
    within a time bound, and still read a normal file. */
-#[cfg(test)]
+#[cfg(all(test, unix))] // symlinks to /dev/zero, FIFOs
 mod read250_tests {
     use super::*;
     use std::os::unix::fs::symlink;
@@ -16461,15 +16462,15 @@ mod read250_tests {
                 } else {
                     out.push((i + 1, l.to_string()));
                 }
-                prev_test = l.trim() == "#[cfg(test)]";
+                // a platform-gated test module (#[cfg(all(test, unix))], ...) is test code too
+                prev_test = l.trim() == "#[cfg(test)]" || l.trim().starts_with("#[cfg(all(test,");
             }
             out
         }
         let reads = ["fs::read(", "read_to_string(", "File::open(", "read_dir("];
-        let allowed: [(&str, &str, &str); 18] = [
-            ("audiorec.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG"),
-            ("main.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG"),
-            ("dropticket.rs", "File::open(\"/dev/urandom\")", "kernel CSPRNG (#280 drop ticket)"),
+        // (the kernel CSPRNG reads of audiorec.rs, main.rs and dropticket.rs go through
+        // vaultfs::os_random on this branch: /dev/urandom on unix, the system RNG on Windows)
+        let allowed: [(&str, &str, &str); 16] = [
             ("cfgstore.rs", ".open(lock_file(lock_dir, cfg))", "~/.opensidian.json lock file (user config dir)"),
             ("cfgstore.rs", "fs::read_to_string(cfg)", "~/.opensidian.json (user config)"),
             ("cfgstore.rs", "File::open(dir).and_then(|d| d.sync_all())", "fsync of the user config dir"),
@@ -16485,6 +16486,7 @@ mod read250_tests {
             ("main.rs", "std::fs::read_dir(&dir)", "vb_probe: test-rig probe of an env-named dir"),
             ("migrate.rs", "fs::read_dir(from)", "per-user config/data dir migration (home), not a vault"),
             ("plugin_store.rs", "s.read_to_string(&mut e)", "a child process's stderr pipe"),
+            ("plugins.rs", ".custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(canon)", "Windows: a DIRECTORY handle for its file id (identity check), no content read"),
         ];
         let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
         let (mut files, mut bad, mut used) = (0, Vec::new(), vec![0usize; allowed.len()]);

@@ -92,7 +92,11 @@ pub fn read_checked(root: &Path, p: &Path, cap: u64) -> Result<Vec<u8>, &'static
     let rel = crate::vaultfs::rel_of(root, p).map_err(|_| "unreadable")?;
     crate::vaultfs::read(root, &rel, cap).map_err(|e| {
         // the walk refuses a symlinked component itself (PermissionDenied "refused: symlink in vault path") or the kernel does (ELOOP)
-        if e.raw_os_error() == Some(libc::ELOOP) || e.to_string().contains("symlink") {
+        #[cfg(unix)]
+        let eloop = e.raw_os_error() == Some(libc::ELOOP);
+        #[cfg(not(unix))]
+        let eloop = false; // Windows: a reparse point is refused by vaultfs with "symlink" in the message
+        if eloop || e.to_string().contains("symlink") {
             "symlinked file"
         } else if e.kind() == std::io::ErrorKind::FileTooLarge {
             "too big"

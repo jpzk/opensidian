@@ -319,6 +319,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // symlinks, FIFOs or mode bits
     fn read250_leaf_symlink_devzero_fifo_and_oversize_are_not_read() {
         let root = tmp("r250");
         let out = tmp("r250out");

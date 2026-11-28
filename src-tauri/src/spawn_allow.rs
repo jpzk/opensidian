@@ -351,6 +351,7 @@ mod tests {
        ctime in the same tick). A program hashed right after its change is not cached, so the
        rewrite is read again and gives another hash. */
     #[test]
+    #[cfg(unix)] // a #!/bin/sh program with no extension is no program on Windows
     fn spawn_allow_racily_new_program_is_not_cached() {
         let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-racy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -379,6 +380,7 @@ mod tests {
     /* #74: the cache still does its job: an unchanged program whose mtime and ctime are older
        than the margin is hashed once and then served from the cache (no re-read). */
     #[test]
+    #[cfg(unix)] // a #!/bin/sh program with no extension is no program on Windows
     fn spawn_allow_old_unchanged_program_is_cached() {
         let d = std::env::temp_dir().canonicalize().unwrap().join(format!("spawnallow-old-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
