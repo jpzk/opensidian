@@ -285,7 +285,6 @@
     w.dataset.propertyKey = row.key; w.dataset.propertyType = row.type;
     const kc = el("div", "metadata-property-key");
     const ic = el("span", "metadata-property-icon", ICON[row.type] || "?");
-    ic.title = TYPE_LABEL[row.type] || ("Unknown type: " + row.type);
     kc.appendChild(ic);
     const ki = el("input", "metadata-property-key-input");
     ki.type = "text"; ki.value = row.key; ki.readOnly = !!ro;
