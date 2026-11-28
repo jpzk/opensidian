@@ -9,9 +9,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd); fx=$here/tests/fixtures/pin-check
 export PIN_CHECK_TODAY=2026-11-17
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
-fails=0; n=0
+fails=0; n=0; failed=()
 ok()  { echo "ok   $*"; }
-bad() { echo "FAIL $*"; fails=1; }
+bad() { echo "FAIL $*"; fails=1; failed+=("$*"); }
 run() { set +e; bash "$here/pin-check.sh" "$1" >"$t/out" 2>&1; rc=$?; set -e; }
 
 for d in "$fx"/*/; do d=${d%/}; c=$(basename "$d"); rule=${c%-*}; n=$((n+1)); run "$d"
@@ -63,5 +63,9 @@ mut "rpmlock drop arch"     packaging/ci/fedora-pkgset.lock.tsv '/^aarch64\t/d' 
 mut "rpmlock bad evr"       packaging/ci/fedora-pkgset.lock.tsv 's#^(x86_64\tjq\t)0:1.8.1-2.fc44#\11.8.1#' rpmlock
 mut "rpmlock pin not in lock" packaging/ci/appimage-build.sh 's#jq-1.8.1-2.fc44#jq-1.8.1-9.fc44#' rpmlock
 mut "rpmlock hash pin edited" packaging/ci/fedora-env.sh 's#^LOCK_SHA256=.*#LOCK_SHA256=0000000000000000000000000000000000000000000000000000000000000000#' rpmlock
+# smoke-run.sh (fedport): an image var from `fedora-env.sh image` is pinned only through that script
+mut "image from other script"  packaging/ci/smoke.sh 's#fedora-env\.sh" image#other-env.sh" image#' image
+mut "fedora-env drop digest"   packaging/ci/fedora-env.sh '/^podman image exists/d' image
+mut "apt local file -> name"   packaging/ci/smoke.sh 's#"\./\$PKG"#opensidian#' apt
 echo "pin-check.test: $n fixtures"
-[ $fails = 0 ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }
+[ $fails = 0 ] && echo "ALL PASS" || { echo "SOME FAILED (${#failed[@]}):"; printf "  FAILED: %s\n" "${failed[@]}"; exit 1; }

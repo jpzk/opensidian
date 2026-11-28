@@ -79,9 +79,16 @@ hit() {  # rule file line text
   NF=$((NF+1))
 }
 
-# var_pinned FILE VAR -> 0 if every VAR= assignment in FILE is an image ref with @sha256:<64>
+# var_pinned FILE VAR -> 0 if every VAR= assignment in FILE is an image ref with @sha256:<64>, or
+# EVERY assignment is VAR=$(bash <path>/packaging/ci/fedora-env.sh image) [|| ...]: that command loads
+# the OCI archive by sha256 and checks the manifest digest (fedora-env.sh itself must pass oci_pinned).
 var_pinned() {
-  local v a ok=1
+  local v a ok=1 fe=$ROOT/packaging/ci/fedora-env.sh
+  local fre='\$\(bash[[:space:]]+"?[^[:space:]"]*packaging/ci/fedora-env\.sh"?[[:space:]]+image\)([[:space:]]|$)'
+  if grep -qE "(^|[[:space:];(])$2=" "$1" \
+     && ! grep -oE "(^|[[:space:];(])$2=.*" "$1" | sed -E "s/^[[:space:];(]*$2=//" | grep -vqE "^$fre"; then
+    [ -f "$fe" ] && oci_pinned "$fe"; return
+  fi
   v=$(grep -oE "(^|[[:space:];(])$2=[^[:space:];]+" "$1" | sed "s/^.*$2=//; s/[\"']//g")
   [ -n "$v" ] || return 1
   while IFS= read -r a; do
@@ -150,6 +157,9 @@ pkgs() {  # file cmdtext
   rest=$(printf '%s' "$2" | sed -E 's/^.*[[:space:]]install([[:space:]]|$)//; s/(&&|\|\||[;|>}]|\)).*$//; s/[\x27"]//g')
   for w in $rest; do
     case "$w" in -*) continue ;; esac
+    # ./x.deb, /w/x.rpm, ./$PKG: a local file (apt/dnf treat a token with / as a path), i.e. the
+    # artifact this workflow built - pinned by being that file, not a repo package name
+    case "$w" in ./*|/*) continue ;; esac
     if [[ "$w" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
       v=$(grep -oE "(^|[[:space:]])${BASH_REMATCH[1]}=(\"[^\"]*\"|[^[:space:]\"';]+)" "$1" | head -1 | sed -E 's/^[^=]*=//; s/"//g')
       [ -n "$v" ] && { printf '%s\n' $v; continue; }

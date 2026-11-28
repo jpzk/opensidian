@@ -293,12 +293,12 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Headless launch smoke of what this run built (packaging/ci/launch-smoke.sh: Xvfb, PASS iff the
-  # "Opensidian" window maps and the process stays alive), per arch, plus the install checks of
-  # the wraps: the deb installs with apt on ubuntu-26.04, the rpm with dnf on the pinned Fedora 44
-  # base (same OCI archive + digest as rpm-build.sh / fedora-env.sh), each /usr/bin/opensidian ==
-  # the AppImage binary (sha256) and launches. Xvfb/xwininfo and the packages' runtime deps come
-  # from the target distro's own repos: TEST-ONLY, nothing here is built or shipped.
+  # Headless launch smoke of what this run built (packaging/ci/smoke-run.sh + launch-smoke.sh: PASS
+  # iff the "Opensidian" window maps and the process stays alive), per arch, plus the install checks
+  # of the wraps: the deb with apt on stock ubuntu-26.04 (that test IS "do its Depends resolve"), the
+  # rpm with plain `rpm -i` (no dnf, no repo) into the pinned Fedora 44 env (fedora-env.sh, same OCI
+  # as rpm-build.sh), each /usr/bin/opensidian == the AppImage binary (sha256) and launches. The X
+  # server (Xvfb + xwininfo) is the pinned Fedora 44 lock's, in a --network=host container.
   # gate=false rows (ubuntu-24.04, debian-12 = the glibc floor) record the outcome, never fail.
   smoke:
     name: launch smoke ${{ matrix.target }} ${{ matrix.arch }}${{ matrix.gate && '' || ' (info)' }}
@@ -324,8 +324,6 @@ jobs:
       V: ${{ needs.appimage.outputs.version }}
       ARCH: ${{ matrix.arch }}
       TARGET: ${{ matrix.target }}
-      # debian:bookworm-20261005 (2026-10-06, > 6 weeks), multi-arch index digest
-      DEBIAN12: docker.io/library/debian@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -354,40 +352,15 @@ jobs:
           set -euo pipefail
           [ "$(uname -m)" = "$ARCH" ] || { echo "runner is $(uname -m), matrix says $ARCH"; exit 1; }
           P=dist/opensidian-$V-$ARCH-portable.AppImage; B=$(sha256sum dist/bin/opensidian | cut -d' ' -f1)
-          chmod +x "$P" packaging/ci/launch-smoke.sh
-          echo "binary sha256 $B"; sha256sum "$P"
-          # in-env script: $1 = install command for Xvfb + xwininfo, $2 = package to install ('' = none)
-          cat > dist/smoke-in.sh <<'IN'
-          set -euo pipefail; cd /w
-          eval "$1"
-          rc=0; bash packaging/ci/launch-smoke.sh "$P" 120 | tee dist/smoke-portable.log || rc=1
-          if [ -n "${2:-}" ]; then
-            eval "$2"
-            got=$(sha256sum /usr/bin/opensidian | cut -d' ' -f1); echo "/usr/bin/opensidian sha256 $got"
-            [ "$got" = "$B" ] || { echo "installed binary != AppImage binary ($B)"; rc=1; }
-            bash packaging/ci/launch-smoke.sh /usr/bin/opensidian 120 | tee dist/smoke-installed.log || rc=1
-          fi
-          exit $rc
-          IN
-          export P B
-          rc=0
-          case "$TARGET" in
-            ubuntu-*)
-              DEB=''; [ "$TARGET" = ubuntu-26.04 ] && DEB="sudo apt-get install -y --no-install-recommends ./dist/opensidian-$V-$ARCH.deb"
-              sudo ln -sfn "$PWD" /w
-              bash dist/smoke-in.sh "sudo apt-get update -q && sudo apt-get install -y --no-install-recommends xvfb x11-utils" "$DEB" || rc=$? ;;
-            fedora-44)
-              IMG=$(bash packaging/ci/fedora-env.sh image)
-              podman run --rm -e P -e B -v "$PWD:/w:Z" "$IMG" bash /w/dist/smoke-in.sh \
-                "dnf -y -q install xorg-x11-server-Xvfb xwininfo" "dnf -y install /w/dist/opensidian-$V-$ARCH.rpm" || rc=$? ;;
-            debian-12)
-              podman run --rm -e P -e B -v "$PWD:/w:Z" "$DEBIAN12" bash /w/dist/smoke-in.sh \
-                "apt-get update -q && apt-get install -y -q --no-install-recommends xvfb x11-utils ca-certificates" "" || rc=$? ;;
-          esac
+          chmod +x "$P"; echo "binary sha256 $B"; sha256sum "$P"
+          PKG=''
+          [ "$TARGET" = ubuntu-26.04 ] && PKG=dist/opensidian-$V-$ARCH.deb
+          [ "$TARGET" = fedora-44 ] && PKG=dist/opensidian-$V-$ARCH.rpm
+          rc=0; bash packaging/ci/smoke-run.sh "$TARGET" "$P" "$B" $PKG || rc=$?
           {
             echo "### launch smoke $TARGET $ARCH (gate ${{ matrix.gate }})"
             for f in dist/smoke-portable.log dist/smoke-installed.log; do [ -s "$f" ] || continue
-              echo "- ${f#dist/smoke-}: $(grep -m1 PRETTY_NAME "$f" || true) $(grep -m1 'glibc' "$f" | sed 's/.*smoke: //' || true) -> $(tail -n1 "$f")"; done
+              echo "- ${f#dist/smoke-}: $(grep -m1 PRETTY_NAME "$f" || true) $(grep -m1 'glibc:' "$f" || true) -> $(tail -n1 "$f")"; done
           } >> "$GITHUB_STEP_SUMMARY"
           exit $rc
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

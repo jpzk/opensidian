@@ -38,6 +38,11 @@ binary and both AppImages are built inside a pinned Fedora 44 container.
 ## Wraps and smoke
 - `rpm-build.sh` (Fedora 44 base) and `deb-build.sh` (debian:trixie) wrap the SAME
   binary; each refuses unless its `/usr/bin/opensidian` sha256 equals the AppImage's.
-- `launch-smoke.sh` (job `smoke`): Xvfb, PASS iff the Opensidian window maps. Gates:
-  portable AppImage on ubuntu-26.04 and Fedora 44, deb install on ubuntu-26.04, rpm
-  install on Fedora 44. Info only: ubuntu-24.04, debian-12 (glibc floor).
+- `smoke-run.sh` + `launch-smoke.sh` (job `smoke`): PASS iff the Opensidian window maps
+  and the process stays alive. The X server is Xvfb + xwininfo from the pinned lock, run
+  in the pinned Fedora 44 env (`--network=host`, shared `/tmp/.X11-unix`); nothing is
+  installed from a floating repo except `apt-get install ./<deb>` on stock ubuntu-26.04,
+  which is the point of that test. The rpm goes in with plain `rpm -i` (no dnf): its
+  Requires must be met by the pinned set. Gates: portable AppImage on ubuntu-26.04 and
+  Fedora 44, deb on ubuntu-26.04, rpm on Fedora 44 (installed binary sha256 == AppImage
+  binary). Info only: ubuntu-24.04, debian-12 (glibc floor, digest-pinned image).
