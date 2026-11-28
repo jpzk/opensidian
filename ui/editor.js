@@ -2646,6 +2646,22 @@ Object.assign(Ed, {
     return ctl && !cmd && !ext ? { to: down ? "lineDown" : "lineUp", extend: false } : null;
   },
   isMac() { return typeof navigator !== "undefined" && /Mac/.test(navigator.platform || ""); },
+  /* 0.9.7 T2 taskcaretmod: Super+Up / Super+Down (no other modifier) do NOT move the caret on Linux /
+     Windows (stock 1.13.7 observed black box, harness probe tcmstock: from 1:0 under "- [ ] top task",
+     Super+Up stays at 1:0). WebKitGTK reports the X Super modifier (Mod4) as NO modifier on the arrow
+     key (metaKey false: GDK_SUPER_MASK is not GDK_META_MASK), so the webview ran it as a PLAIN Up:
+     the caret moved onto the task row and gh #46's taskSnap put it behind "- [ ] " (0:6).
+     held = the Super key itself is down (Ed.superHeld, tracked from its own keydown/keyup below),
+     for the WebKitGTK case; metaKey / getModifierState cover engines that do report it.
+     macOS: Cmd+Up/Down is Ed.navKey's (document start / end), never this. -> true = swallow the key. */
+  superStay(e, mac, held) {
+    if (!e || mac || e.isComposing || e.ctrlKey || e.altKey || e.shiftKey) return false;
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return false;
+    const ms = typeof e.getModifierState === "function" && ["Meta", "OS", "Super"].some(m => { try { return e.getModifierState(m); } catch (_) { return false; } });
+    return !!(e.metaKey || held || ms);
+  },
+  isSuperKey(e) { return !!e && (/^(Meta|OS|Super)$/.test(e.key || "") || /^(Meta|OS)(Left|Right)$/.test(e.code || "")); },
+  superHeld: false,
   /* #291: the target of a navKey result in (line,col), from the caret's head f and the lines L.
      lo = the first line the caret may stand on (live preview: the line after the Properties block,
      stock lands Ctrl+Home there; 0 otherwise). goal = the column a run of Ctrl+Up/Down keeps
@@ -2706,6 +2722,8 @@ Object.assign(Ed, {
     // #291: the document-navigation keys run here, on the document (Ed.navKey), never as the
     // webview's native caret move: that one only walks the RENDERED DOM, and CM6 renders a
     // viewport, so on a note longer than it the caret stopped at the viewport edge
+    // T2 taskcaretmod: Super+Up/Down stays put (stock), see Ed.superStay
+    if (Ed.superStay(e, Ed.isMac(), Ed.superHeld)) { e.preventDefault(); Ed.cmT0 = -1; return; }
     const nav = Ed.navKey(e, Ed.isMac());
     if (nav) { e.preventDefault(); Ed.cmStart(); Ed.navRun(g, nav); return Ed.cmEnd(g); }
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
@@ -2798,6 +2816,10 @@ window.addEventListener("mousedown", e => {
   const cm = e.button === 0 ? Ed.kroView() : null, r = cm && cm.state.selection.main;
   Ed.kro.md = r && r.empty && typeof e.timeStamp === "number" && e.timeStamp > 0 ? { t: e.timeStamp, cm, pos: r.head, doc: cm.state.doc } : null;
 }, true);
+// T2 taskcaretmod: whether the Super key is down (WebKitGTK does not put it on the arrow key's event, Ed.superStay)
+window.addEventListener("keydown", e => { if (Ed.isSuperKey(e)) Ed.superHeld = true; }, true);
+window.addEventListener("keyup", e => { if (Ed.isSuperKey(e)) Ed.superHeld = false; }, true);
+window.addEventListener("blur", () => { Ed.superHeld = false; });
 window.addEventListener("keydown", e => {
   const now = performance.now(), m = Ed.kro.md;
   if (typeof e.timeStamp === "number" && e.timeStamp > 0 && e.timeStamp <= now + 1) Ed.kro.lag = Math.round(now - e.timeStamp);
