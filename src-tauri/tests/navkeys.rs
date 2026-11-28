@@ -138,3 +138,33 @@ fn navtarget_properties_floor_and_goal_column() {
     // negative: no goal = the caret's own column
     assert_eq!(t("lineDown", 5, 12, "0", "undefined"), "6:12");
 }
+
+/// 0.9.7 T2 taskcaretmod: Super+Up/Down (alone) do not move the caret on Linux (stock 1.13.7, harness probe
+/// tcmstock: Super+Up from 1:0 under a task row stays at 1:0). `held` = the Super key's own keydown was seen
+/// (WebKitGTK puts no modifier on the arrow key's event for X Mod4). macOS: never (Cmd+Up/Down = navKey).
+#[test]
+fn superstay_linux_super_arrow_does_not_move() {
+    let c = ctx();
+    let st = |spec: &str, mac: bool, held: bool| -> String {
+        let v = c.evaluate(&format!("String(Ed.superStay({},{},{}))", ev(spec), mac, held)).unwrap().to_str().to_string();
+        if let Some(e) = c.exception() { panic!("{spec}: {}", e.to_str()); }
+        v
+    };
+    let rows = [
+        ("ArrowUp", false, true, "true"), ("ArrowDown", false, true, "true"),        // WebKitGTK: Super held, no flag
+        ("meta+ArrowUp", false, false, "true"), ("meta+ArrowDown", false, false, "true"),   // engines that flag it
+        // negatives: plain, other modifiers, macOS, other keys
+        ("ArrowUp", false, false, "false"), ("ArrowDown", false, false, "false"),
+        ("ctrl+ArrowUp", false, true, "false"), ("alt+ArrowUp", false, true, "false"), ("shift+ArrowDown", false, true, "false"),
+        ("meta+ArrowUp", true, false, "false"), ("ArrowUp", true, true, "false"),
+        ("ArrowLeft", false, true, "false"), ("Home", false, true, "false"), ("a", false, true, "false"),
+    ];
+    let bad: Vec<String> = rows.iter().filter_map(|(k, m, h, w)| { let g = st(k, *m, *h); (g != *w).then(|| format!("{k} mac={m} held={h}: got {g}, want {w}")) }).collect();
+    assert!(bad.is_empty(), "superStay rows differ:\n{}", bad.join("\n"));
+    for (k, w) in [("{key:'Meta',code:'MetaLeft'}", "true"), ("{key:'OS',code:'OSLeft'}", "true"), ("{key:'Super'}", "true"),
+                   ("{key:'Unidentified',code:'MetaRight'}", "true"), ("{key:'Control',code:'ControlLeft'}", "false"), ("{key:'ArrowUp'}", "false")] {
+        assert_eq!(c.evaluate(&format!("String(Ed.isSuperKey({k}))")).unwrap().to_str().as_str(), w, "isSuperKey {k}");
+    }
+    assert_eq!(c.evaluate("String(Ed.superStay(null,false,true))").unwrap().to_str().as_str(), "false");
+    assert_eq!(c.evaluate("String(Ed.superStay({key:'ArrowUp',isComposing:true},false,true))").unwrap().to_str().as_str(), "false");
+}
